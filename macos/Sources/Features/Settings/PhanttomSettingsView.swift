@@ -49,6 +49,27 @@ struct PhanttomSettingsView: View {
                 .foregroundStyle(.secondary)
             }
 
+            Section {
+                Toggle("Override font size", isOn: $settings.overrideFontSize)
+
+                Stepper(value: $settings.fontSize, in: 6...72, step: 1) {
+                    HStack {
+                        Text("Font size")
+                        Spacer()
+                        Text(String(format: "%g pt", settings.fontSize))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(!settings.overrideFontSize)
+            } header: {
+                Text("Font")
+            } footer: {
+                Text("Overrides font-size from your config. Turn off to return to your configured size.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Sidebar") {
                 Picker("Background", selection: $settings.sidebarStyle) {
                     ForEach(PhanttomSettings.SidebarStyle.allCases) { style in
@@ -71,6 +92,16 @@ struct PhanttomSettingsView: View {
                     range: 0.1...1.0,
                     display: String(format: "%.0f%%", settings.sidebarOpacity * 100)
                 )
+
+                Stepper(value: $settings.sidebarFontSize, in: 8...20, step: 1) {
+                    HStack {
+                        Text("Font size")
+                        Spacer()
+                        Text(String(format: "%g pt", settings.sidebarFontSize))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 Toggle("Glass effect", isOn: $settings.sidebarGlass)
 
