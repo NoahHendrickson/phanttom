@@ -544,6 +544,13 @@ class TerminalWindow: NSWindow {
         // Phanttom: sidebar glass may re-open window transparency with its
         // own blur radius (no-op when the sidebar/glass is off).
         syncPhanttomSidebarGlass()
+
+        // Phanttom: repaint the titlebar strip above the sidebar (no-op when
+        // the sidebar is off). Deferred a turn because subclass syncAppearance
+        // overrides run after this and may recreate titlebar subviews.
+        DispatchQueue.main.async { [weak self] in
+            self?.syncPhanttomTitlebarZone()
+        }
     }
 
     /// The preferred window background color. The current window background color may not be set

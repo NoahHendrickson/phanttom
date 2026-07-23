@@ -169,6 +169,8 @@ final class SidebarTabManager: ObservableObject {
         guard let window = tab.window as? TerminalWindow else { return }
         let trimmed = name?.trimmingCharacters(in: .whitespaces)
         window.phanttomCustomTitle = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        // Clearing the name also re-arms first-prompt auto-naming.
+        if window.phanttomCustomTitle == nil { window.phanttomAutoTitle = nil }
         NotificationCenter.default.post(name: .phanttomSidebarTabsDidChange, object: window)
     }
 
@@ -286,10 +288,14 @@ final class SidebarTabManager: ObservableObject {
     /// Code UserPromptSubmit hook as the tab's auto-name. A plain title
     /// (shell integration reclaiming it) resets both.
     private static func processTitle(_ title: String, window: TerminalWindow?) -> TabKind {
-        // Our hook's marker: store the prompt-derived auto name.
+        // Our hook's marker: store the prompt-derived auto name — but only
+        // the session's FIRST prompt names the tab. It re-arms when the
+        // shell reclaims the title (session over) or via Reset Name.
         if title.hasPrefix("❯") {
             let auto = title.dropFirst().trimmingCharacters(in: .whitespaces)
-            if !auto.isEmpty { window?.phanttomAutoTitle = auto }
+            if !auto.isEmpty, window?.phanttomAutoTitle == nil {
+                window?.phanttomAutoTitle = auto
+            }
             return window?.phanttomAgentKind ?? .claude
         }
 

@@ -1109,7 +1109,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             tabManager: sidebarTabManager,
             onNewTab: { [weak self] in self?.newTab(nil) }
         ))
-        window.contentView = SidebarSplitView(sidebar: sidebarHost, terminal: container)
+        let sidebarSplit = SidebarSplitView(sidebar: sidebarHost, terminal: container)
+        window.contentView = sidebarSplit
+        sidebarSplit.onSidebarWidthChange = { [weak self] width in
+            (self?.window as? TerminalWindow)?.phanttomTitlebarZoneSetWidth(width)
+        }
+        addSidebarToggleAccessory(to: window)
         phanttomSettingsCancellable = PhanttomSettings.shared.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -1422,6 +1427,37 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @IBAction func toggleTerminalInspector(_ sender: Any?) {
         guard let surface = focusedSurface?.surface else { return }
         ghostty.toggleTerminalInspector(surface: surface)
+    }
+
+    // MARK: - Phanttom Sidebar
+
+    @IBAction func togglePhanttomSidebar(_ sender: Any?) {
+        (window?.contentView as? SidebarSplitView)?.toggleSidebar()
+    }
+
+    /// The titlebar button that collapses/expands the sidebar, placed just
+    /// right of the traffic lights (Cursor-style).
+    private func addSidebarToggleAccessory(to window: NSWindow) {
+        guard window.styleMask.contains(.titled) else { return }
+        guard let image = NSImage(
+            systemSymbolName: "sidebar.left",
+            accessibilityDescription: "Toggle Sidebar") else { return }
+
+        let button = NSButton(image: image, target: self, action: #selector(togglePhanttomSidebar(_:)))
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = "Toggle Sidebar (⌘B)"
+        button.frame = NSRect(x: 8, y: 1, width: 20, height: 20)
+        button.autoresizingMask = [.minYMargin, .maxYMargin]
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 36, height: 22))
+        container.addSubview(button)
+
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = container
+        accessory.layoutAttribute = .left
+        window.addTitlebarAccessoryViewController(accessory)
     }
 
     // MARK: - TerminalViewDelegate

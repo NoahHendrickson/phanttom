@@ -13,20 +13,12 @@ struct SidebarView: View {
     let onNewTab: () -> Void
 
     /// The sidebar's base color per style: system, custom, or derived from
-    /// the terminal theme (nudged so the split still reads).
+    /// the terminal theme (nudged so the split still reads). Prefer the
+    /// selected surface's live background for the terminal input — the
+    /// app-level config getter can lag or miss overrides (e.g. phanttom.conf).
     private var baseColor: Color {
-        switch settings.sidebarStyle {
-        case .system:
-            return Color(nsColor: .windowBackgroundColor)
-        case .custom:
-            return settings.sidebarColor
-        case .matchTerminal:
-            // Prefer the selected surface's live background — the app-level
-            // config getter can lag or miss overrides (e.g. phanttom.conf).
-            let base = OSColor(tabManager.terminalBackground ?? ghostty.config.backgroundColor)
-            let nudged = base.isLightColor ? base.darken(by: 0.06) : base.darken(by: 0.25)
-            return Color(nsColor: nudged)
-        }
+        let terminal = OSColor(tabManager.terminalBackground ?? ghostty.config.backgroundColor)
+        return Color(nsColor: settings.resolvedSidebarColor(terminalBackground: terminal))
     }
 
     /// The sidebar background: base color at the configured opacity. When
@@ -113,7 +105,7 @@ struct SidebarTabRow: View {
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Rename Tab…", action: startRename)
-            if tab.customTitle != nil {
+            if tab.customTitle != nil || tab.autoTitle != nil {
                 Button("Reset Name") { onRename(nil) }
             }
             Divider()

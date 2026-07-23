@@ -83,6 +83,21 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// The sidebar's base color per style, resolved to AppKit so both the
+    /// SwiftUI sidebar and the window chrome (titlebar zone) derive from the
+    /// same logic. `terminalBackground` feeds the `.matchTerminal` style.
+    func resolvedSidebarColor(terminalBackground: OSColor?) -> OSColor {
+        switch sidebarStyle {
+        case .system:
+            return .windowBackgroundColor
+        case .custom:
+            return OSColor(sidebarColor)
+        case .matchTerminal:
+            let base = terminalBackground ?? .windowBackgroundColor
+            return base.isLightColor ? base.darken(by: 0.06) : base.darken(by: 0.25)
+        }
+    }
+
     // MARK: - Persistence
 
     private enum Keys {

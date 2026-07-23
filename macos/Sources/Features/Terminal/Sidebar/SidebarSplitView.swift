@@ -5,6 +5,7 @@ import AppKit
 /// persistence) so `TerminalController` stays lean.
 final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     private static let widthDefaultsKey = "PhanttomSidebarWidth"
+    private static let collapsedDefaultsKey = "PhanttomSidebarCollapsed"
     private static let minWidth: CGFloat = 160
     private static let maxWidth: CGFloat = 360
     private static let defaultWidth: CGFloat = 271
@@ -12,6 +13,20 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     private let sidebar: NSView
     private let terminalContainer: TerminalViewContainer
     private var didRestoreWidth = false
+
+    /// Fired whenever the sidebar's effective width changes (divider drags,
+    /// collapse/expand). Reports 0 while collapsed. The titlebar zone uses
+    /// this to keep its color split aligned with the divider.
+    var onSidebarWidthChange: ((CGFloat) -> Void)?
+
+    private(set) var isSidebarCollapsed =
+        UserDefaults.standard.bool(forKey: SidebarSplitView.collapsedDefaultsKey)
+
+    /// The width of the sidebar pane as the titlebar sees it: everything left
+    /// of the divider's right edge, 0 when collapsed.
+    var currentSidebarWidth: CGFloat {
+        sidebar.isHidden ? 0 : sidebar.frame.width + dividerThickness
+    }
 
     init(sidebar: NSView, terminal: TerminalViewContainer) {
         self.sidebar = sidebar
@@ -46,7 +61,45 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         guard window != nil, !didRestoreWidth else { return }
         didRestoreWidth = true
         layoutSubtreeIfNeeded()
-        setPosition(savedSidebarWidth, ofDividerAt: 0)
+        if isSidebarCollapsed {
+            sidebar.isHidden = true
+            adjustSubviews()
+        } else {
+            setPosition(savedSidebarWidth, ofDividerAt: 0)
+        }
+    }
+
+    /// Collapse or expand the sidebar. Expanding restores the last
+    /// user-chosen width.
+    func setSidebarCollapsed(_ collapsed: Bool, animated: Bool = true) {
+        guard collapsed != isSidebarCollapsed else { return }
+        isSidebarCollapsed = collapsed
+        UserDefaults.standard.set(collapsed, forKey: Self.collapsedDefaultsKey)
+
+        let apply = {
+            self.sidebar.isHidden = collapsed
+            self.adjustSubviews()
+            if !collapsed {
+                self.setPosition(self.savedSidebarWidth, ofDividerAt: 0)
+            }
+            self.layoutSubtreeIfNeeded()
+            self.onSidebarWidthChange?(self.currentSidebarWidth)
+        }
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                context.timingFunction = .init(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+                apply()
+            }
+        } else {
+            apply()
+        }
+    }
+
+    func toggleSidebar(animated: Bool = true) {
+        setSidebarCollapsed(!isSidebarCollapsed, animated: animated)
     }
 
     /// Forward the terminal's intrinsic size (plus our chrome) so the
@@ -58,7 +111,7 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
               terminal.height != NSView.noIntrinsicMetric
         else { return terminal }
         return NSSize(
-            width: terminal.width + sidebar.frame.width + dividerThickness,
+            width: terminal.width + currentSidebarWidth,
             height: terminal.height
         )
     }
@@ -81,8 +134,17 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         Self.maxWidth
     }
 
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        subview === sidebar
+    }
+
+    func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
+        sidebar.isHidden
+    }
+
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard didRestoreWidth, sidebar.frame.width >= Self.minWidth else { return }
+        onSidebarWidthChange?(currentSidebarWidth)
+        guard didRestoreWidth, !sidebar.isHidden, sidebar.frame.width >= Self.minWidth else { return }
         UserDefaults.standard.set(sidebar.frame.width, forKey: Self.widthDefaultsKey)
     }
 }
