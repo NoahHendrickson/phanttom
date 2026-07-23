@@ -56,6 +56,9 @@ Touches to upstream files are deliberately tiny and greppable — search
   `windowDidLoad` (implementation lives in
   `Sidebar/TerminalController+PhanttomSidebar.swift`), a notification post in
   `relabelTabs`, and two stored properties (extensions can't add storage).
+- `BaseTerminalController.swift`: one `phanttomTitleOverrideDidChange()` call
+  in `titleOverride`'s didSet, so every rename writer (sidebar, ⌘-rename
+  prompt, tab-bar inline editor) keeps the auto-name in sync on clear.
 - `TerminalWindow.swift`: `sidebarActive` (tab bar suppression), one
   `phanttomTabState` property (the `PhanttomTabState` model: agent kind,
   status, auto-name), and one `phanttomSyncAppearanceDidRun()` call at the
@@ -113,8 +116,10 @@ terminal's configured blur owns the window.
 
 ## Tab semantics (the behavioral contract)
 
-**Kind** (`terminal` | `claude` | `codex`) is detected from the surface title
-and stored sticky on the window (`phanttomTabState`):
+**Kind** (`terminal` | `claude` | `codex`) is detected from surface titles —
+every split's title, not just the focused one, so an idle agent in a
+background split keeps its identity — and stored sticky on the window
+(`phanttomTabState`):
 - title starts with the hook marker `❯` + U+2063 (invisible separator) →
   `claude`, stored sticky (only our hook emits the marker)
 - title contains "claude"/"codex" → that kind
