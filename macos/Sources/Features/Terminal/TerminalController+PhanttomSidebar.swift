@@ -12,8 +12,9 @@ extension TerminalController {
         // The sidebar replaces the native tab bar (see TerminalWindow.sidebarActive).
         (window as? TerminalWindow)?.sidebarActive = true
 
-        // One manager per tab group — sibling tabs share the same model.
-        let sidebarTabManager = SidebarTabManager.shared(for: window)
+        // One facade per window — retargets to the tab-group model when the
+        // window joins its parent after windowDidLoad.
+        let sidebarTabManager = SidebarTabManager(window: window)
         self.sidebarTabManager = sidebarTabManager
 
         let sidebarHost = NSHostingView(rootView: SidebarView(

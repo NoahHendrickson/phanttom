@@ -262,10 +262,10 @@ class TerminalWindow: NSWindow {
     /// the shell reclaims the title.
     var phanttomAutoTitle: String? = nil
 
-    /// Phanttom: sticky agent kind for this window (`nil` = plain terminal).
-    /// Kept across decorated/marked titles so hook-set titles don't flip the
-    /// row back to a plain terminal. See `TabTitlePolicy`.
-    var phanttomAgentKind: PhanttomTabKind? = nil
+    /// Phanttom: sticky agent kind for this window. `.terminal` means plain
+    /// terminal (cleared). Kept across decorated/marked titles so hook-set
+    /// titles don't flip the row back. See `TabTitlePolicy`.
+    var phanttomAgentKind: PhanttomTabKind = .terminal
 
     /// Phanttom: work finished while this tab was unselected (blue square).
     /// Cleared on selection. Owned on the window so every sidebar agrees.

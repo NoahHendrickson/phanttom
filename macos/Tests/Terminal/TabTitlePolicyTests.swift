@@ -6,6 +6,7 @@ struct TabTitlePolicyTests {
         let before = TabTitleState(kind: .claude, autoTitle: "old prompt")
         let after = TabTitlePolicy.apply(title: "zsh", to: before)
         #expect(after == .empty)
+        #expect(after.kind == .terminal)
     }
 
     @Test func claudeInTitleSetsKind() {

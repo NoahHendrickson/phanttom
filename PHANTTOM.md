@@ -39,7 +39,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Area | Files |
 |---|---|
 | Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
-| Tab-group model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
+| Tab-group model + per-window facade | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
 | Pure title/kind/auto-name policy | `Features/Terminal/Sidebar/TabTitlePolicy.swift` |
 | Cached git branch lookup (off main hot path) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
 | `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
@@ -76,21 +76,25 @@ Ghostty macOS tabs are **native window tabs**: every tab is its own `NSWindow`
 model. Each window's `contentView` is a `SidebarSplitView` =
 `[SwiftUI sidebar | TerminalViewContainer]`.
 
-**One `SidebarTabManager` per tab group** (registry via `shared(for:)`);
-sibling sidebars observe the same object. Per-tab state that must agree across
-sidebars lives **on the window** (`phanttomCustomTitle`, `phanttomAutoTitle`,
-`phanttomAgentKind`, `phanttomDone`, `phanttomAttention`,
-`phanttomWasWorking`) — never in a manager instance. Title/kind/auto-name
-transitions go through pure `TabTitlePolicy` (unit-tested).
+**One `SidebarTabGroupModel` per `NSWindowTabGroup`** (keyed by the group
+itself). Each window gets a stable `SidebarTabManager` facade bound into
+`SidebarView`; when a new tab joins its parent after `windowDidLoad`, the
+facade retargets to the parent's model — no retire/merge of the object
+SwiftUI is observing. Per-tab state lives **on the window**
+(`phanttomCustomTitle`, `phanttomAutoTitle`, `phanttomAgentKind`,
+`phanttomDone`, `phanttomAttention`, `phanttomWasWorking`). Title/kind/
+auto-name transitions go through pure `TabTitlePolicy` (unit-tested) on
+title KVO; status transitions on progress/bell/selection. `refresh()`
+only projects.
 
-`SidebarTabManager` is fully event-driven (no polling):
+`SidebarTabGroupModel` is fully event-driven (no polling):
 - membership changes ride upstream's `relabelTabs` (fires on new tab, close,
   and mouse reorder) via `.phanttomSidebarTabsDidChange`
 - title/pwd via per-window KVO kept until the window leaves the group
 - selection via key-window notifications
 - per-surface Combine subscriptions to `$progressReport` and
   `$backgroundColor` (rebound only when the focused surface identity changes)
-- git branch via `GitBranchCache` (async; not on the refresh hot path)
+- git branch via `GitBranchCache` (async revalidate + pwd-guarded completions)
 
 ### Native tab bar suppression — DO NOT "fix" this differently
 
@@ -180,8 +184,9 @@ the app-level getter can miss overrides.
 - `Ghostty.SurfaceView` (`macos/Sources/Ghostty/`, ~11k lines) owns input/IME/
   rendering polish — don't rewrite it, don't regress it. UI work should not
   touch `src/` (Zig) at all.
-- One `SidebarTabManager` per tab group (`shared(for:)`); per-tab state
-  goes on `TerminalWindow` (`phanttom*` props).
+- One `SidebarTabGroupModel` per `NSWindowTabGroup`; each window has a
+  stable `SidebarTabManager` facade. Per-tab state goes on `TerminalWindow`
+  (`phanttom*` props).
 - The design source of truth is the Figma file ("Untitled",
   `MgM8y8QIVMfT2zNEbbxz1S`): component set "tab" with variants for
   kind/selection/status. Metrics: rows 255×29 (terminal) / 255×45 (agent),

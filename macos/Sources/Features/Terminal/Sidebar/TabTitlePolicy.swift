@@ -10,12 +10,13 @@ enum PhanttomTabKind: Equatable {
 
 /// Pure title/kind/auto-name state for one tab. Stored on `TerminalWindow`
 /// (`phanttomAgentKind` / `phanttomAutoTitle`); this type is the testable
-/// record the policy reads and writes.
+/// record the policy reads and writes. `kind` is non-optional — `.terminal`
+/// is the cleared state (one representation end-to-end).
 struct TabTitleState: Equatable {
-    var kind: PhanttomTabKind?
+    var kind: PhanttomTabKind
     var autoTitle: String?
 
-    static let empty = TabTitleState(kind: nil, autoTitle: nil)
+    static let empty = TabTitleState(kind: .terminal, autoTitle: nil)
 }
 
 /// Title → kind / auto-name policy. No AppKit, no side effects — apply the
@@ -39,7 +40,7 @@ enum TabTitlePolicy {
             }
             // Marked titles imply an agent session; default sticky kind to Claude
             // when we haven't seen an explicit "claude"/"codex" title yet.
-            if next.kind == nil { next.kind = .claude }
+            if next.kind == .terminal { next.kind = .claude }
             return next
         }
 
@@ -58,7 +59,7 @@ enum TabTitlePolicy {
         // the tab back, so the agent session and its auto-name are over.
         if let first = title.unicodeScalars.first,
            !CharacterSet.alphanumerics.contains(first),
-           next.kind != nil {
+           next.kind != .terminal {
             return next
         }
 
