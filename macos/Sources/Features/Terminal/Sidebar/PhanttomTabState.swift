@@ -58,7 +58,8 @@ final class PhanttomTabState {
     /// never stage its own row away no matter where a new sibling lands.
     let createdAt = ContinuousClock.now
 
-    /// The last git metadata (branch + project root) that finished a
+    /// The last git metadata (branch, project root, worktree flag) that
+    /// finished a
     /// definitive resolve for this window. Sticky: while the cache has no
     /// answer for the current pwd — first resolve still in flight, or the
     /// entry was pruned — the sidebar keeps using this instead of
