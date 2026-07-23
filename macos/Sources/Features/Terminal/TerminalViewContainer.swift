@@ -86,7 +86,9 @@ class TerminalViewContainer: NSView {
 
 extension BaseTerminalController {
     var terminalViewContainer: TerminalViewContainer? {
-        window?.contentView as? TerminalViewContainer
+        // Phanttom: the content view may be a [sidebar | terminal] split.
+        (window?.contentView as? TerminalViewContainer)
+            ?? (window?.contentView as? SidebarSplitView)?.terminalContainer
     }
 }
 

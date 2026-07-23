@@ -313,7 +313,7 @@ class AppDelegate: NSObject,
 
         // Setup our menu
         setupMenuImages()
-        setupPhanttomSettingsMenu()
+        setupPhanttomMenus()
 
         // Setup signal handlers
         setupSignals()
@@ -933,23 +933,6 @@ class AppDelegate: NSObject,
     }
 
     // MARK: - IB Actions
-
-    /// Phanttom: insert a "Phanttom Settings…" item above "Open Config" in the
-    /// app menu. Done programmatically so MainMenu.xib stays untouched.
-    private func setupPhanttomSettingsMenu() {
-        guard let openConfig = menuOpenConfig, let appMenu = openConfig.menu else { return }
-        let item = NSMenuItem(
-            title: "Phanttom Settings…",
-            action: #selector(openPhanttomSettings),
-            keyEquivalent: ","
-        )
-        item.keyEquivalentModifierMask = [.command, .shift]
-        appMenu.insertItem(item, at: appMenu.index(of: openConfig))
-    }
-
-    @IBAction func openPhanttomSettings(_ sender: Any?) {
-        SettingsWindowController.shared.show(ghostty: ghostty)
-    }
 
     @IBAction func openConfig(_ sender: Any?) {
         ghostty.openConfig()

@@ -1,0 +1,166 @@
+import AppKit
+
+/// The Phanttom fork's per-tab identity and activity state.
+///
+/// One value of this lives on each `TerminalWindow`
+/// (`phanttomTabState`): every window in a tab group has its own
+/// `SidebarTabManager`, so state shared between sidebars must live on the
+/// window, never in a manager, and it dies with the window (see PHANTTOM.md).
+/// Keeping it as one model rather than loose window properties keeps the
+/// invariants — which title beats which, when status transitions fire — in
+/// one place, mutated only through the methods below.
+///
+/// Main thread only, like the window that owns it.
+final class PhanttomTabState {
+    /// What is running in the tab, detected from the surface title. Drives
+    /// which row style and icon the sidebar shows.
+    enum Kind: Equatable {
+        case terminal
+        case claude
+        case codex
+    }
+
+    /// Activity state shown on the trailing edge of the tab row. An explicit
+    /// state machine: `update` and `noteBell` are the only transitions, and
+    /// selecting a tab always acknowledges back to `.idle`.
+    enum Status: Equatable {
+        /// Nothing to report.
+        case idle
+        /// The tab's program reported progress (OSC 9;4) — animated sparkle.
+        case working
+        /// Work finished while the tab was unselected — blue square.
+        case done
+        /// Bell rang while the tab was unselected — yellow square.
+        case attention
+    }
+
+    private(set) var status: Status = .idle
+
+    /// An automatic tab name derived from the user's first agent prompt of
+    /// the session (set via a marker title emitted by the Claude Code
+    /// UserPromptSubmit hook). Beaten by the user's rename (upstream's
+    /// `titleOverride`); cleared when the shell reclaims the title.
+    private(set) var autoTitle: String?
+
+    /// The last detected agent kind, kept sticky while decorated/marked
+    /// titles come through so hook-set titles don't flip the row back to a
+    /// plain terminal. Nil = plain terminal.
+    private var agentKind: Kind?
+
+    /// The exact title consumed by Reset Name, so the next refresh doesn't
+    /// immediately re-capture it as the auto-name.
+    private var lastResetTitle: String?
+
+    /// The marker title seen in the last update pass, if any — what
+    /// `rearmAutoTitle` must remember so a still-current marker title isn't
+    /// immediately re-captured.
+    private var lastMarkerTitle: String?
+
+    var kind: Kind { agentKind ?? .terminal }
+
+    /// The Claude Code hook marks auto-name titles with "❯" followed by
+    /// U+2063 (INVISIBLE SEPARATOR) — collision-proof against shells whose
+    /// title templates lead with a bare "❯" prompt char (starship, pure...).
+    static let autoNameMarker = "❯\u{2063}"
+
+    /// Step the state for one sidebar refresh pass: status transitions from
+    /// the window's progress reports and selection, identity (kind and
+    /// auto-name) from the current titles.
+    ///
+    /// `titles` is every surface title in the window, not just the focused
+    /// one: the window title only mirrors the FOCUSED split, so judging
+    /// identity from it alone wipes an idle agent in a background split the
+    /// moment a plain shell split takes focus.
+    func update(titles: [String], isWorking: Bool, isSelected: Bool) {
+        updateStatus(isWorking: isWorking, isSelected: isSelected)
+        updateIdentity(titles: titles, isWorking: isWorking)
+    }
+
+    /// Bell rang while the tab was unselected. Only marks attention when
+    /// there is nothing more urgent to show: working and done both outrank
+    /// attention, and every indicator clears on selection anyway.
+    func noteBell() {
+        guard status == .idle else { return }
+        status = .attention
+    }
+
+    /// Re-arm first-prompt auto-naming (rename cleared / Reset Name).
+    /// Consumes the currently visible marker title, if any, so it isn't
+    /// immediately re-captured on the next refresh — only a NEW prompt
+    /// names the tab again.
+    func rearmAutoTitle() {
+        autoTitle = nil
+        lastResetTitle = lastMarkerTitle
+    }
+
+    private func updateStatus(isWorking: Bool, isSelected: Bool) {
+        if isWorking {
+            status = .working
+        } else if status == .working {
+            // Progress just ended: done if it finished in the background,
+            // nothing to report if the user was watching.
+            status = isSelected ? .idle : .done
+        }
+        // Selecting a tab acknowledges any indicator.
+        if isSelected, status == .done || status == .attention {
+            status = .idle
+        }
+    }
+
+    private func updateIdentity(titles: [String], isWorking: Bool) {
+        // One pass over every split's title: any single agent-ish title
+        // keeps the window's agent identity alive.
+        var markerTitle: String?
+        var namedKind: Kind?
+        var anyDecorated = false
+        for title in titles {
+            if markerTitle == nil, title.hasPrefix(Self.autoNameMarker) {
+                markerTitle = title
+                continue
+            }
+            let t = title.lowercased()
+            if t.contains("claude") {
+                if namedKind == nil { namedKind = .claude }
+            } else if t.contains("codex") {
+                if namedKind == nil { namedKind = .codex }
+            } else if let first = title.unicodeScalars.first,
+                      !CharacterSet.alphanumerics.contains(first) {
+                // Decorated title: a leading symbol glyph, e.g. Claude
+                // Code's "✳ …" or a bare "❯ …" prompt char.
+                anyDecorated = true
+            }
+        }
+        lastMarkerTitle = markerTitle
+
+        // Our hook's marker: store the prompt-derived auto name — but only
+        // the session's FIRST prompt names the tab. It re-arms when the
+        // shell reclaims the title (session over) or via Reset Name.
+        if let markerTitle {
+            let auto = markerTitle.dropFirst(Self.autoNameMarker.count)
+                .trimmingCharacters(in: .whitespaces)
+            if !auto.isEmpty, autoTitle == nil, markerTitle != lastResetTitle {
+                autoTitle = auto
+            }
+            // Only our Claude hook emits the marker; make the kind sticky.
+            if agentKind == nil { agentKind = .claude }
+            return
+        }
+
+        if let namedKind {
+            agentKind = namedKind
+            return
+        }
+
+        // A decorated title keeps the previous agent kind — and so does an
+        // active progress report: an agent session (idle between prompts or
+        // mid-work) must not lose its identity just because no split
+        // currently titles itself after the agent.
+        if agentKind != nil, anyDecorated || isWorking { return }
+
+        // Every split has a plain title and nothing is working: the shell
+        // reclaimed the tab, so the agent session and its auto-name are over.
+        agentKind = nil
+        autoTitle = nil
+        lastResetTitle = nil
+    }
+}

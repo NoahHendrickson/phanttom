@@ -15,27 +15,16 @@ extension Notification.Name {
 /// pwd changes via KVO on each tab window, progress reports via Combine on
 /// each surface, and selection changes via key-window notifications. No
 /// polling.
+///
+/// Cross-window state (names, kind, done/attention status) lives on
+/// `TerminalWindow`, never here: every window in a group has its own manager,
+/// so instance state would desync between sidebars (see PHANTTOM.md).
 @MainActor
 final class SidebarTabManager: ObservableObject {
-    /// What is running in the tab, detected from the surface title. Drives
-    /// which row style and icon the sidebar shows.
-    enum TabKind: Equatable {
-        case terminal
-        case claude
-        case codex
-    }
-
-    /// Activity state shown on the trailing edge of the tab row.
-    enum TabStatus: Equatable {
-        /// Nothing to report.
-        case idle
-        /// The tab's program reported progress (OSC 9;4) — animated sparkle.
-        case working
-        /// Work finished while the tab was unselected — blue square.
-        case done
-        /// Bell rang while the tab was unselected — yellow square.
-        case attention
-    }
+    /// The per-window model (kind, status, auto-name) is `PhanttomTabState`,
+    /// stored on `TerminalWindow`; these are the sidebar-facing names.
+    typealias TabKind = PhanttomTabState.Kind
+    typealias TabStatus = PhanttomTabState.Status
 
     struct TabItem: Identifiable, Equatable {
         let id: ObjectIdentifier
@@ -75,17 +64,6 @@ final class SidebarTabManager: ObservableObject {
         var abbreviatedDirectory: String? {
             directory.map { ($0 as NSString).abbreviatingWithTildeInPath }
         }
-
-        static func == (lhs: TabItem, rhs: TabItem) -> Bool {
-            lhs.id == rhs.id && lhs.title == rhs.title
-                && lhs.customTitle == rhs.customTitle
-                && lhs.autoTitle == rhs.autoTitle
-                && lhs.directory == rhs.directory
-                && lhs.gitBranch == rhs.gitBranch
-                && lhs.kind == rhs.kind
-                && lhs.status == rhs.status
-                && lhs.isSelected == rhs.isSelected
-        }
     }
 
     @Published private(set) var tabs: [TabItem] = []
@@ -101,52 +79,73 @@ final class SidebarTabManager: ObservableObject {
     private var windowObservations: [NSKeyValueObservation] = []
     private var surfaceCancellables: [AnyCancellable] = []
 
-    /// Windows whose bell rang while unselected — cleared on selection.
-    private var attentionWindows: Set<ObjectIdentifier> = []
-    /// Windows whose progress finished while unselected — cleared on selection.
-    private var doneWindows: Set<ObjectIdentifier> = []
-    /// Windows that were reporting progress at last refresh, so we can detect
-    /// the working → finished transition.
-    private var workingWindows: Set<ObjectIdentifier> = []
+    /// Identities currently observed; KVO/Combine subscriptions are only
+    /// rebuilt when the window or surface set actually changes.
+    private var subscribedWindowIDs: Set<ObjectIdentifier> = []
+    private var subscribedSurfaceIDs: Set<ObjectIdentifier> = []
+
+    /// Git branch per pwd with a short TTL, so refreshes don't walk the
+    /// filesystem on every event (checkouts still show up within seconds).
+    private var branchCache: [String: (branch: String?, at: CFTimeInterval)] = [:]
+
+    private var refreshScheduled = false
 
     init(window: NSWindow) {
         self.window = window
 
         let center = NotificationCenter.default
-        let names: [Notification.Name] = [
-            .phanttomSidebarTabsDidChange,
+
+        // Membership changes are rare and can affect any group; always react.
+        notificationObservers.append(center.addObserver(
+            forName: .phanttomSidebarTabsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.scheduleRefresh() }
+        })
+
+        // Key/close events fire app-wide for every window; only windows in
+        // this manager's group can change what this sidebar shows.
+        let filtered: [Notification.Name] = [
             NSWindow.didBecomeKeyNotification,
             NSWindow.didResignKeyNotification,
             NSWindow.willCloseNotification,
         ]
-        for name in names {
+        for name in filtered {
             notificationObservers.append(center.addObserver(
                 forName: name,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
-                // Wait a runloop turn: tab group state (membership, selection)
-                // settles after these notifications fire.
-                DispatchQueue.main.async { self?.refresh() }
+            ) { [weak self] notification in
+                let affected = notification.object as? NSWindow
+                DispatchQueue.main.async {
+                    guard let self, let affected, self.isInGroup(affected) else { return }
+                    self.scheduleRefresh()
+                }
             })
         }
 
-        // Bell while unselected marks attention.
+        // Bell while unselected marks attention — stored on the window,
+        // judged against the bell window's OWN group (a bell in a visible
+        // selected tab was already seen, even if that tab is in another
+        // group).
         notificationObservers.append(center.addObserver(
             forName: .terminalWindowBellDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self,
-                  let controller = notification.object as? BaseTerminalController,
-                  let bellWindow = controller.window else { return }
+            let controller = notification.object as? BaseTerminalController
             let hasBell = notification.userInfo?[
                 Notification.Name.terminalWindowHasBellKey] as? Bool ?? false
-            Task { @MainActor in
-                if hasBell, bellWindow !== self.window?.tabGroup?.selectedWindow {
-                    self.attentionWindows.insert(ObjectIdentifier(bellWindow))
+            DispatchQueue.main.async {
+                guard let self, let bellWindow = controller?.window else { return }
+                if hasBell,
+                   let bellTerminal = bellWindow as? TerminalWindow,
+                   bellWindow !== (bellWindow.tabGroup?.selectedWindow ?? bellWindow) {
+                    bellTerminal.phanttomTabState.noteBell()
                 }
-                self.refresh()
+                guard self.isInGroup(bellWindow) else { return }
+                self.scheduleRefresh()
             }
         })
 
@@ -163,15 +162,17 @@ final class SidebarTabManager: ObservableObject {
         tab.window.makeKeyAndOrderFront(nil)
     }
 
-    /// Set (or clear, with nil/empty) a user-assigned tab name. Stored on the
-    /// window; the change notification refreshes every sidebar in the group.
+    /// Set (or clear, with nil/empty) a user-assigned tab name. Uses
+    /// upstream's `titleOverride`, so the sidebar, titlebar, command
+    /// palette, and window restoration all share one rename store. The
+    /// override's didSet keeps the auto-name in sync (every writer path,
+    /// not just this one).
     func rename(_ tab: TabItem, to name: String?) {
-        guard let window = tab.window as? TerminalWindow else { return }
+        guard let controller = tab.window.windowController as? BaseTerminalController
+        else { return }
         let trimmed = name?.trimmingCharacters(in: .whitespaces)
-        window.phanttomCustomTitle = (trimmed?.isEmpty ?? true) ? nil : trimmed
-        // Clearing the name also re-arms first-prompt auto-naming.
-        if window.phanttomCustomTitle == nil { window.phanttomAutoTitle = nil }
-        NotificationCenter.default.post(name: .phanttomSidebarTabsDidChange, object: window)
+        controller.titleOverride = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        NotificationCenter.default.post(name: .phanttomSidebarTabsDidChange, object: tab.window)
     }
 
     func close(_ tab: TabItem) {
@@ -185,6 +186,20 @@ final class SidebarTabManager: ObservableObject {
 
     // MARK: - Refresh
 
+    /// Coalesce event bursts (key change + title KVO + progress in the same
+    /// turn) into a single refresh on the next runloop turn — which is also
+    /// the turn AppKit needs to settle tab group state after membership
+    /// notifications.
+    func scheduleRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
+    }
+
     func refresh() {
         guard let window else { return }
 
@@ -197,7 +212,6 @@ final class SidebarTabManager: ObservableObject {
         let selected = window.tabGroup?.selectedWindow ?? window
 
         var newTabs: [TabItem] = []
-        var nowWorking: Set<ObjectIdentifier> = []
 
         for w in tabWindows {
             let id = ObjectIdentifier(w)
@@ -206,41 +220,36 @@ final class SidebarTabManager: ObservableObject {
             let pwd = surface?.pwd ?? w.representedURL?.path
             let isSelected = w === selected
 
-            let isWorking = surface?.progressReport != nil
-            if isWorking { nowWorking.insert(id) }
+            // Working = any surface in the window reports progress; agents
+            // can run in a non-focused split.
+            let surfaces = controller.map { Array($0.surfaceTree) } ?? []
+            let isWorking = surfaces.contains { $0.progressReport != nil }
 
-            // Working just ended on an unselected tab → done.
-            if !isWorking, workingWindows.contains(id), !isSelected {
-                doneWindows.insert(id)
-            }
-            // Selection clears both indicators.
-            if isSelected {
-                doneWindows.remove(id)
-                attentionWindows.remove(id)
-            }
-
-            let status: TabStatus = isWorking ? .working
-                : doneWindows.contains(id) ? .done
-                : attentionWindows.contains(id) ? .attention
-                : .idle
-
-            let terminalWindow = w as? TerminalWindow
-            let kind = Self.processTitle(w.title, window: terminalWindow)
+            // Step the window's tab state, then read it into the snapshot.
+            // The state lives on the window, so whichever manager refreshes
+            // first records a transition and the rest agree. Identity is
+            // judged from every split's title (the window title only
+            // mirrors the focused one).
+            let state = (w as? TerminalWindow)?.phanttomTabState
+            state?.update(
+                titles: surfaces.isEmpty ? [w.title] : surfaces.map(\.title),
+                isWorking: isWorking,
+                isSelected: isSelected
+            )
 
             newTabs.append(TabItem(
                 id: id,
                 title: w.title,
-                customTitle: terminalWindow?.phanttomCustomTitle,
-                autoTitle: terminalWindow?.phanttomAutoTitle,
+                customTitle: controller?.titleOverride,
+                autoTitle: state?.autoTitle,
                 directory: pwd,
-                gitBranch: pwd.flatMap { Self.gitBranch(at: $0) },
-                kind: kind,
-                status: status,
+                gitBranch: pwd.flatMap { self.cachedGitBranch(at: $0) },
+                kind: state?.kind ?? .terminal,
+                status: state?.status ?? .idle,
                 isSelected: isSelected,
                 window: w
             ))
         }
-        workingWindows = nowWorking
 
         if newTabs != tabs { tabs = newTabs }
 
@@ -248,89 +257,106 @@ final class SidebarTabManager: ObservableObject {
         let liveBackground = selectedSurface?.backgroundColor
         if liveBackground != terminalBackground { terminalBackground = liveBackground }
 
-        // Re-register KVO for title/pwd changes on the current membership.
+        resubscribeIfNeeded(tabWindows: tabWindows)
+    }
+
+    /// Rebuild KVO/Combine subscriptions only when the observed set of
+    /// windows or surfaces actually changed (membership, new split, etc.).
+    private func resubscribeIfNeeded(tabWindows: [NSWindow]) {
+        let surfaces = tabWindows.flatMap { w -> [Ghostty.SurfaceView] in
+            guard let controller = w.windowController as? BaseTerminalController
+            else { return [] }
+            return Array(controller.surfaceTree)
+        }
+        let windowIDs = Set(tabWindows.map(ObjectIdentifier.init))
+        let surfaceIDs = Set(surfaces.map(ObjectIdentifier.init))
+        guard windowIDs != subscribedWindowIDs || surfaceIDs != subscribedSurfaceIDs
+        else { return }
+        subscribedWindowIDs = windowIDs
+        subscribedSurfaceIDs = surfaceIDs
+
+        // KVO for title/pwd changes on the current membership.
         windowObservations = tabWindows.flatMap { w in
             [
                 w.observe(\.title) { [weak self] _, _ in
-                    DispatchQueue.main.async { self?.refresh() }
+                    DispatchQueue.main.async { self?.scheduleRefresh() }
                 },
                 w.observe(\.representedURL) { [weak self] _, _ in
-                    DispatchQueue.main.async { self?.refresh() }
+                    DispatchQueue.main.async { self?.scheduleRefresh() }
                 },
             ]
         }
 
-        // Re-subscribe to each surface's progress reports and background.
-        surfaceCancellables = tabWindows.flatMap { w -> [AnyCancellable] in
-            guard let controller = w.windowController as? BaseTerminalController,
-                  let surface = controller.focusedSurface else { return [] }
-            return [
+        // Progress reports and background of every surface in the group —
+        // not just the focused one, so background splits still report.
+        surfaceCancellables = surfaces.flatMap { surface -> [AnyCancellable] in
+            [
                 surface.$progressReport
                     .dropFirst()
                     .removeDuplicates { $0 == nil && $1 == nil }
                     .sink { [weak self] _ in
-                        DispatchQueue.main.async { self?.refresh() }
+                        DispatchQueue.main.async { self?.scheduleRefresh() }
                     },
                 surface.$backgroundColor
                     .dropFirst()
                     .removeDuplicates()
                     .sink { [weak self] _ in
-                        DispatchQueue.main.async { self?.refresh() }
+                        DispatchQueue.main.async { self?.scheduleRefresh() }
                     },
             ]
         }
     }
 
-    // MARK: - Detection helpers
+    private func isInGroup(_ w: NSWindow) -> Bool {
+        guard let window else { return false }
+        if w === window { return true }
+        return window.tabbedWindows?.contains { $0 === w } ?? false
+    }
 
-    /// Interpret a title update: detect the agent kind (sticky across
-    /// decorated titles), and capture "❯ "-marked titles from the Claude
-    /// Code UserPromptSubmit hook as the tab's auto-name. A plain title
-    /// (shell integration reclaiming it) resets both.
-    private static func processTitle(_ title: String, window: TerminalWindow?) -> TabKind {
-        // Our hook's marker: store the prompt-derived auto name — but only
-        // the session's FIRST prompt names the tab. It re-arms when the
-        // shell reclaims the title (session over) or via Reset Name.
-        if title.hasPrefix("❯") {
-            let auto = title.dropFirst().trimmingCharacters(in: .whitespaces)
-            if !auto.isEmpty, window?.phanttomAutoTitle == nil {
-                window?.phanttomAutoTitle = auto
-            }
-            return window?.phanttomAgentKind ?? .claude
-        }
+    // MARK: - Git branch
 
-        let t = title.lowercased()
-        if t.contains("claude") {
-            window?.phanttomAgentKind = .claude
-            return .claude
+    private func cachedGitBranch(at pwd: String) -> String? {
+        let now = CACurrentMediaTime()
+        if let entry = branchCache[pwd], now - entry.at < 5 { return entry.branch }
+        // Keep the cache from accumulating dead pwds.
+        if branchCache.count > 32 {
+            branchCache = branchCache.filter { now - $0.value.at < 60 }
         }
-        if t.contains("codex") {
-            window?.phanttomAgentKind = .codex
-            return .codex
-        }
-
-        // Decorated titles (leading symbol glyph, e.g. Claude Code's "✳ …")
-        // keep the previous agent kind; a plain title means the shell took
-        // the tab back, so the agent session and its auto-name are over.
-        if let first = title.unicodeScalars.first,
-           !CharacterSet.alphanumerics.contains(first),
-           let sticky = window?.phanttomAgentKind {
-            return sticky
-        }
-        window?.phanttomAgentKind = nil
-        window?.phanttomAutoTitle = nil
-        return .terminal
+        let branch = Self.gitBranch(at: pwd)
+        branchCache[pwd] = (branch, now)
+        return branch
     }
 
     /// Read the git branch from .git/HEAD, walking up from the directory.
+    /// Supports worktrees, where `.git` is a file pointing at the real
+    /// git dir.
     private static func gitBranch(at pwd: String) -> String? {
         var dir = pwd
         while dir != "/", !dir.isEmpty {
-            let headPath = (dir as NSString).appendingPathComponent(".git/HEAD")
-            if let contents = try? String(contentsOfFile: headPath, encoding: .utf8) {
+            let gitPath = (dir as NSString).appendingPathComponent(".git")
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDir) {
+                let headPath: String
+                if isDir.boolValue {
+                    headPath = (gitPath as NSString).appendingPathComponent("HEAD")
+                } else if let contents = try? String(contentsOfFile: gitPath, encoding: .utf8),
+                          let gitdirLine = contents
+                            .split(separator: "\n")
+                            .first(where: { $0.hasPrefix("gitdir: ") }) {
+                    let gitdir = String(gitdirLine.dropFirst("gitdir: ".count))
+                        .trimmingCharacters(in: .whitespaces)
+                    let resolved = (gitdir as NSString).isAbsolutePath
+                        ? gitdir
+                        : (dir as NSString).appendingPathComponent(gitdir)
+                    headPath = (resolved as NSString).appendingPathComponent("HEAD")
+                } else {
+                    return nil
+                }
+                guard let head = try? String(contentsOfFile: headPath, encoding: .utf8)
+                else { return nil }
                 let prefix = "ref: refs/heads/"
-                if contents.hasPrefix(prefix) {
-                    return contents.dropFirst(prefix.count)
+                if head.hasPrefix(prefix) {
+                    return head.dropFirst(prefix.count)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 return nil // detached HEAD

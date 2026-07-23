@@ -357,13 +357,6 @@
                                     <action selector="toggleReadonly:" target="-1" id="Gqx-wT-K9v"/>
                                 </connections>
                             </menuItem>
-                            <menuItem isSeparatorItem="YES" id="Phk-sp-Se1"/>
-                            <menuItem title="Toggle Sidebar" keyEquivalent="b" id="Phk-sb-Tg1">
-                                <modifierMask key="keyEquivalentModifierMask" command="YES"/>
-                                <connections>
-                                    <action selector="togglePhanttomSidebar:" target="-1" id="Phk-sb-Ac1"/>
-                                </connections>
-                            </menuItem>
                             <menuItem isSeparatorItem="YES" id="Vkj-tP-dMZ"/>
                             <menuItem title="Quick Terminal" id="1pv-LF-NBJ">
                                 <modifierMask key="keyEquivalentModifierMask"/>

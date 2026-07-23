@@ -251,21 +251,11 @@ class TerminalWindow: NSWindow {
         }
     }
 
-    /// Phanttom: a user-assigned tab name from the sidebar's rename action.
-    /// When set, the sidebar shows this instead of the surface title. Stored
-    /// on the window so every sidebar instance in the tab group sees it.
-    var phanttomCustomTitle: String? = nil
-
-    /// Phanttom: an automatic tab name derived from the user's last agent
-    /// prompt (set via a "❯ "-marked title emitted by the Claude Code
-    /// UserPromptSubmit hook). Beaten by phanttomCustomTitle; cleared when
-    /// the shell reclaims the title.
-    var phanttomAutoTitle: String? = nil
-
-    /// Phanttom: the last detected agent kind for this window, kept sticky
-    /// while decorated/marked titles come through so hook-set titles don't
-    /// flip the row back to a plain terminal.
-    var phanttomAgentKind: SidebarTabManager.TabKind? = nil
+    /// Phanttom: this tab's identity (agent kind, prompt-derived auto-name)
+    /// and activity status. Lives on the window — not in a sidebar manager —
+    /// because every window in the tab group has its own manager and they
+    /// must all agree; the state dies with the window.
+    let phanttomTabState = PhanttomTabState()
 
     /// Phanttom: when true, the native tab bar accessory is hidden as it is
     /// added because the sidebar provides the tab UI. Hiding the accessory
@@ -274,6 +264,10 @@ class TerminalWindow: NSWindow {
     var sidebarActive: Bool = false {
         didSet {
             guard sidebarActive else { return }
+            // Accessing titlebarAccessoryViewControllers without a titlebar
+            // crashes (see the hasTitleBar guard in Fullscreen.swift), e.g.
+            // with window-decorations = none.
+            guard styleMask.contains(.titled) else { return }
             for accessory in titlebarAccessoryViewControllers where isTabBar(accessory) {
                 accessory.isHidden = true
                 accessory.fullScreenMinHeight = 0
@@ -541,16 +535,9 @@ class TerminalWindow: NSWindow {
             self.backgroundColor = backgroundColor.withAlphaComponent(1)
         }
 
-        // Phanttom: sidebar glass may re-open window transparency with its
-        // own blur radius (no-op when the sidebar/glass is off).
-        syncPhanttomSidebarGlass()
-
-        // Phanttom: repaint the titlebar strip above the sidebar (no-op when
-        // the sidebar is off). Deferred a turn because subclass syncAppearance
-        // overrides run after this and may recreate titlebar subviews.
-        DispatchQueue.main.async { [weak self] in
-            self?.syncPhanttomTitlebarZone()
-        }
+        // Phanttom: sidebar glass + titlebar zone repaint (no-op when the
+        // sidebar is off); see PhanttomWindowGlass.swift.
+        phanttomSyncAppearanceDidRun(surfaceConfig)
     }
 
     /// The preferred window background color. The current window background color may not be set

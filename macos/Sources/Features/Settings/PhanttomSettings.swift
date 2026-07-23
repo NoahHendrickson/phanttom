@@ -156,9 +156,18 @@ final class PhanttomSettings: ObservableObject {
     }
 
     func apply() {
+        // ghostty_config_open_path returns an empty string on failure; bail
+        // rather than resolving config paths relative to the process cwd.
+        // Snapshot once so every step below operates on the exact path the
+        // guard validated — the getter re-invokes the C call each access.
+        let mainConfigPath = self.mainConfigPath
+        guard !mainConfigPath.isEmpty else {
+            Ghostty.logger.warning("phanttom settings: no config path available; not applying")
+            return
+        }
         do {
-            try writeFragment()
-            try ensureIncluded()
+            try writeFragment(mainConfigPath: mainConfigPath)
+            try ensureIncluded(mainConfigPath: mainConfigPath)
         } catch {
             Ghostty.logger.warning("phanttom settings: failed to write config fragment: \(error)")
             return
@@ -166,20 +175,13 @@ final class PhanttomSettings: ObservableObject {
         ghosttyApp?.reloadConfig()
     }
 
-    /// Directory of the user's main config file.
-    private var configDirectory: URL {
-        URL(fileURLWithPath: mainConfigPath).deletingLastPathComponent()
-    }
-
     private var mainConfigPath: String {
         Ghostty.AllocatedString(ghostty_config_open_path()).string
     }
 
-    private var fragmentURL: URL {
-        configDirectory.appendingPathComponent("phanttom.conf")
-    }
-
-    private func writeFragment() throws {
+    private func writeFragment(mainConfigPath: String) throws {
+        let configDirectory = URL(fileURLWithPath: mainConfigPath)
+            .deletingLastPathComponent()
         var lines = [
             "# Managed by Phanttom Settings — do not edit; changes are overwritten.",
             "# Remove the `config-file = ?phanttom.conf` line from your config to disable.",
@@ -192,22 +194,43 @@ final class PhanttomSettings: ObservableObject {
         try FileManager.default.createDirectory(
             at: configDirectory, withIntermediateDirectories: true)
         try (lines.joined(separator: "\n") + "\n")
-            .write(to: fragmentURL, atomically: true, encoding: .utf8)
+            .write(
+                to: configDirectory.appendingPathComponent("phanttom.conf"),
+                atomically: true,
+                encoding: .utf8)
     }
 
     /// Ensure the user's main config includes our fragment (optional include,
     /// so a missing fragment is never an error). Appends exactly once.
-    private func ensureIncluded() throws {
-        let mainURL = URL(fileURLWithPath: mainConfigPath)
-        let existing = (try? String(contentsOf: mainURL, encoding: .utf8)) ?? ""
+    ///
+    /// Failure-safe: an existing-but-unreadable config aborts (a read error
+    /// must never be mistaken for an empty file), and the include is appended
+    /// through a file handle so a symlinked config (dotfiles setups) keeps
+    /// its inode instead of being replaced by an atomic-write copy.
+    private func ensureIncluded(mainConfigPath: String) throws {
+        let mainURL = URL(fileURLWithPath: mainConfigPath).resolvingSymlinksInPath()
+        let exists = FileManager.default.fileExists(atPath: mainURL.path)
+
+        var existing = ""
+        if exists {
+            existing = try String(contentsOf: mainURL, encoding: .utf8)
+        }
         guard !existing.contains("phanttom.conf") else { return }
 
-        let include = existing.isEmpty || existing.hasSuffix("\n")
+        let separator = existing.isEmpty || existing.hasSuffix("\n")
             ? "" : "\n"
-        let addition = include
+        let addition = separator
             + "\n# Phanttom: managed settings overrides (safe to remove)\n"
             + "config-file = ?phanttom.conf\n"
-        try (existing + addition).write(to: mainURL, atomically: true, encoding: .utf8)
+
+        if exists {
+            let handle = try FileHandle(forWritingTo: mainURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(addition.utf8))
+        } else {
+            try addition.write(to: mainURL, atomically: true, encoding: .utf8)
+        }
     }
 
     // MARK: - Hex helpers

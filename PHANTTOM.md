@@ -40,6 +40,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 |---|---|
 | Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
 | Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
+| Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` |
 | `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
 | Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
 | Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |
@@ -51,13 +52,26 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
 
-- `TerminalController.swift`: sidebar creation in `windowDidLoad`, a
-  notification post in `relabelTabs`, the sidebar toggle accessory, and the
-  settings-change subscription.
-- `TerminalWindow.swift`: `sidebarActive` (tab bar suppression),
-  `phanttomCustomTitle` / `phanttomAutoTitle` / `phanttomAgentKind` storage,
-  and a `syncPhanttomSidebarGlass()` call at the end of `syncAppearance`.
-- `AppDelegate.swift`: "Phanttom Settings…" menu item (⌘⇧,).
+- `TerminalController.swift`: one `phanttomInstallSidebar` call in
+  `windowDidLoad` (implementation lives in
+  `Sidebar/TerminalController+PhanttomSidebar.swift`), a notification post in
+  `relabelTabs`, and two stored properties (extensions can't add storage).
+- `BaseTerminalController.swift`: one `phanttomTitleOverrideDidChange()` call
+  in `titleOverride`'s didSet, so every rename writer (sidebar, ⌘-rename
+  prompt, tab-bar inline editor) keeps the auto-name in sync on clear.
+- `TerminalWindow.swift`: `sidebarActive` (tab bar suppression), one
+  `phanttomTabState` property (the `PhanttomTabState` model: agent kind,
+  status, auto-name), and one `phanttomSyncAppearanceDidRun()` call at the
+  end of `syncAppearance`.
+- `TerminalViewContainer.swift`: the `terminalViewContainer` accessor also
+  looks through `SidebarSplitView` (upstream casts `contentView` directly —
+  without this, config changes and macOS 26 glass never reach the container).
+- `AppDelegate.swift`: one `setupPhanttomMenus()` call (implementation in
+  `AppDelegate+Phanttom.swift`; inserts "Phanttom Settings…" ⌘⇧, and
+  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched).
+- Sidebar is disabled when `macos-titlebar-style = tabs` (that style
+  relocates the tab bar into the titlebar and fights the accessory hiding);
+  the window falls back to plain upstream behavior.
 
 The Xcode project uses filesystem-synchronized groups: **new files under
 `macos/Sources/` are picked up automatically** — no pbxproj editing.
@@ -69,8 +83,8 @@ Ghostty macOS tabs are **native window tabs**: every tab is its own `NSWindow`
 model. Each window's `contentView` is a `SidebarSplitView` =
 `[SwiftUI sidebar | TerminalViewContainer]`; each window has its own
 `SidebarTabManager` instance, all observing the shared tab group, so
-cross-window state must live **on the window** (see the `phanttom*` properties
-on `TerminalWindow`), never in a manager instance.
+cross-window state must live **on the window** (see
+`TerminalWindow.phanttomTabState`), never in a manager instance.
 
 `SidebarTabManager` is fully event-driven (no polling):
 - membership changes ride upstream's `relabelTabs` (fires on new tab, close,
@@ -102,26 +116,35 @@ terminal's configured blur owns the window.
 
 ## Tab semantics (the behavioral contract)
 
-**Kind** (`terminal` | `claude` | `codex`) is detected from the surface title
-and stored sticky on the window (`phanttomAgentKind`):
+**Kind** (`terminal` | `claude` | `codex`) is detected from surface titles —
+every split's title, not just the focused one, so an idle agent in a
+background split keeps its identity — and stored sticky on the window
+(`phanttomTabState`):
+- title starts with the hook marker `❯` + U+2063 (invisible separator) →
+  `claude`, stored sticky (only our hook emits the marker)
 - title contains "claude"/"codex" → that kind
 - decorated title (leading non-alphanumeric glyph, e.g. Claude Code's "✳ …" or
-  our "❯ …") → keeps the previous kind
+  a bare "❯ …" prompt char from starship/pure) → keeps the previous kind
 - plain title (shell integration reclaiming the tab) → back to `terminal`,
   and clears the auto-name
 
 **Status** (trailing indicator):
-- `working` (pixel rain) — surface has an OSC 9;4 progress report
+- `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
+  report (agents in non-focused splits count)
 - `done` (blue `#2C86F4`) — work finished while the tab was unselected
-- `attention` (yellow `#F4BC2C`) — bell rang while unselected
+- `attention` (yellow `#F4BC2C`) — bell rang while unselected (judged against
+  the bell window's own tab group)
 - selecting a tab clears done/attention
+- status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
-**Name priority**: manual rename (`phanttomCustomTitle`, set via double-click
-or context menu, stored on the window) → prompt auto-name (`phanttomAutoTitle`)
-→ title with leading decoration glyphs stripped. Auto-name comes from a
-`"❯ "`-marked title and locks to the **first** prompt of a session; it re-arms
-when the shell reclaims the title or via context-menu **Reset Name**.
-Custom names do not yet survive app restart (not wired into restoration).
+**Name priority**: manual rename (upstream's
+`BaseTerminalController.titleOverride` — shared with the titlebar, command
+palette, and window restoration, so custom names survive restart) → prompt
+auto-name (`phanttomTabState.autoTitle`) → title with leading decoration glyphs
+stripped. Auto-name comes from a marker title (`❯` + U+2063) and locks to the
+**first** prompt of a session; it re-arms when the shell reclaims the title
+or via context-menu **Reset Name** (which remembers the consumed title so the
+same one isn't immediately re-captured).
 
 ## Claude Code integration (hooks protocol)
 
@@ -133,13 +156,18 @@ Code, the tty is not):
 | Event | Emits | Phanttom effect |
 |---|---|---|
 | `UserPromptSubmit` | OSC 9;4 state 3 (indeterminate) | pixel rain starts |
-| `UserPromptSubmit` | OSC 2 title `❯ <prompt, 56ch>` (via `jq -r .prompt`) | first prompt names the tab |
+| `UserPromptSubmit` | OSC 2 title `❯⁣ <prompt, 56ch>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`), via `jq -r .prompt` | first prompt names the tab |
 | `Stop` | OSC 9;4 state 0 (clear) | rain stops → Done if unselected |
 | `Notification` | OSC 9;4 clear + BEL | → Attention if unselected |
 
+The U+2063 INVISIBLE SEPARATOR makes the marker collision-proof: a bare "❯"
+is the default prompt char of starship/pure/p10k and must NOT trigger
+auto-naming (it's treated as a decorated title instead).
+
 Manual test commands (any tab):
 `printf '\033]9;4;3;0\033\\'` (rain) · `printf '\033]9;4;0;0\033\\'` (clear) ·
-`printf '\a'` (bell) · `printf '\033]2;❯ some name\007'` (auto-name).
+`printf '\a'` (bell) ·
+`printf '\033]2;\xe2\x9d\xaf\xe2\x81\xa3 some name\007'` (auto-name).
 Tabs can be scripted via AppleScript: `tell application id
 "com.mitchellh.ghostty" to new tab in window 1`.
 

@@ -92,7 +92,11 @@ class BaseTerminalController: NSWindowController,
     /// An override title for the tab/window set by the user via prompt_tab_title.
     /// When set, this takes precedence over the computed title from the terminal.
     var titleOverride: String? {
-        didSet { applyTitleToWindow() }
+        didSet {
+            // Phanttom: keep the sidebar auto-name in sync on clear.
+            phanttomTitleOverrideDidChange()
+            applyTitleToWindow()
+        }
     }
 
     /// The last computed title from the focused surface (without the override).
