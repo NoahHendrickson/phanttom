@@ -1,59 +1,67 @@
-import Foundation
+import AppKit
 
-/// Cached `.git/HEAD` branch lookups keyed by working directory. Resolves
-/// off the main actor so sidebar refresh never does synchronous filesystem
-/// walks on the UI path. Always revalidates (throttled) so `git checkout`
-/// is reflected within seconds; callers guard completions against stale
-/// pwds by re-reading their own state in `onUpdate`.
+/// The process-global pwd → git branch mapping shown in sidebar rows.
 ///
-/// Shared across all windows' managers — the pwd → branch mapping is global.
-actor GitBranchCache {
+/// One store, readable synchronously on the main actor: `branch(at:)` is a
+/// peek that returns the last resolved value immediately and — at most once
+/// per revalidate interval, deduped while in flight — kicks a detached
+/// filesystem resolve so the UI path never walks `.git/HEAD`. When a
+/// resolved value changes, it posts `.phanttomSidebarTabsDidChange`, which
+/// every sidebar manager already observes, so `git checkout` shows up
+/// within seconds in every window with that pwd.
+@MainActor
+final class GitBranchCache {
     static let shared = GitBranchCache()
 
-    private var cache: [String: String?] = [:]
+    /// pwd → last resolved branch. A stored nil means "resolved: not on a
+    /// branch" (non-git pwd or detached HEAD) — distinct from no entry, so
+    /// always write through `updateValue` (subscript-assigning nil would
+    /// remove the key and defeat the throttle).
+    private var branches: [String: String?] = [:]
     private var lastResolvedAt: [String: ContinuousClock.Instant] = [:]
+    private var inFlight: Set<String> = []
     private let revalidateInterval: Duration = .seconds(2)
 
-    /// Resolve the branch for `pwd`. Publishes a cached value immediately
-    /// when it differs from `known`, then re-reads `.git/HEAD` unless a
-    /// recent resolve is still fresh. `onUpdate` runs on the main actor and
-    /// only when the value differs from `known`.
-    func branch(
-        at pwd: String,
-        known: String?,
-        onUpdate: @MainActor @Sendable (String?) -> Void
-    ) async {
-        if let cached = cache[pwd], cached != known {
-            await onUpdate(cached)
-        }
-
+    /// The last known branch for `pwd`, immediately. Schedules a background
+    /// (re)resolve when the value is stale and none is already running.
+    func branch(at pwd: String) -> String? {
         let now = ContinuousClock.now
-        if cache[pwd] != nil,
-           let last = lastResolvedAt[pwd],
-           now - last < revalidateInterval {
-            return
-        }
-
-        // Keep the cache from accumulating dead pwds.
-        if cache.count > 32 {
-            let stale = lastResolvedAt.filter { now - $0.value > .seconds(60) }.keys
-            for pwd in stale {
-                cache.removeValue(forKey: pwd)
-                lastResolvedAt.removeValue(forKey: pwd)
+        let fresh = lastResolvedAt[pwd].map { now - $0 < revalidateInterval } ?? false
+        if !fresh, !inFlight.contains(pwd) {
+            inFlight.insert(pwd)
+            prune(now: now)
+            Task.detached(priority: .utility) { [weak self] in
+                let resolved = Self.readBranch(at: pwd)
+                await self?.finishResolve(pwd: pwd, resolved: resolved)
             }
         }
+        return branches[pwd] ?? nil
+    }
 
-        let resolved = Self.readBranch(at: pwd)
-        cache[pwd] = resolved
-        lastResolvedAt[pwd] = now
-        if resolved != known {
-            await onUpdate(resolved)
+    private func finishResolve(pwd: String, resolved: String?) {
+        inFlight.remove(pwd)
+        lastResolvedAt[pwd] = ContinuousClock.now
+        let changed = (branches[pwd] ?? nil) != resolved
+        branches.updateValue(resolved, forKey: pwd)
+        if changed {
+            NotificationCenter.default.post(
+                name: .phanttomSidebarTabsDidChange, object: nil)
+        }
+    }
+
+    /// Keep the mapping from accumulating dead pwds.
+    private func prune(now: ContinuousClock.Instant) {
+        guard branches.count > 32 else { return }
+        for (pwd, at) in lastResolvedAt where now - at > .seconds(60) {
+            guard !inFlight.contains(pwd) else { continue }
+            branches.removeValue(forKey: pwd)
+            lastResolvedAt.removeValue(forKey: pwd)
         }
     }
 
     /// Read the git branch from .git/HEAD, walking up from the directory.
     /// Supports worktrees, where `.git` is a file pointing at the real
-    /// git dir.
+    /// git dir. Runs detached — never on the main actor.
     nonisolated static func readBranch(at pwd: String) -> String? {
         var dir = pwd
         while dir != "/", !dir.isEmpty {

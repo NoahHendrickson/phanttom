@@ -84,11 +84,6 @@ final class SidebarTabManager: ObservableObject {
     private var subscribedWindowIDs: Set<ObjectIdentifier> = []
     private var subscribedSurfaceIDs: Set<ObjectIdentifier> = []
 
-    /// Last known git branch per pwd, published into TabItems and updated
-    /// asynchronously by GitBranchCache — refresh never walks the
-    /// filesystem on the main thread.
-    private var knownBranches: [String: String?] = [:]
-
     private var refreshScheduled = false
 
     init(window: NSWindow) {
@@ -244,7 +239,7 @@ final class SidebarTabManager: ObservableObject {
                 customTitle: controller?.titleOverride,
                 autoTitle: state?.autoTitle,
                 directory: pwd,
-                gitBranch: pwd.flatMap { self.gitBranch(at: $0) },
+                gitBranch: pwd.flatMap { GitBranchCache.shared.branch(at: $0) },
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
@@ -314,20 +309,4 @@ final class SidebarTabManager: ObservableObject {
         return window.tabbedWindows?.contains { $0 === w } ?? false
     }
 
-    // MARK: - Git branch
-
-    /// Return the last known branch for the pwd and kick off an async
-    /// (re)resolve; when the resolved value differs, the cache calls back
-    /// on the main actor and a refresh publishes it.
-    private func gitBranch(at pwd: String) -> String? {
-        let known = knownBranches[pwd] ?? nil
-        Task {
-            await GitBranchCache.shared.branch(at: pwd, known: known) { [weak self] branch in
-                guard let self else { return }
-                self.knownBranches[pwd] = branch
-                self.scheduleRefresh()
-            }
-        }
-        return known
-    }
 }
