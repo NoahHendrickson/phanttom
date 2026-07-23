@@ -76,6 +76,13 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// 0.1 ... 1.0 — how strong the glass material reads. AppKit's material
+    /// blur radius isn't publicly tunable, so this blends the frosted layer's
+    /// visibility instead, which is what "less blurry" looks like.
+    @Published var sidebarBlurAmount: Double {
+        didSet { persist() }
+    }
+
     // MARK: - Persistence
 
     private enum Keys {
@@ -87,6 +94,7 @@ final class PhanttomSettings: ObservableObject {
         static let sidebarColor = "PhanttomSidebarColor"
         static let sidebarOpacity = "PhanttomSidebarOpacity"
         static let sidebarGlass = "PhanttomSidebarGlass"
+        static let sidebarBlurAmount = "PhanttomSidebarBlurAmount"
     }
 
     private var loaded = false
@@ -101,6 +109,7 @@ final class PhanttomSettings: ObservableObject {
         sidebarColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarColor)) ?? Color(red: 0.09, green: 0.09, blue: 0.11)
         sidebarOpacity = defaults.object(forKey: Keys.sidebarOpacity) as? Double ?? 1.0
         sidebarGlass = defaults.bool(forKey: Keys.sidebarGlass)
+        sidebarBlurAmount = defaults.object(forKey: Keys.sidebarBlurAmount) as? Double ?? 1.0
         loaded = true
     }
 
@@ -115,6 +124,7 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(Self.hex(from: sidebarColor), forKey: Keys.sidebarColor)
         defaults.set(sidebarOpacity, forKey: Keys.sidebarOpacity)
         defaults.set(sidebarGlass, forKey: Keys.sidebarGlass)
+        defaults.set(sidebarBlurAmount, forKey: Keys.sidebarBlurAmount)
     }
 
     // MARK: - Applying terminal settings

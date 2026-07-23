@@ -36,6 +36,7 @@ struct SidebarView: View {
         ZStack {
             if settings.sidebarGlass {
                 SidebarGlassBackground()
+                    .opacity(settings.sidebarBlurAmount)
             }
             baseColor.opacity(settings.sidebarOpacity)
         }
