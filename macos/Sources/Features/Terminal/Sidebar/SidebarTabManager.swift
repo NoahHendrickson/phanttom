@@ -164,16 +164,14 @@ final class SidebarTabManager: ObservableObject {
 
     /// Set (or clear, with nil/empty) a user-assigned tab name. Uses
     /// upstream's `titleOverride`, so the sidebar, titlebar, command
-    /// palette, and window restoration all share one rename store.
+    /// palette, and window restoration all share one rename store. The
+    /// override's didSet keeps the auto-name in sync (every writer path,
+    /// not just this one).
     func rename(_ tab: TabItem, to name: String?) {
         guard let controller = tab.window.windowController as? BaseTerminalController
         else { return }
         let trimmed = name?.trimmingCharacters(in: .whitespaces)
         controller.titleOverride = (trimmed?.isEmpty ?? true) ? nil : trimmed
-        if controller.titleOverride == nil, let window = tab.window as? TerminalWindow {
-            // Clearing also re-arms first-prompt auto-naming.
-            window.phanttomTabState.rearmAutoTitle(consuming: window.title)
-        }
         NotificationCenter.default.post(name: .phanttomSidebarTabsDidChange, object: tab.window)
     }
 
@@ -224,14 +222,20 @@ final class SidebarTabManager: ObservableObject {
 
             // Working = any surface in the window reports progress; agents
             // can run in a non-focused split.
-            let isWorking = controller?.surfaceTree
-                .contains { $0.progressReport != nil } ?? false
+            let surfaces = controller.map { Array($0.surfaceTree) } ?? []
+            let isWorking = surfaces.contains { $0.progressReport != nil }
 
             // Step the window's tab state, then read it into the snapshot.
             // The state lives on the window, so whichever manager refreshes
-            // first records a transition and the rest agree.
+            // first records a transition and the rest agree. Identity is
+            // judged from every split's title (the window title only
+            // mirrors the focused one).
             let state = (w as? TerminalWindow)?.phanttomTabState
-            state?.update(title: w.title, isWorking: isWorking, isSelected: isSelected)
+            state?.update(
+                titles: surfaces.isEmpty ? [w.title] : surfaces.map(\.title),
+                isWorking: isWorking,
+                isSelected: isSelected
+            )
 
             newTabs.append(TabItem(
                 id: id,
