@@ -92,8 +92,9 @@ struct SidebarTabRow: View {
     var body: some View {
         // Keep select/rename gestures on the label only — wrapping the close
         // button made X clicks also call onSelect (makeKeyAndOrderFront),
-        // which felt like close lag.
-        HStack(spacing: 4) {
+        // which felt like close lag. Padding lives on the children so the
+        // label's contentShape still covers the row edge (not just the text).
+        HStack(spacing: 0) {
             Group {
                 switch tab.kind {
                 case .terminal: terminalRow
@@ -102,6 +103,9 @@ struct SidebarTabRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 8)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
             .contentShape(Rectangle())
             // Double-tap as .gesture plus single-tap as .simultaneousGesture:
             // chained onTapGesture modifiers would delay the single tap by the
@@ -112,8 +116,8 @@ struct SidebarTabRow: View {
             .simultaneousGesture(TapGesture().onEnded(onSelect))
 
             trailing
+                .padding(.trailing, 8)
         }
-        .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
         .onHover { hovering in
@@ -179,7 +183,6 @@ struct SidebarTabRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Spacer(minLength: 0)
         }
         .frame(height: 13)
     }
@@ -219,39 +222,43 @@ struct SidebarTabRow: View {
     }
 
     /// Trailing edge: hover close button wins, then status indicator.
+    /// Fixed 18×18 slot so idle/status/X never shift row height or label width.
     @ViewBuilder private var trailing: some View {
-        if isHovering {
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(isCloseHovering ? 0.95 : 0.55))
-                    .frame(width: 16, height: 16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.white.opacity(isCloseHovering ? 0.14 : 0))
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Close Tab")
-            .onHover { isCloseHovering = $0 }
-            .backport.pointerStyle(.link)
-        } else {
-            switch tab.status {
-            case .idle:
-                EmptyView()
-            case .working:
-                PixelSparkleView()
-            case .done:
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
-                    .frame(width: 8, height: 8)
-            case .attention:
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
-                    .frame(width: 8, height: 8)
+        Group {
+            if isHovering {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(isCloseHovering ? 0.95 : 0.55))
+                        .frame(width: 16, height: 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(isCloseHovering ? 0.14 : 0))
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close Tab")
+                .onHover { isCloseHovering = $0 }
+                .backport.pointerStyle(.link)
+            } else {
+                switch tab.status {
+                case .idle:
+                    Color.clear
+                case .working:
+                    PixelSparkleView()
+                case .done:
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
+                        .frame(width: 8, height: 8)
+                case .attention:
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
+                        .frame(width: 8, height: 8)
+                }
             }
         }
+        .frame(width: 18, height: 18)
     }
 }
 
