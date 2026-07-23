@@ -39,8 +39,6 @@ final class SidebarTabManager: ObservableObject {
     private weak var window: NSWindow?
     private var notificationObservers: [NSObjectProtocol] = []
     private var windowObservations: [NSKeyValueObservation] = []
-    private var tabBarObservation: NSKeyValueObservation?
-    private weak var observedTabGroup: NSWindowTabGroup?
 
     init(window: NSWindow) {
         self.window = window
@@ -91,27 +89,10 @@ final class SidebarTabManager: ObservableObject {
     func refresh() {
         guard let window else { return }
 
-        // The sidebar replaces the native tab bar: watch the tab group and
-        // re-hide the bar the moment AppKit shows it. KVO (rather than a
-        // check here) because the bar often appears after our events fire.
-        // The group object changes when windows merge/split, so re-observe.
-        if let group = window.tabGroup, group !== observedTabGroup {
-            observedTabGroup = group
-            tabBarObservation = group.observe(
-                \.isTabBarVisible, options: [.initial, .new]
-            ) { [weak self] _, _ in
-                DispatchQueue.main.async {
-                    // Re-check visibility at execution time: with one manager
-                    // per window in the group, the first to run hides the bar
-                    // and the rest bail here instead of re-toggling it.
-                    guard let self,
-                          let window = self.window,
-                          let group = window.tabGroup,
-                          group.isTabBarVisible else { return }
-                    window.toggleTabBar(nil)
-                }
-            }
-        }
+        // Note: native tab bar hiding lives in TerminalWindow.sidebarActive
+        // (the tab bar accessory is hidden as AppKit adds it). Never toggle
+        // the tab bar from here — AppKit force-shows it for 2+ tab groups,
+        // so toggling loops forever.
 
         let tabWindows = window.tabbedWindows ?? [window]
         let selected = window.tabGroup?.selectedWindow ?? window

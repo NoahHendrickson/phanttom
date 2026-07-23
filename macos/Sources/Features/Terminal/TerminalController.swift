@@ -1097,6 +1097,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         container.initialContentSize = focusedSurface?.initialSize
 
         // Phanttom: wrap the terminal in a [sidebar | terminal] split view.
+        // The sidebar replaces the native tab bar (see TerminalWindow.sidebarActive).
+        (window as? TerminalWindow)?.sidebarActive = true
         let sidebarTabManager = SidebarTabManager(window: window)
         self.sidebarTabManager = sidebarTabManager
         let sidebarHost = NSHostingView(rootView: SidebarView(

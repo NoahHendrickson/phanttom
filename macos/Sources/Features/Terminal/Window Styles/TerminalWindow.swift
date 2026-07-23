@@ -251,6 +251,20 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// Phanttom: when true, the native tab bar accessory is hidden as it is
+    /// added because the sidebar provides the tab UI. Hiding the accessory
+    /// (instead of toggling the tab bar) doesn't fight AppKit, which force-
+    /// shows the bar whenever a tab group has 2+ windows.
+    var sidebarActive: Bool = false {
+        didSet {
+            guard sidebarActive else { return }
+            for accessory in titlebarAccessoryViewControllers where isTabBar(accessory) {
+                accessory.isHidden = true
+                accessory.fullScreenMinHeight = 0
+            }
+        }
+    }
+
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
         super.addTitlebarAccessoryViewController(childViewController)
 
@@ -259,6 +273,13 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
+
+            // Phanttom: the sidebar replaces the native tab bar.
+            if sidebarActive {
+                childViewController.isHidden = true
+                childViewController.fullScreenMinHeight = 0
+            }
+
             tabBarDidAppear()
         }
     }
