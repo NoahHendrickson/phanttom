@@ -8,6 +8,7 @@ import SwiftUI
 /// untouched) so upstream's future settings GUI merges cleanly.
 struct PhanttomSettingsView: View {
     @ObservedObject private var settings = PhanttomSettings.shared
+    @ObservedObject private var claude = PhanttomClaudeIntegration.shared
 
     var body: some View {
         Form {
@@ -134,6 +135,22 @@ struct PhanttomSettingsView: View {
                 Text("Glass makes the sidebar see through the window — lower the sidebar opacity to reveal it. Blur amount controls how frosted that view is; 0% is completely clear. The terminal side is unaffected.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Claude Code integration", isOn: $claude.enabled)
+            } header: {
+                Text("Agents")
+            } footer: {
+                Text(
+                    "Shows live Claude Code activity on tabs: thinking "
+                    + "animation, tab names from your first prompt, and "
+                    + "worktree-aware directory tracking. Installs hooks in "
+                    + "~/.claude/settings.json (backup kept); turning this "
+                    + "off removes only Phanttom's entries."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

@@ -51,19 +51,20 @@ Ghostty.
 
 All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 
-| Area                                                                  | Files                                                                                                          |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Sidebar UI (rows, status, rename, pixel rain)                         | `Features/Terminal/Sidebar/SidebarView.swift`                                                                  |
-| Tab model + event plumbing                                            | `Features/Terminal/Sidebar/SidebarTabManager.swift`                                                            |
-| Per-tab state machine (kind, status, auto-name)                       | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`) |
-| Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift`                                                               |
-| `[sidebar \| terminal]` split, collapse, width persistence            | `Features/Terminal/Sidebar/SidebarSplitView.swift`                                                             |
-| Window glass (transparency + CGS blur radius)                         | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift`                                                          |
-| Titlebar zone tracking sidebar width                                  | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift`                                                         |
-| Settings model (UserDefaults + config fragment)                       | `Features/Settings/PhanttomSettings.swift`                                                                     |
-| Settings UI                                                           | `Features/Settings/SettingsView.swift` (replaces upstream's "Coming Soon" placeholder)                         |
-| Settings window host                                                  | `Features/Settings/SettingsWindowController.swift`                                                             |
-| Claude/Codex icons                                                    | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset`                                      |
+| Area | Files |
+|---|---|
+| Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
+| Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
+| Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`) |
+| Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
+| `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
+| Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
+| Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |
+| Settings model (UserDefaults + config fragment) | `Features/Settings/PhanttomSettings.swift` |
+| Settings UI | `Features/Settings/SettingsView.swift` (replaces upstream's "Coming Soon" placeholder) |
+| Settings window host | `Features/Settings/SettingsWindowController.swift` |
+| Claude Code hook installer (consent, launch re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
+| Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
 
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
@@ -84,7 +85,9 @@ Touches to upstream files are deliberately tiny and greppable — search
   without this, config changes and macOS 26 glass never reach the container).
 - `AppDelegate.swift`: one `setupPhanttomMenus()` call (implementation in
   `AppDelegate+Phanttom.swift`; inserts "Phanttom Settings…" ⌘⇧, and
-  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched).
+  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched), and one
+  `PhanttomClaudeIntegration.shared.setupOnLaunch()` call right after it
+  (Claude Code hook install/re-sync; see the hooks protocol section).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
   the window falls back to plain upstream behavior. This is decided once per
@@ -205,24 +208,42 @@ immediately re-captured). Marker-protocol parsing lives entirely in
 
 ## Claude Code integration (hooks protocol)
 
-Installed in the user's `~/.claude/settings.json` (not in this repo — it's
-user config; backup kept as `settings.json.bak-phanttom`). All hooks write
-escape sequences to the session's terminal device, resolved as
-`ps -o tty= -p "$CLAUDE_PID"` with `/dev/tty` as fallback (hook stdout is
-captured by Claude Code, the tty is not). The resolution step is **load-
-bearing**: hook processes have no controlling terminal, so a plain
-`> /dev/tty` write fails silently and the escape never arrives — diagnosed
-live when worktree tabs stopped following the agent's checkout while the
-`ps`-resolving hooks kept working:
+The app installs and maintains these hooks itself — user config is no longer
+hand-maintained. `PhanttomClaudeIntegration` asks once on first launch
+(consent `NSAlert`), then re-syncs `~/.claude/settings.json` silently on
+every launch so protocol fixes ship with app updates; the toggle lives in
+Phanttom Settings → Agents. `hookSpecs` in
+`Features/Settings/PhanttomClaudeIntegration.swift` is the **source of
+truth** for the commands — keep this section in sync with it. Sync
+recognizes Phanttom's entries (current or legacy) by their escape-sequence
+payload signatures (`]9;4;3;0`, `]9;4;0;0`, the `❯`+U+2063 marker bytes,
+`file://localhost`) and replaces them, leaving everything else in the file
+untouched (a rewrite normalizes JSON formatting; original backed up once to
+`settings.json.bak-phanttom`; an unparsable settings file is never
+modified). All hooks write
+escape sequences to the session's terminal device (hook stdout is captured
+by Claude Code, the tty is not). Hooks cannot just open `/dev/tty`: Claude
+Code (observed in 2.1.218) spawns hook processes without a controlling
+terminal, so that open fails with "Device not configured" — and the
+`2>/dev/null; true` guard swallows it, making the failure look like the
+hook never ran. Instead each hook resolves the real device from
+`CLAUDE_PID` (the claude process's PID, exported to hooks — observed in
+2.1.218, not a documented/stable contract), via `ps -o tty= -p
+$CLAUDE_PID`, falling back to `/dev/tty` when that yields nothing, `?`,
+or `??` (no controlling terminal; some `ps` variants report a bare `?`).
+If `ps` itself is unavailable the command substitution is empty and the
+same fallback applies. If a future Claude Code release stops exporting
+`CLAUDE_PID` or changes its meaning, the hooks silently degrade to the
+old `/dev/tty` behavior:
 
-| Event                                                                             | Emits                                                                                                                                                                                                                                                                         | Phanttom effect                                                                                                                           |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `UserPromptSubmit`                                                                | OSC 9;4 state 3 (indeterminate)                                                                                                                                                                                                                                               | pixel rain starts                                                                                                                         |
-| `UserPromptSubmit`                                                                | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`) before the prompt and a second U+2063 before the model id (last non-synthetic assistant turn of the transcript at `.transcript_path`; empty until the session's first response) | first prompt names the tab; raw model id is sticky on `PhanttomTabState` and pretty-printed at the `TabItem` edge via `modelDisplayName` ("Fable 5") |
-| `UserPromptSubmit`, `SessionStart`, `PostToolUse` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (`jq -r '.cwd \| @uri'`, `%2F` restored to `/`)                                                                                                                                                                                                 | tab pwd tracks the _agent's_ directory, not just the shell's                                                                              |
-| `Stop`                                                                            | OSC 9;4 state 0 (clear)                                                                                                                                                                                                                                                       | rain stops → Done if unselected                                                                                                           |
-| `Notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                                                                                                                                           | → Attention if unselected                                                                                                                 |
-| statusline (see below)                                                            | OSC 2 title `❯⁣⁣<model-id>` — marker + a second U+2063 with an **empty** prompt field                                                                                                                                                                                         | model label from the session's very first render, and live `/model` switches                                                              |
+| Event | Emits | Phanttom effect |
+|---|---|---|
+| `UserPromptSubmit` | OSC 9;4 state 3 (indeterminate) | pixel rain starts |
+| `UserPromptSubmit` | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`) before the prompt and a second U+2063 before the model id (last non-synthetic assistant turn of the transcript at `.transcript_path`; empty until the session's first response) | first prompt names the tab; raw model id is sticky on `PhanttomTabState` and pretty-printed at the `TabItem` edge via `modelDisplayName` ("Fable 5") |
+| `UserPromptSubmit`, `SessionStart`, `PostToolUse` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (`jq -r '.cwd \| @uri'`, `%2F` restored to `/`) | tab pwd tracks the *agent's* directory, not just the shell's |
+| `Stop` | OSC 9;4 state 0 (clear) | rain stops → Done if unselected |
+| `Notification` | OSC 9;4 clear + BEL | → Attention if unselected |
+| statusline (see below) | OSC 2 title `❯⁣⁣<model-id>` — marker + a second U+2063 with an **empty** prompt field | model label from the session's very first render, and live `/model` switches |
 
 The U+2063 INVISIBLE SEPARATOR makes the marker collision-proof: a bare "❯"
 is the default prompt char of starship/pure/p10k and must NOT trigger
@@ -257,12 +278,28 @@ render while the CLI owns the foreground — it redraws (and re-reports) only
 after the CLI exits. If the CLI ever stops being the sole foreground
 process for the session's lifetime, that assumption breaks.
 
-The exact hook command (identical for all three events; kept here so its
-quoting/escaping is auditable — the installed copy lives in user config):
+The exact cwd hook command (identical for all three cwd events; kept here so
+its quoting/escaping is auditable — the canonical builder is
+`PhanttomClaudeIntegration.hookSpecs`, the installed copy lives in user
+config):
 
 ```sh
-sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
+sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"?"|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
 ```
+
+The other hooks share the same `ps`-based tty resolution; rain start/clear
+and bell differ only in their printf payloads, while the title hook also
+reads the hook's stdin JSON once (for `.prompt`) and tails the transcript
+file (for the model id). If claude
+itself has no tty (`ps` reports `?`/`??` — e.g. a headless or app-managed
+session), the fallback write to `/dev/tty` fails silently, which is
+correct: there is no terminal to paint.
+
+One caveat discovered while debugging this: in Claude Desktop–managed
+sessions (stream-json transport), the `UserPromptSubmit` event does not
+fire at all — so first-prompt tab naming and rain-start don't happen
+there. `SessionStart`, `PostToolUse`, `Stop`, and `Notification` still
+fire, so agent-cwd tracking and rain-clear keep working.
 
 `@uri` percent-encodes everything (spaces, UTF-8, control chars) so no raw
 byte from `.cwd` ever reaches the escape sequence; the `sed` only restores

@@ -314,6 +314,7 @@ class AppDelegate: NSObject,
         // Setup our menu
         setupMenuImages()
         setupPhanttomMenus()
+        PhanttomClaudeIntegration.shared.setupOnLaunch()
 
         // Setup signal handlers
         setupSignals()
