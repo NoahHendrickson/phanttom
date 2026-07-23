@@ -101,6 +101,17 @@ extension TerminalController {
 }
 
 extension BaseTerminalController {
+    /// Phanttom: a brand-new surface's title is the "👻" placeholder until
+    /// shell integration reports a real one, so every new tab pops
+    /// 👻-then-real-title into the titlebar and sidebar row within a second —
+    /// which reads as a glitchy flash. With the sidebar active, show nothing
+    /// instead: the titlebar stays quiet until the real title arrives, and
+    /// the sidebar row falls back to its "Terminal" label on empty.
+    func phanttomDisplayTitle(_ title: String) -> String {
+        guard (window as? TerminalWindow)?.sidebarActive == true else { return title }
+        return title == "👻" ? "" : title
+    }
+
     /// Phanttom: called from `titleOverride`'s didSet so EVERY writer — the
     /// sidebar rename, the ⌘-rename prompt, the native tab bar's inline
     /// editor — keeps the sidebar auto-name in sync. Clearing the override
