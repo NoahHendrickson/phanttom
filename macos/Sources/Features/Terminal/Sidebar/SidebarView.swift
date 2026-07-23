@@ -244,30 +244,63 @@ struct SidebarTabRow: View {
     }
 }
 
-/// The "working" indicator: a 5×5 grid of 2pt pixels whose brightness bands
-/// march diagonally, per the design (base #7B5EFF at 1.0 / 0.3 / 0.12).
+/// The "working" indicator: pixel rain. Four columns of drops fall through a
+/// 5-row grid, each column with its own speed and phase; the drop head is
+/// bright with an exponential trail above it and a sharp falloff below.
+/// Ported from the design's canvas reference ("Bare rain, 4 col").
 struct PixelSparkleView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private static let color = Color(red: 0x7B / 255, green: 0x5E / 255, blue: 0xFF / 255)
-    private static let opacities: [Double] = [0.12, 0.3, 1.0, 0.3]
+    private static let rows = 5
+    private static let cols = 4
+    private static let pitch: CGFloat = 3.8
+    private static let cell: CGFloat = 2.85
+
+    /// Deterministic pseudo-random in [0, 1), same hash as the reference.
+    private static func frac(_ n: Double) -> Double {
+        let x = sin(n) * 43758.5453
+        return x - floor(x)
+    }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.15)) { context in
-            let phase = Int(context.date.timeIntervalSinceReferenceDate / 0.15)
-            Canvas { canvas, _ in
-                for row in 0..<5 {
-                    for col in 0..<5 {
-                        // Diagonal banding: (col + row) mod 4 picks the
-                        // opacity level; the phase shifts the bands so the
-                        // sparkle marches across the grid.
-                        let level = Self.opacities[(col + row + phase) % 4]
-                        let rect = CGRect(x: CGFloat(col) * 4, y: CGFloat(row) * 4, width: 2, height: 2)
-                        canvas.fill(Path(rect), with: .color(Self.color.opacity(level)))
+        Group {
+            if reduceMotion {
+                Canvas { canvas, _ in Self.draw(t: 0.6, into: &canvas) }
+            } else {
+                TimelineView(.animation) { context in
+                    Canvas { canvas, _ in
+                        Self.draw(t: context.date.timeIntervalSinceReferenceDate, into: &canvas)
                     }
                 }
             }
-            .frame(width: 18, height: 18)
         }
+        .frame(width: 18, height: 18)
         .accessibilityLabel("Working")
+    }
+
+    private static func draw(t: Double, into canvas: inout GraphicsContext) {
+        for i in 0..<cols {
+            let speed = 2.5 + frac(Double(i) * 5.7) * 2.5
+            let phase = frac(Double(i) * 9.1) * 7
+            let head = (t * speed + phase)
+                .truncatingRemainder(dividingBy: Double(rows + 3)) - 1.5
+            for j in 0..<rows {
+                let dy = head - Double(j)
+                let alpha = dy >= 0 ? exp(-dy * 0.8) : exp(dy * 8)
+                guard alpha >= 0.02 else { continue }
+                let rect = CGRect(
+                    x: (CGFloat(i) + 0.5) * pitch,
+                    y: CGFloat(j) * pitch,
+                    width: cell,
+                    height: cell
+                )
+                canvas.fill(
+                    Path(roundedRect: rect, cornerRadius: cell * 0.28),
+                    with: .color(color.opacity(alpha))
+                )
+            }
+        }
     }
 }
 
