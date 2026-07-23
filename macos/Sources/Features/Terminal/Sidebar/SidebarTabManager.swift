@@ -33,6 +33,9 @@ final class SidebarTabManager: ObservableObject {
         let autoTitle: String?
         let directory: String?
         let gitBranch: String?
+        /// True when `directory` is a linked git worktree (sidebar shows a
+        /// tree icon beside the branch instead of the branch glyph).
+        let isWorktree: Bool
         let prState: PRStatusCache.PRState?
         let kind: TabKind
         let status: TabStatus
@@ -280,7 +283,9 @@ final class SidebarTabManager: ObservableObject {
                 isSelected: isSelected
             )
 
-            let gitBranch = pwd.flatMap { GitBranchCache.shared.branch(at: $0) }
+            let git = pwd.map { GitBranchCache.shared.metadata(at: $0) }
+            let gitBranch = git?.branch
+            let isWorktree = git?.isWorktree ?? false
             var prState: PRStatusCache.PRState?
             if let pwd, let gitBranch {
                 prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
@@ -293,6 +298,7 @@ final class SidebarTabManager: ObservableObject {
                 autoTitle: state?.autoTitle,
                 directory: pwd,
                 gitBranch: gitBranch,
+                isWorktree: isWorktree,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,
