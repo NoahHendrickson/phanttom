@@ -14,6 +14,7 @@ struct GitBranchCacheTests {
 
         let resolved = GitBranchCache.readMetadata(at: root)
         #expect(resolved.branch == "main")
+        #expect(resolved.projectRoot == root)
         #expect(resolved.isWorktree == false)
     }
 
@@ -37,6 +38,7 @@ struct GitBranchCacheTests {
 
         let resolved = GitBranchCache.readMetadata(at: worktree)
         #expect(resolved.branch == "feature")
+        #expect(resolved.projectRoot == repo)
         #expect(resolved.isWorktree == true)
     }
 
@@ -57,6 +59,7 @@ struct GitBranchCacheTests {
 
         let resolved = GitBranchCache.readMetadata(at: module)
         #expect(resolved.branch == "main")
+        #expect(resolved.projectRoot == module)
         #expect(resolved.isWorktree == false)
     }
 
@@ -75,9 +78,10 @@ struct GitBranchCacheTests {
 
     @Test func gitdirWithDotDotThroughWorktreesIsNotAWorktree() throws {
         // Raw gitdir contains ".git/worktrees/" then `../..`, but lexical
-        // folding resolves to .git/modules/<name>. Deliberately do NOT create
-        // the decoy worktrees/decoy dir — proves we don't depend on
-        // standardizingPath's on-disk behavior.
+        // folding resolves to .git/modules/<name> — not a worktree. The
+        // decoy dir must exist on disk (POSIX resolves `..` component by
+        // component, so HEAD would be unreadable through a missing decoy);
+        // the worktree *verdict* stays purely lexical either way.
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: root) }
 
@@ -86,6 +90,9 @@ struct GitBranchCacheTests {
 
         let moduleGitdir = (root as NSString).appendingPathComponent(".git/modules/lib")
         try write(at: moduleGitdir, relative: "HEAD", contents: "ref: refs/heads/main\n")
+        try FileManager.default.createDirectory(
+            atPath: (root as NSString).appendingPathComponent(".git/worktrees/decoy"),
+            withIntermediateDirectories: true)
         let sneakyGitdir = (root as NSString)
             .appendingPathComponent(".git/worktrees/decoy/../../modules/lib")
         try write(
@@ -96,6 +103,7 @@ struct GitBranchCacheTests {
 
         let resolved = GitBranchCache.readMetadata(at: module)
         #expect(resolved.branch == "main")
+        #expect(resolved.projectRoot == module)
         #expect(resolved.isWorktree == false)
     }
 
