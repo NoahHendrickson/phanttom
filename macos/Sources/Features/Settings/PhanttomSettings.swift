@@ -246,6 +246,10 @@ final class PhanttomSettings: ObservableObject {
     /// must never be mistaken for an empty file), and the include is appended
     /// through a file handle so a symlinked config (dotfiles setups) keeps
     /// its inode instead of being replaced by an atomic-write copy.
+    ///
+    /// The read-then-append dedup check races a concurrent external writer
+    /// (no file locking); accepted, since the worst case is a duplicate
+    /// include that Ghostty flags as a cycle diagnostic rather than breaking.
     private func ensureIncluded(mainConfigPath: String) throws {
         let mainURL = URL(fileURLWithPath: mainConfigPath).resolvingSymlinksInPath()
         let exists = FileManager.default.fileExists(atPath: mainURL.path)
@@ -264,9 +268,17 @@ final class PhanttomSettings: ObservableObject {
 
         if exists {
             let handle = try FileHandle(forWritingTo: mainURL)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data(addition.utf8))
+            do {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data(addition.utf8))
+            } catch {
+                try? handle.close()
+                throw error
+            }
+            // Close explicitly and let it throw: some filesystems only
+            // surface a delayed write-back failure at close(), and swallowing
+            // it would reload config as if the append had succeeded.
+            try handle.close()
         } else {
             try addition.write(to: mainURL, atomically: true, encoding: .utf8)
         }

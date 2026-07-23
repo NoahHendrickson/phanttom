@@ -13,8 +13,14 @@ covers everything Phanttom adds and the sharp edges we've already hit.
 - Repo: `github.com/NoahHendrickson/phanttom`, branch `phanttom` (default)
 - Remotes: `upstream` = ghostty-org/ghostty, `origin` = the fork,
   `reference-tom` = tomreinert/ghostty (prior-art sidebar fork, study only)
-- **Never open issues or PRs against upstream** (their AGENTS.md forbids
-  agent-created ones; we honor that). All work stays on the fork.
+- **Never open issues or PRs against upstream, and never try to merge
+  anything into upstream** (their AGENTS.md forbids agent-created
+  contributions; we honor that — and beyond that, this fork simply doesn't
+  contribute back, ever). The relationship with upstream is one-way: we
+  rebase onto their releases, nothing flows the other direction. All work
+  stays on the fork — and PRs *on the fork* (`origin`, base `phanttom`) are
+  the normal way changes land, not an exception to that rule. See "Issue and
+  PR Guidelines" in AGENTS.md.
 
 ## Build & run
 
@@ -81,7 +87,12 @@ Touches to upstream files are deliberately tiny and greppable — search
   "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
-  the window falls back to plain upstream behavior.
+  the window falls back to plain upstream behavior. This is decided once per
+  window at creation (`phanttomInstallSidebar` in `windowDidLoad`): a live
+  config reload that switches to/from `tabs` affects only windows opened
+  after the reload — existing windows keep whatever they were built with.
+  Known limitation; reacting live would mean tearing down and rebuilding the
+  window's content view, which isn't worth the risk.
 
 The Xcode project uses filesystem-synchronized groups: **new files under
 `macos/Sources/` are picked up automatically** — no pbxproj editing.

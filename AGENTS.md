@@ -2,12 +2,12 @@
 
 A file for [guiding coding agents](https://agents.md/).
 
-> **This is the Phanttom fork.** Read [PHANTTOM.md](PHANTTOM.md) FIRST — it
-> documents the fork's architecture (sidebar, settings, agent-tab semantics,
-> Claude Code hooks), where all Phanttom code lives, and hard-won gotchas
-> (e.g. never toggle the native tab bar). The rest of this file is upstream
-> Ghostty guidance and still applies, including: never create issues or PRs
-> against upstream.
+> **This is the Phanttom fork** (`NoahHendrickson/phanttom`), not upstream
+> Ghostty. Read [PHANTTOM.md](PHANTTOM.md) FIRST — it documents the fork's
+> architecture (sidebar, settings, agent-tab semantics, Claude Code hooks),
+> where all Phanttom code lives, and hard-won gotchas (e.g. never toggle the
+> native tab bar). The build/test guidance below is upstream Ghostty's and
+> still applies; the Issue and PR Guidelines are the fork's own.
 
 ## Commands
 
@@ -40,7 +40,24 @@ A file for [guiding coding agents](https://agents.md/).
 
 ## Issue and PR Guidelines
 
-- Never create issues or PRs against upstream Ghostty
-  (github.com/ghostty-org/ghostty).
-- Issues and PRs against this fork are fine when the user asks for them.
-  PRs target the `phanttom` branch unless told otherwise.
+Two different repos, two different rules — don't conflate them:
+
+- **The fork — `NoahHendrickson/phanttom`, remote `origin`: creating PRs and
+  issues here is the normal, expected workflow.** All changes land through
+  fork PRs. Branch from `phanttom`, push to `origin`, then:
+
+  ```sh
+  gh pr create --repo NoahHendrickson/phanttom --base phanttom
+  ```
+
+- **Upstream — `ghostty-org/ghostty`, remote `upstream`: never create issues
+  or PRs there, never push branches to it, never try to get anything merged
+  there.** This fork does not contribute back to upstream — not now, not
+  later, not via the user. The relationship is strictly one-way: we pull
+  upstream in (rebase policy in PHANTTOM.md); nothing ever flows the other
+  direction. Don't propose upstreaming a change, don't prepare
+  "upstream-ready" patches, don't treat upstream as a target at all.
+
+(Upstream's own version of this section is an unconditional "never create a
+PR". That rule is about *their* repo — it does not apply to the fork, and
+tooling or agents reading this file should not treat fork PRs as forbidden.)
