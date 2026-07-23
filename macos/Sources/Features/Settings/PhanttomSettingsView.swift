@@ -161,7 +161,7 @@ private struct ClaudeCodeIntegrationSection: View {
             HStack {
                 if showPrimaryButton {
                     Button(primaryButtonTitle) {
-                        runInstall()
+                        apply(PhanttomClaudeIntegration.performInstall())
                     }
                     .disabled(claudeMissing)
                 }
@@ -181,9 +181,11 @@ private struct ClaudeCodeIntegrationSection: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .onAppear { refresh() }
+        .onAppear { apply(PhanttomClaudeIntegration.currentStatus()) }
         .alert("Remove Claude Code Integration?", isPresented: $confirmRemove) {
-            Button("Remove", role: .destructive) { runUninstall() }
+            Button("Remove", role: .destructive) {
+                apply(PhanttomClaudeIntegration.performUninstall())
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Restores your previous statusline (if any) and removes Phanttom's hooks and helper script.")
@@ -205,46 +207,15 @@ private struct ClaudeCodeIntegrationSection: View {
         }
     }
 
-    private func refresh() {
-        let result = PhanttomClaudeIntegration.currentStatus()
-        claudeMissing = result.error == .claudeNotFound
-        status = result.status
-        if result.error == .settingsCorrupt {
-            lastError = result.message
-            caption = result.message
-        } else if claudeMissing {
-            lastError = nil
-            caption = result.message
-        } else {
-            lastError = nil
-            caption = result.message
-        }
-    }
-
-    private func runInstall() {
-        let result = PhanttomClaudeIntegration.performInstall()
+    private func apply(_ result: PhanttomClaudeIntegration.ActionResult) {
         status = result.status
         claudeMissing = result.error == .claudeNotFound
+        caption = result.message
+        // Surface actionable failures; "not found" is already the caption.
         if let err = result.error, err != .claudeNotFound {
             lastError = result.message
         } else {
             lastError = nil
-            caption = result.message
-        }
-        if result.error == nil {
-            caption = result.message
-        }
-    }
-
-    private func runUninstall() {
-        let result = PhanttomClaudeIntegration.performUninstall()
-        status = result.status
-        claudeMissing = result.error == .claudeNotFound
-        if let err = result.error, err != .claudeNotFound {
-            lastError = result.message
-        } else {
-            lastError = nil
-            caption = result.message
         }
     }
 }

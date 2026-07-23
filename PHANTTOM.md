@@ -234,9 +234,12 @@ Settings' "Update available".
 
 All hooks write escape sequences to the session tty (hook stdout is captured
 by Claude Code). Tty resolution is
-`ps -o tty= -p "${CLAUDE_PID:-$PPID}"` with `""|"??"` → `/dev/tty` fallback
-— plain `/dev/tty` alone is known-broken (hook processes have no controlling
-terminal). `CLAUDE_PID` is undocumented; keep the full fallback chain.
+`ps -o tty= -p "${CLAUDE_PID:-$PPID}"` with `""|"?"|"??"` → `/dev/tty`
+fallback — plain `/dev/tty` alone is known-broken (hook processes have no
+controlling terminal). `CLAUDE_PID` is undocumented; keep the full fallback
+chain. Ownership detection never treats bare OSC 9;4 / OSC 7 alone as
+Phanttom's (those are generic sequences); legacy inline hooks match via the
+CLAUDE_PID tty-resolve pairing, the title marker, or `statusline-phanttom.sh`.
 JSON parsing prefers `jq` when present, else `/usr/bin/perl` + `JSON::PP`
 (no Homebrew / CLT dependency).
 

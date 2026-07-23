@@ -20,9 +20,9 @@ final class PhanttomTabState {
         case codex
     }
 
-    /// Activity state shown on the trailing edge of the tab row. An explicit
-    /// state machine: `update` and `noteBell` are the only transitions, and
-    /// selecting a tab always acknowledges back to `.idle`.
+    /// Activity state shown in the leading status slot of the tab row. An
+    /// explicit state machine: `update` and `noteBell` are the only
+    /// transitions, and selecting a tab always acknowledges back to `.idle`.
     enum Status: Equatable {
         /// Nothing to report.
         case idle
@@ -73,6 +73,21 @@ final class PhanttomTabState {
     /// UserPromptSubmit hook). Beaten by the user's rename (upstream's
     /// `titleOverride`); cleared when the shell reclaims the title.
     private(set) var autoTitle: String?
+
+    /// Raw model id the tab's agent session is using ("claude-fable-5"),
+    /// from the model field the Claude Code hook appends to the marker
+    /// title. Sticky like the agent kind — the marker only rides
+    /// UserPromptSubmit, so between prompts the last value stands — and
+    /// cleared when the shell reclaims the tab or the kind flips away
+    /// from Claude. Pretty-print at the TabItem/view edge via
+    /// `modelDisplayName`.
+    private(set) var model: String?
+
+    /// Sidebar title when neither custom nor auto-name applies: the current
+    /// marker's prompt field, or the kind label for a model-only marker.
+    /// Keeps marker-protocol knowledge inside this state machine so the
+    /// view model never has to re-parse U+2063 fields.
+    private(set) var titleFallback: String?
 
     /// The last detected agent kind, kept sticky while decorated/marked
     /// titles come through so hook-set titles don't flip the row back to a
@@ -168,17 +183,39 @@ final class PhanttomTabState {
         // the session's FIRST prompt names the tab. It re-arms when the
         // shell reclaims the title (session over) or via Reset Name.
         if let markerTitle {
-            let auto = markerTitle.dropFirst(Self.autoNameMarker.count)
-                .trimmingCharacters(in: .whitespaces)
+            // Marker payload: "<prompt>", optionally followed by another
+            // U+2063 and the session's model id (empty until the transcript
+            // has an assistant turn — keep the last known model then).
+            let fields = markerTitle.dropFirst(Self.autoNameMarker.count)
+                .split(separator: "\u{2063}", omittingEmptySubsequences: false)
+            let auto = (fields.first ?? "").trimmingCharacters(in: .whitespaces)
+            if fields.count > 1 {
+                let id = fields[1].trimmingCharacters(in: .whitespaces)
+                if !id.isEmpty { model = id }
+            }
             if !auto.isEmpty, autoTitle == nil, markerTitle != lastResetTitle {
                 autoTitle = auto
             }
-            // Only our Claude hook emits the marker; make the kind sticky.
-            if agentKind == nil { agentKind = .claude }
+            // Presentation fallback for the sidebar when autoTitle is nil
+            // (model-only marker, or post-rearm before a new prompt).
+            // Markers are Claude-only today; the kind label covers the
+            // empty-prompt case so the view model never re-parses fields.
+            titleFallback = auto.isEmpty ? "Claude" : auto
+            // Only our Claude hook emits the marker. Force kind even when a
+            // prior Codex session left agentKind sticky — otherwise the card
+            // stays Codex and the model badge (Claude-only) never shows.
+            agentKind = .claude
             return
         }
 
+        // Left the marker path — drop the marker-derived title fallback so
+        // glyph-stripping of the live surface title takes over.
+        titleFallback = nil
+
         if let namedKind {
+            // A kind flip (Claude → Codex in the same tab) must not keep the
+            // previous session's model badge.
+            if namedKind != agentKind { model = nil }
             agentKind = namedKind
             return
         }
@@ -193,6 +230,40 @@ final class PhanttomTabState {
         // reclaimed the tab, so the agent session and its auto-name are over.
         agentKind = nil
         autoTitle = nil
+        model = nil
         lastResetTitle = nil
+    }
+
+    /// "claude-fable-5" → "Fable 5", "claude-opus-4-8" → "Opus 4.8",
+    /// "claude-haiku-4-5-20251001" → "Haiku 4.5": family word capitalized,
+    /// short numeric tokens immediately before/after the family joined with
+    /// dots, 8-digit date stamps and later qualifiers ("preview-2") dropped.
+    /// Works for old ids with the family last ("claude-3-5-sonnet-…") too.
+    /// An id with no recognizable family shows as-is rather than hiding.
+    static func modelDisplayName(_ id: String) -> String {
+        let tokens = id.split(separator: "-")
+        guard let familyIdx = tokens.firstIndex(where: {
+            $0.allSatisfy(\.isLetter) && $0.lowercased() != "claude"
+        }) else { return id }
+        let family = tokens[familyIdx]
+        var before: [Substring] = []
+        var i = familyIdx
+        while i > tokens.startIndex {
+            let t = tokens[tokens.index(before: i)]
+            guard t.allSatisfy(\.isNumber), t.count < 8 else { break }
+            before.insert(t, at: 0)
+            i = tokens.index(before: i)
+        }
+        var after: [Substring] = []
+        i = tokens.index(after: familyIdx)
+        while i < tokens.endIndex {
+            let t = tokens[i]
+            guard t.allSatisfy(\.isNumber), t.count < 8 else { break }
+            after.append(t)
+            i = tokens.index(after: i)
+        }
+        let version = (before + after).joined(separator: ".")
+        let name = family.prefix(1).uppercased() + family.dropFirst()
+        return version.isEmpty ? name : "\(name) \(version)"
     }
 }

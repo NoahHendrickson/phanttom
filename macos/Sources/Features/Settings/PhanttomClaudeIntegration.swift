@@ -11,7 +11,7 @@ import GhosttyKit
 enum PhanttomClaudeIntegration {
     /// Bump on any change to `hookScript` text or `desiredHooks` /
     /// `desiredStatusLine`. Drives the Settings "Update available" state.
-    static let payloadVersion = 1
+    static let payloadVersion = 2
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
@@ -30,7 +30,6 @@ enum PhanttomClaudeIntegration {
 
     enum ActionError: Error, Equatable {
         case claudeNotFound
-        case settingsUnreadable
         case settingsCorrupt
         case writeFailed(String)
     }
@@ -68,8 +67,9 @@ enum PhanttomClaudeIntegration {
         STATE="${HOME}/.claude/phanttom-integration.json"
 
         resolve_tty() {
+          # Some `ps` variants report a bare `?` (not `??`) for no tty.
           t=$(ps -o tty= -p "${CLAUDE_PID:-$PPID}" 2>/dev/null | tr -d " ")
-          case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac
+          case "$t" in ""|"?"|"??") t=/dev/tty;; *) t=/dev/$t;; esac
           printf "%s" "$t"
         }
 
@@ -248,19 +248,19 @@ enum PhanttomClaudeIntegration {
 
     // MARK: - Ownership
 
-    /// Substrings that identify the 2026-07 hand-installed inline hooks so
-    /// install/update can remove them. After JSON parse, shell `\xNN` escapes
-    /// remain as literal backslash-x sequences in the command string.
-    nonisolated static let legacySignatures: [String] = [
-        "]9;4;",
-        "]7;file://localhost",
-        "\\xe2\\x9d\\xaf\\xe2\\x81\\xa3",
-        "statusline-phanttom.sh",
-    ]
-
+    /// Distinctive markers for the 2026-07 hand-installed / PR #15 inline
+    /// hooks. Bare OSC 9;4 / OSC 7 alone are NOT ownership proofs — those are
+    /// generic terminal sequences and would false-positive on foreign hooks.
     nonisolated static func isOurs(command: String) -> Bool {
         if command.contains(hookScriptName) { return true }
-        for sig in legacySignatures where command.contains(sig) {
+        if command.contains("statusline-phanttom.sh") { return true }
+        // Title / model marker: ❯ + U+2063 as shell `\xNN` escapes after JSON parse.
+        if command.contains("\\xe2\\x9d\\xaf\\xe2\\x81\\xa3") { return true }
+        // Legacy inline rain/cwd/stop/notification all resolve tty via CLAUDE_PID
+        // before emitting — foreign OSC hooks won't share that pairing.
+        let hasClaudeTty = command.contains("CLAUDE_PID") && command.contains("ps -o tty=")
+        if hasClaudeTty,
+           command.contains("]9;4;") || command.contains("file://localhost") {
             return true
         }
         return false
@@ -272,9 +272,14 @@ enum PhanttomClaudeIntegration {
 
     // MARK: - Pure merge core (no I/O)
 
-    nonisolated static func install(into settings: [String: Any]) -> [String: Any] {
+    /// Strip every phanttom-owned hook entry; drop empty events (and `hooks`
+    /// itself when empty, unless `keepEmptyHooksObject`).
+    nonisolated static func removeOwnedHooks(
+        from settings: [String: Any],
+        keepEmptyHooksObject: Bool = false
+    ) -> [String: Any] {
         var result = deepCopy(settings)
-        var hooksObj = (result["hooks"] as? [String: Any]) ?? [:]
+        guard var hooksObj = result["hooks"] as? [String: Any] else { return result }
 
         for (event, value) in hooksObj {
             guard var entries = asEntryArray(value) else { continue }
@@ -287,9 +292,26 @@ enum PhanttomClaudeIntegration {
                 hooksObj[event] = entries
             }
         }
+        if hooksObj.isEmpty && !keepEmptyHooksObject {
+            result.removeValue(forKey: "hooks")
+        } else {
+            result["hooks"] = hooksObj
+        }
+        return result
+    }
+
+    nonisolated static func install(into settings: [String: Any]) -> [String: Any] {
+        var result = removeOwnedHooks(from: settings, keepEmptyHooksObject: true)
+        var hooksObj = (result["hooks"] as? [String: Any]) ?? [:]
 
         for desired in desiredHooks {
-            var entries = asEntryArray(hooksObj[desired.event] as Any?) ?? []
+            let existing = hooksObj[desired.event]
+            if existing != nil, asEntryArray(existing) == nil {
+                // Malformed (non-array) value for a desired event — leave it
+                // untouched rather than silently clobbering user data.
+                continue
+            }
+            var entries = asEntryArray(existing) ?? []
             var entry: [String: Any] = [
                 "hooks": [
                     ["type": "command", "command": desired.command] as [String: Any],
@@ -315,26 +337,7 @@ enum PhanttomClaudeIntegration {
     }
 
     nonisolated static func uninstall(from settings: [String: Any]) -> [String: Any] {
-        var result = deepCopy(settings)
-
-        if var hooksObj = result["hooks"] as? [String: Any] {
-            for (event, value) in hooksObj {
-                guard var entries = asEntryArray(value) else { continue }
-                entries.removeAll { entry in
-                    commands(in: entry).contains(where: isOurs(command:))
-                }
-                if entries.isEmpty {
-                    hooksObj.removeValue(forKey: event)
-                } else {
-                    hooksObj[event] = entries
-                }
-            }
-            if hooksObj.isEmpty {
-                result.removeValue(forKey: "hooks")
-            } else {
-                result["hooks"] = hooksObj
-            }
-        }
+        var result = removeOwnedHooks(from: settings)
 
         if let stashed = result[originalStatusLineKey] as? String {
             result["statusLine"] = [
@@ -349,6 +352,36 @@ enum PhanttomClaudeIntegration {
         result.removeValue(forKey: originalStatusLineKey)
 
         return result
+    }
+
+    nonisolated static func hasCompleteDispatch(in settings: [String: Any]) -> Bool {
+        let hooksObj = settings["hooks"] as? [String: Any] ?? [:]
+        let hooksComplete = desiredHooks.allSatisfy { desired in
+            guard let entries = asEntryArray(hooksObj[desired.event] as Any?) else {
+                return false
+            }
+            return entries.contains { entry in
+                commands(in: entry).contains(desired.command)
+            }
+        }
+        let statusCmd = (settings["statusLine"] as? [String: Any])?["command"] as? String
+        let statuslineOurs = statusCmd?.contains(hookScriptName) == true
+        return hooksComplete && statuslineOurs
+    }
+
+    nonisolated static func hasPartialDispatch(in settings: [String: Any]) -> Bool {
+        let hooksObj = settings["hooks"] as? [String: Any] ?? [:]
+        let anyHook = desiredHooks.contains { desired in
+            guard let entries = asEntryArray(hooksObj[desired.event] as Any?) else {
+                return false
+            }
+            return entries.contains { entry in
+                commands(in: entry).contains(where: { $0.contains(hookScriptName) })
+            }
+        }
+        let statusCmd = (settings["statusLine"] as? [String: Any])?["command"] as? String
+        let statuslineOurs = statusCmd?.contains(hookScriptName) == true
+        return anyHook || statuslineOurs
     }
 
     nonisolated static func status(
@@ -368,22 +401,17 @@ enum PhanttomClaudeIntegration {
         }
 
         let hasLegacy = allCommands.contains(where: isLegacy(command:))
-        let hasDispatch = desiredHooks.allSatisfy { desired in
-            guard let entries = asEntryArray(hooksObj[desired.event] as Any?) else {
-                return false
-            }
-            return entries.contains { entry in
-                commands(in: entry).contains(desired.command)
-            }
-        } && ((settings["statusLine"] as? [String: Any])?["command"] as? String)
-            .map { $0.contains(hookScriptName) } ?? false
 
-        if hasDispatch {
+        if hasCompleteDispatch(in: settings) {
             let installed = parseScriptVersion(scriptText)
             if let installed, installed >= payloadVersion {
                 return .installedCurrent
             }
             return .installedOutdated(installedVersion: installed ?? 0)
+        }
+        // Partial dispatch (interrupted install) → Update can repair.
+        if hasPartialDispatch(in: settings) {
+            return .installedOutdated(installedVersion: parseScriptVersion(scriptText) ?? 0)
         }
         if hasLegacy {
             return .legacyInline
@@ -481,7 +509,7 @@ enum PhanttomClaudeIntegration {
     @discardableResult
     nonisolated static func performInstall(paths: Paths = .default) -> ActionResult {
         do {
-            return try mutateSettings(paths: paths, uninstalling: false)
+            return try applyInstall(paths: paths)
         } catch let err as ActionError {
             Ghostty.logger.warning(
                 "phanttom claude integration: install failed: \(errorMessage(err))"
@@ -506,7 +534,7 @@ enum PhanttomClaudeIntegration {
     @discardableResult
     nonisolated static func performUninstall(paths: Paths = .default) -> ActionResult {
         do {
-            return try mutateSettings(paths: paths, uninstalling: true)
+            return try applyUninstall(paths: paths)
         } catch let err as ActionError {
             Ghostty.logger.warning(
                 "phanttom claude integration: uninstall failed: \(errorMessage(err))"
@@ -532,8 +560,6 @@ enum PhanttomClaudeIntegration {
         switch err {
         case .claudeNotFound:
             return "Claude Code not found (~/.claude missing)"
-        case .settingsUnreadable:
-            return "Could not read settings.json"
         case .settingsCorrupt:
             return "settings.json is not valid JSON — aborted without changes"
         case .writeFailed(let detail):
@@ -541,29 +567,22 @@ enum PhanttomClaudeIntegration {
         }
     }
 
-    nonisolated private static func mutateSettings(
-        paths: Paths,
-        uninstalling: Bool
-    ) throws -> ActionResult {
+    /// Script + state first, then settings.json — so a mid-write failure never
+    /// leaves hooks pointing at a missing `phanttom-hook.sh`.
+    nonisolated private static func applyInstall(paths: Paths) throws -> ActionResult {
         guard claudeDirectoryExists(paths: paths) else {
             throw ActionError.claudeNotFound
         }
 
         let fm = FileManager.default
         var settings: [String: Any]
-        let settingsExisted = fm.fileExists(atPath: paths.settings.path)
-        if settingsExisted {
+        if fm.fileExists(atPath: paths.settings.path) {
             do {
                 settings = try readSettings(at: paths.settings)
             } catch {
                 throw ActionError.settingsCorrupt
             }
             try backupSettings(at: paths.settings)
-        } else if uninstalling {
-            try? fm.removeItem(at: paths.script)
-            try? fm.removeItem(at: paths.state)
-            removeLegacyStatuslineScript(paths: paths)
-            return currentStatus(paths: paths)
         } else {
             settings = [:]
         }
@@ -571,22 +590,43 @@ enum PhanttomClaudeIntegration {
         // Legacy statusline wrapper is "ours", so the pure merge won't stash
         // the user's real statusline. Recover the known chain target when
         // migrating the hand-installed 2026-07 setup.
-        if !uninstalling {
-            settings = prepareLegacyStatuslineStash(settings, paths: paths)
+        settings = prepareLegacyStatuslineStash(settings, paths: paths)
+        let next = install(into: settings)
+
+        try writeScript(paths: paths)
+        try writeState(paths: paths, settings: next)
+        try writeSettings(next, to: paths.settings)
+        removeLegacyStatuslineScript(paths: paths)
+
+        return currentStatus(paths: paths)
+    }
+
+    nonisolated private static func applyUninstall(paths: Paths) throws -> ActionResult {
+        guard claudeDirectoryExists(paths: paths) else {
+            throw ActionError.claudeNotFound
         }
 
-        let next = uninstalling ? uninstall(from: settings) : install(into: settings)
-        try writeSettings(next, to: paths.settings)
-
-        if uninstalling {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: paths.settings.path) {
             try? fm.removeItem(at: paths.script)
             try? fm.removeItem(at: paths.state)
             removeLegacyStatuslineScript(paths: paths)
-        } else {
-            try writeScript(paths: paths)
-            try writeState(paths: paths, settings: next)
-            removeLegacyStatuslineScript(paths: paths)
+            return currentStatus(paths: paths)
         }
+
+        let settings: [String: Any]
+        do {
+            settings = try readSettings(at: paths.settings)
+        } catch {
+            throw ActionError.settingsCorrupt
+        }
+        try backupSettings(at: paths.settings)
+
+        let next = uninstall(from: settings)
+        try writeSettings(next, to: paths.settings)
+        try? fm.removeItem(at: paths.script)
+        try? fm.removeItem(at: paths.state)
+        removeLegacyStatuslineScript(paths: paths)
 
         return currentStatus(paths: paths)
     }

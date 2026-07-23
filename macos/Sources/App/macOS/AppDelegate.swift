@@ -315,8 +315,8 @@ class AppDelegate: NSObject,
         setupMenuImages()
         setupPhanttomMenus()
 
-        // One-time Claude Code integration prompt (after menus exist so
-        // "Open Settings" can present the window).
+        // Claude Code integration: honor prior consent / one-time prompt /
+        // re-sync outdated payload (after menus exist so "Open Settings" works).
         DispatchQueue.main.async { [weak self] in
             self?.maybePromptClaudeIntegrationSetup()
         }

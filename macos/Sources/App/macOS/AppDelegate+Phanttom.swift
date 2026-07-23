@@ -48,7 +48,9 @@ extension AppDelegate {
     }
 
     /// One-time prompt when Claude Code is present but Phanttom's hooks are
-    /// not installed (or only the legacy hand-installed form remains).
+    /// not installed (or only the legacy hand-installed form remains). Also
+    /// honors the PR #15 `PhanttomClaudeHooks` consent key and re-syncs an
+    /// outdated payload on launch.
     @MainActor
     func maybePromptClaudeIntegrationSetup() {
         // Ghostty.app is the XCTest host — never prompt (or install) there.
@@ -57,7 +59,31 @@ extension AppDelegate {
         }
 
         let key = PhanttomClaudeIntegration.setupPromptedKey
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let legacyKey = "PhanttomClaudeHooks"
+
+        // PR #15 used an enable/disable string; map it once and never re-ask.
+        if let legacy = UserDefaults.standard.string(forKey: legacyKey) {
+            UserDefaults.standard.set(true, forKey: key)
+            if legacy == "enabled" {
+                let st = PhanttomClaudeIntegration.currentStatus()
+                if st.error == nil, st.status != .installedCurrent {
+                    _ = PhanttomClaudeIntegration.performInstall()
+                }
+            }
+            return
+        }
+
+        if UserDefaults.standard.bool(forKey: key) {
+            // Already decided — quietly repair outdated / legacy installs.
+            let st = PhanttomClaudeIntegration.currentStatus()
+            switch st.status {
+            case .installedOutdated, .legacyInline:
+                _ = PhanttomClaudeIntegration.performInstall()
+            case .notInstalled, .installedCurrent:
+                break
+            }
+            return
+        }
 
         let result = PhanttomClaudeIntegration.currentStatus()
         if result.error == .claudeNotFound {
@@ -66,7 +92,12 @@ extension AppDelegate {
         switch result.status {
         case .notInstalled, .legacyInline:
             break
-        case .installedCurrent, .installedOutdated:
+        case .installedCurrent:
+            UserDefaults.standard.set(true, forKey: key)
+            return
+        case .installedOutdated:
+            UserDefaults.standard.set(true, forKey: key)
+            _ = PhanttomClaudeIntegration.performInstall()
             return
         }
 

@@ -54,12 +54,13 @@ struct PhanttomClaudeIntegrationTests {
     }
 
     @Test func installRemovesLegacyInlineHooks() {
+        // Real 2026-07 / PR #15 shape: CLAUDE_PID tty resolve + OSC payload.
         let legacyRain =
-            "sh -c 'printf \"\\033]9;4;3;0\\033\\\\\" > /dev/tty'"
+            #"sh -c 't=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac; printf "\033]9;4;3;0\033\\" > "$t" 2>/dev/null; true'"#
         let legacyTitle =
-            "sh -c 'printf \"\\xe2\\x9d\\xaf\\xe2\\x81\\xa3 prompt\\007\"'"
+            #"sh -c 'printf "\xe2\x9d\xaf\xe2\x81\xa3 prompt\007"'"#
         let legacyCwd =
-            "sh -c 'printf \"\\033]7;file://localhost/tmp\\033\\\\\"'"
+            #"sh -c 't=$(ps -o tty= -p "${CLAUDE_PID:-0}"); printf "\033]7;file://localhost/tmp\033\\" > "$t"; true'"#
         let input: [String: Any] = [
             "hooks": [
                 "UserPromptSubmit": [
@@ -83,12 +84,39 @@ struct PhanttomClaudeIntegrationTests {
             guard let entries = value as? [[String: Any]] else { continue }
             all.append(contentsOf: entries.flatMap(commands(in:)))
         }
-        #expect(!all.contains(where: { $0.contains("]9;4;") && !$0.contains("phanttom-hook.sh") }))
+        #expect(!all.contains(where: { $0.contains("CLAUDE_PID") && !$0.contains("phanttom-hook.sh") }))
         #expect(!all.contains(where: { $0.contains("statusline-phanttom.sh") }))
         assertDesiredPresent(in: result)
         #expect(PhanttomClaudeIntegration.status(
             of: result, scriptText: PhanttomClaudeIntegration.hookScript
         ) == .installedCurrent)
+    }
+
+    @Test func foreignOscHooksSurviveInstallAndUninstall() {
+        // Bare OSC 9;4 must NOT be treated as Phanttom-owned.
+        let foreign =
+            #"sh -c 'printf "\033]9;4;3;0\033\\" > /dev/tty'"#
+        let input: [String: Any] = [
+            "hooks": [
+                "UserPromptSubmit": [entry(command: foreign)] as [[String: Any]],
+            ] as [String: Any],
+        ]
+        #expect(!PhanttomClaudeIntegration.isOurs(command: foreign))
+
+        let installed = PhanttomClaudeIntegration.install(into: input)
+        let prompt = (installed["hooks"] as? [String: Any])?["UserPromptSubmit"]
+            as? [[String: Any]] ?? []
+        let cmds = prompt.flatMap(commands(in:))
+        #expect(cmds.contains(foreign))
+        #expect(cmds.contains(where: { $0.contains("phanttom-hook.sh") }))
+
+        let uninstalled = PhanttomClaudeIntegration.uninstall(from: installed)
+        let after = (uninstalled["hooks"] as? [String: Any])?["UserPromptSubmit"]
+            as? [[String: Any]] ?? []
+        #expect(after.flatMap(commands(in:)).contains(foreign))
+        #expect(!after.flatMap(commands(in:)).contains(where: {
+            $0.contains("phanttom-hook.sh")
+        }))
     }
 
     @Test func installIsIdempotent() {
@@ -155,10 +183,11 @@ struct PhanttomClaudeIntegrationTests {
     }
 
     @Test func statusDetectsLegacyInline() {
+        let legacyCmd =
+            #"sh -c 't=$(ps -o tty= -p "${CLAUDE_PID:-0}"); printf "\033]9;4;0;0\033\\" > "$t"'"#
         let legacy: [String: Any] = [
             "hooks": [
-                "Stop": [entry(command: "sh -c 'printf \"\\033]9;4;0;0\\033\\\\\"'")]
-                    as [[String: Any]],
+                "Stop": [entry(command: legacyCmd)] as [[String: Any]],
             ] as [String: Any],
         ]
         #expect(PhanttomClaudeIntegration.status(of: legacy, scriptText: nil)

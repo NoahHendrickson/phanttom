@@ -53,10 +53,13 @@ enum SidebarTabGroup: Identifiable {
     }
 }
 
-/// Section header for a project group: disclosure chevron + repo folder
-/// name (click anywhere on that stretch to collapse/expand), and a "+"
-/// button on the trailing edge that opens a new tab in the project's
-/// directory. Small and dimmed, Finder-sidebar style.
+/// Section header for a project group: folder glyph + repo folder name
+/// (click anywhere on that stretch to collapse/expand), and a "+" button on
+/// the trailing edge that opens a new tab in the project's directory. Small
+/// and dimmed, Finder-sidebar style. The folder mirrors the group's state
+/// (open when expanded, closed when collapsed) and yields to the disclosure
+/// chevron while the pointer is over the header — the affordance appears
+/// exactly when the header becomes a click target.
 struct ProjectHeader: View {
     let name: String
     let isCollapsed: Bool
@@ -68,15 +71,32 @@ struct ProjectHeader: View {
     @State private var isHovering = false
     @State private var isHoveringPlus = false
 
-    private var labelSize: Double { max(8, fontSize - 2) }
+    /// Same size as the tab titles; the dimmed weight is what sets the
+    /// header apart.
+    private var labelSize: Double { fontSize }
+
+    /// Fixed glyph slot, sized so the header text starts exactly where the
+    /// tab titles do: this 17pt slot + 6pt spacing equals the rows' 15pt
+    /// status slot + 8pt spacing. Both sizes are constants (independent of
+    /// `fontSize`); the equality is what keeps left-edges aligned.
+    private let glyphSize: CGFloat = 17
 
     var body: some View {
         HStack(spacing: 4) {
             Button(action: onToggle) {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: max(6, fontSize - 4), weight: .bold))
-                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                HStack(spacing: 6) {
+                    Group {
+                        if isHovering {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: max(6, fontSize - 4), weight: .bold))
+                                .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                        } else {
+                            Image(isCollapsed ? "PhanttomFolder" : "PhanttomFolderOpen")
+                                .resizable()
+                                .scaledToFit()
+                        }
+                    }
+                    .frame(width: glyphSize, height: glyphSize)
                     Text(name)
                         .font(.system(size: labelSize, weight: .semibold))
                         .lineLimit(1)
