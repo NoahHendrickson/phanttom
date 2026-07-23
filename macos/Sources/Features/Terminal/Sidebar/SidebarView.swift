@@ -14,8 +14,13 @@ struct SidebarView: View {
     /// titlebar accessory.
     @ObservedObject var updateModel: UpdateViewModel
     @ObservedObject private var settings = PhanttomSettings.shared
+    @ObservedObject private var collapseStore = ProjectCollapseStore.shared
 
-    let onNewTab: () -> Void
+    /// Create a new tab in the given working directory. The second argument
+    /// is the window to insert the new tab before in the native tab order —
+    /// a group's "+" passes its first tab so the new one lands at the top of
+    /// that group; nil appends at the default position.
+    let onNewTab: (String, NSWindow?) -> Void
 
     /// The sidebar's base color per style: system, custom, or derived from
     /// the terminal theme (nudged so the split still reads). Prefer the
@@ -47,22 +52,55 @@ struct SidebarView: View {
     }
 
     var body: some View {
+        // Partition once per body evaluation (the policy lives in
+        // SidebarTabGroup; the view only decides flat vs grouped and
+        // renders). Grouping is presentation-only; headers need at least
+        // one project group — an all-unknown-pwd list has nothing to label.
+        let groups = SidebarTabGroup.groups(from: tabManager.tabs)
+        let grouped = settings.sidebarGroupByProject && groups.contains {
+            if case .project = $0 { return true } else { return false }
+        }
         VStack(spacing: 0) {
             ScrollView {
                 // Plain VStack, not LazyVStack: removal transitions are
                 // unreliable inside lazy containers on macOS 13, and a tab
                 // list is small enough that laziness buys nothing.
                 VStack(spacing: 10) {
-                    ForEach(tabManager.tabs) { tab in
-                        SidebarTabRow(
-                            tab: tab,
-                            foreground: foreground,
-                            fontSize: settings.sidebarFontSize,
-                            onSelect: { tabManager.select(tab) },
-                            onClose: { tabManager.close(tab) },
-                            onRename: { tabManager.rename(tab, to: $0) }
-                        )
-                        .transition(.phanttomTabRow)
+                    if grouped {
+                        ForEach(groups) { group in
+                            switch group {
+                            case .project(let id, let title, let groupTabs):
+                                ProjectHeader(
+                                    name: title,
+                                    isCollapsed: collapseStore.isCollapsed(id),
+                                    foreground: foreground,
+                                    fontSize: settings.sidebarFontSize,
+                                    onToggle: {
+                                        withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                                            collapseStore.toggle(id)
+                                        }
+                                    },
+                                    onNewTab: {
+                                        collapseStore.expand(id)
+                                        onNewTab(id, groupTabs.first?.window)
+                                    }
+                                )
+                                .transition(.phanttomTabRow)
+                                if !collapseStore.isCollapsed(id) {
+                                    ForEach(groupTabs) { tab in
+                                        tabRow(tab)
+                                    }
+                                }
+                            case .pending(let pendingTabs):
+                                ForEach(pendingTabs) { tab in
+                                    tabRow(tab)
+                                }
+                            }
+                        }
+                    } else {
+                        ForEach(tabManager.tabs) { tab in
+                            tabRow(tab)
+                        }
                     }
 
                     // Full-width row-style button trailing the last tab; it
@@ -71,7 +109,15 @@ struct SidebarView: View {
                     NewTabRow(
                         foreground: foreground,
                         fontSize: settings.sidebarFontSize,
-                        action: onNewTab
+                        // The bottom "New tab" is project-neutral: it always
+                        // opens in the home directory (and thus the "~"
+                        // group), not whatever project happens to be focused.
+                        // Expand that group first — a row created into a
+                        // collapsed group would appear and instantly vanish.
+                        action: {
+                            collapseStore.expand(NSHomeDirectory())
+                            onNewTab(NSHomeDirectory(), nil)
+                        }
                     )
                 }
                 .padding(8)
@@ -98,6 +144,21 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
+    }
+
+    /// One tab row — shared between the flat and the grouped layout so the
+    /// row identity (and thus its insert/remove transition) is the same in
+    /// both.
+    private func tabRow(_ tab: SidebarTabManager.TabItem) -> some View {
+        SidebarTabRow(
+            tab: tab,
+            foreground: foreground,
+            fontSize: settings.sidebarFontSize,
+            onSelect: { tabManager.select(tab) },
+            onClose: { tabManager.close(tab) },
+            onRename: { tabManager.rename(tab, to: $0) }
+        )
+        .transition(.phanttomTabRow)
     }
 }
 
@@ -341,8 +402,8 @@ struct SidebarTabRow: View {
 
     /// Status indicator: leading slot on agent cards, trailing slot on
     /// terminal rows. Agent activity wins; an otherwise-idle tab shows its
-    /// branch's GitHub PR state (green = open, purple = merged), and an
-    /// empty (but reserved) slot when there's nothing to say.
+    /// branch's GitHub PR state (green = open, purple = merged), and a
+    /// faint white dot when there's nothing else to say.
     @ViewBuilder private var statusIndicator: some View {
         switch tab.status {
         case .idle:
@@ -352,7 +413,10 @@ struct SidebarTabRow: View {
             case .merged:
                 statusDot(Color(red: 0xA3 / 255, green: 0x71 / 255, blue: 0xF7 / 255))
             case nil:
-                Color.clear
+                // Faint presence mark — no glow, unlike done/attention dots.
+                Circle()
+                    .fill(Color.white.opacity(0.12))
+                    .frame(width: 8, height: 8)
             }
         case .working:
             PixelSparkleView()

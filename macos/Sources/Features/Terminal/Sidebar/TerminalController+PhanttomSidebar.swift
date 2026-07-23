@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import GhosttyKit
 
 /// Phanttom's sidebar wiring for TerminalController, kept out of the upstream
 /// file so windowDidLoad carries a single fork-owned call.
@@ -33,7 +34,10 @@ extension TerminalController {
             // The app-wide Sparkle state; the fallback only exists so previews
             // and tests without an AppDelegate get an inert (idle) model.
             updateModel: (NSApp.delegate as? AppDelegate)?.updateViewModel ?? UpdateViewModel(),
-            onNewTab: { [weak self] in self?.newTab(nil) }
+            onNewTab: { [weak self] workingDirectory, insertBefore in
+                self?.phanttomNewSidebarTab(
+                    in: workingDirectory, before: insertBefore)
+            }
         ))
         // Don't let SwiftUI's ideal size constrain the pane — the split view
         // owns the width, including collapsing it to zero.
@@ -75,6 +79,46 @@ extension TerminalController {
             .store(in: &phanttomSettingsCancellables)
 
         return true
+    }
+
+    /// Create a tab from the sidebar (a group header's "+", or the bottom
+    /// New-tab row) — the one owner of the seed/catch-up/reorder contract:
+    ///
+    /// - Starts from the parent surface's inherited tab config (what the
+    ///   plain ⌘T path uses, so font size etc. carry over) with the
+    ///   explicit working directory swapped in.
+    /// - Seeds the new window's tab state so the sidebar row lands in its
+    ///   project group on the very first frame (the shell won't report a
+    ///   real pwd for another beat) and marks it as catching up for the
+    ///   insert animation classifier.
+    /// - When `insertBefore` is given (a group's "+" passes the group's
+    ///   first window), repositions the new tab in the real native tab
+    ///   order so the sidebar, ⌘1-9, and ctrl-tab all agree it sits at the
+    ///   top of its group. Runs before the deferred presentation, so
+    ///   there's no visible shuffle.
+    func phanttomNewSidebarTab(in workingDirectory: String, before insertBefore: NSWindow?) {
+        var config: Ghostty.SurfaceConfiguration
+        if let surface = focusedSurface?.surface {
+            config = Ghostty.SurfaceConfiguration(
+                from: ghostty_surface_inherited_config(
+                    surface, GHOSTTY_SURFACE_CONTEXT_TAB))
+        } else {
+            config = Ghostty.SurfaceConfiguration()
+        }
+        config.workingDirectory = workingDirectory
+        let controller = TerminalController.newTab(
+            ghostty, from: window, withBaseConfig: config)
+        guard let newWindow = controller?.window else { return }
+        if let state = (newWindow as? TerminalWindow)?.phanttomTabState {
+            state.seedDirectory = workingDirectory
+            state.pendingSidebarCatchUp = true
+        }
+        if let insertBefore, insertBefore !== newWindow,
+           let tabGroup = insertBefore.tabGroup,
+           tabGroup.windows.contains(newWindow) {
+            tabGroup.removeWindow(newWindow)
+            insertBefore.addTabbedWindowSafely(newWindow, ordered: .below)
+        }
     }
 
     @IBAction func togglePhanttomSidebar(_ sender: Any?) {

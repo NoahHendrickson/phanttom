@@ -32,6 +32,10 @@ final class SidebarTabManager: ObservableObject {
         let customTitle: String?
         let autoTitle: String?
         let directory: String?
+        /// The repository toplevel this tab's pwd lives in (worktrees
+        /// resolved to their parent repo) — the sidebar's grouping key.
+        /// nil for non-git pwds.
+        let projectRoot: String?
         let gitBranch: String?
         let prState: PRStatusCache.PRState?
         let kind: TabKind
@@ -260,7 +264,12 @@ final class SidebarTabManager: ObservableObject {
             let id = ObjectIdentifier(w)
             let controller = w.windowController as? BaseTerminalController
             let surface = controller?.focusedSurface
-            let pwd = surface?.pwd ?? w.representedURL?.path
+            let state = (w as? TerminalWindow)?.phanttomTabState
+            // The seed is the directory a sidebar "+" created this tab
+            // into — a stand-in until shell integration reports the real
+            // pwd, so the row groups correctly from its very first frame.
+            if surface?.pwd != nil { state?.seedDirectory = nil }
+            let pwd = surface?.pwd ?? w.representedURL?.path ?? state?.seedDirectory
             let isSelected = w === selected
 
             // Working = any surface in the window reports progress; agents
@@ -273,14 +282,24 @@ final class SidebarTabManager: ObservableObject {
             // first records a transition and the rest agree. Identity is
             // judged from every split's title (the window title only
             // mirrors the focused one).
-            let state = (w as? TerminalWindow)?.phanttomTabState
             state?.update(
                 titles: surfaces.isEmpty ? [w.title] : surfaces.map(\.title),
                 isWorking: isWorking,
                 isSelected: isSelected
             )
 
-            let gitBranch = pwd.flatMap { GitBranchCache.shared.branch(at: $0) }
+            // Definitive resolves update the window's sticky metadata;
+            // unknown gaps (resolve in flight, cache entry pruned) keep the
+            // last known value so group identity never flaps through an
+            // interim state. Windows without tab state (non-TerminalWindow)
+            // just read the cache directly.
+            let freshMeta = pwd.flatMap { GitBranchCache.shared.metadata(at: $0) }
+            if let freshMeta, let state {
+                state.lastGitMetadata = freshMeta
+            }
+            let gitMeta = state?.lastGitMetadata ?? freshMeta
+            let gitBranch = gitMeta?.branch
+            let projectRoot = gitMeta?.projectRoot
             var prState: PRStatusCache.PRState?
             if let pwd, let gitBranch {
                 prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
@@ -292,6 +311,7 @@ final class SidebarTabManager: ObservableObject {
                 customTitle: controller?.titleOverride,
                 autoTitle: state?.autoTitle,
                 directory: pwd,
+                projectRoot: projectRoot,
                 gitBranch: gitBranch,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
@@ -334,11 +354,30 @@ final class SidebarTabManager: ObservableObject {
                 guard tabs.allSatisfy({ $0.id == ownID }),
                       let ownIndex = newTabs.firstIndex(where: { $0.id == ownID })
                 else { return false }
+                let ownState = (window as? TerminalWindow)?.phanttomTabState
+                // Sidebar-created windows mark themselves — deterministic,
+                // and covers a group "+" inserting our brand-new row ABOVE
+                // the pre-existing rows, where the position heuristic below
+                // would read the shape backwards.
+                if ownState?.pendingSidebarCatchUp == true { return true }
+                // Only a window created moments ago can be catching up at
+                // all. Without this gate, an ESTABLISHED lone tab watching
+                // a sibling get inserted above it (its own group's "+")
+                // matches the position heuristic and stages its own row
+                // away — a tab that was open the whole time vanishes for
+                // the fallback timer's full two seconds.
+                guard let ownState,
+                      ContinuousClock.now - ownState.createdAt < .seconds(2)
+                else { return false }
                 let foreign = newTabs.enumerated().filter {
                     $0.element.id != ownID && !oldIDs.contains($0.element.id)
                 }
                 if foreign.count > 1 { return true }
                 guard let only = foreign.first else { return false }
+                // Native flows always join a new tab AFTER its parent, so
+                // for young windows position still breaks the tie: a
+                // pre-existing row materializes above our own row, a
+                // genuinely new tab below.
                 return only.offset < ownIndex
             }()
 
@@ -382,6 +421,15 @@ final class SidebarTabManager: ObservableObject {
                     tabs = newTabs
                 }
             }
+        }
+
+        // The catch-up question is settled once this manager has processed a
+        // list containing rows other than its own; retire the creation flag
+        // so it can't leak into a later, genuinely ambiguous shape.
+        if let ownState = (window as? TerminalWindow)?.phanttomTabState,
+           ownState.pendingSidebarCatchUp,
+           newTabs.contains(where: { $0.id != ObjectIdentifier(window) }) {
+            ownState.pendingSidebarCatchUp = false
         }
 
         let selectedSurface = (selected.windowController as? BaseTerminalController)?.focusedSurface

@@ -5,6 +5,7 @@ import AppKit
 private final class PhanttomTitlebarLeftZoneView: NSView {}
 private final class PhanttomTitlebarRightZoneView: NSView {}
 private final class PhanttomTitlebarDividerView: NSView {}
+private final class PhanttomGroupingButton: NSButton {}
 
 extension TerminalWindow {
     /// Phanttom: splits the titlebar into two color zones aligned with the
@@ -91,7 +92,62 @@ extension TerminalWindow {
             ((contentView as? SidebarSplitView)?.dividerColor
                 ?? NSColor(white: 0.35, alpha: 0.4)).cgColor
 
+        // Grouping mode button hugging the sidebar's right edge (geometry in
+        // phanttomTitlebarZoneSetWidth, so it rides divider drags). Added
+        // normally (topmost), unlike the zones, so it draws above them like
+        // the traffic lights and accessories do.
+        if !titlebarView.subviews.contains(where: { $0 is PhanttomGroupingButton }) {
+            let button = PhanttomGroupingButton()
+            button.isBordered = false
+            button.bezelStyle = .regularSquare
+            button.image = NSImage(
+                systemSymbolName: "rectangle.3.group",
+                accessibilityDescription: "Tab Grouping")
+                ?? NSImage(
+                    systemSymbolName: "square.grid.2x2",
+                    accessibilityDescription: "Tab Grouping")
+            button.contentTintColor = .secondaryLabelColor
+            button.toolTip = "Tab Grouping"
+            button.target = self
+            button.action = #selector(phanttomShowGroupingMenu(_:))
+            button.autoresizingMask = [.maxXMargin]
+            titlebarView.addSubview(button)
+        }
+
         phanttomTitlebarZoneSetWidth(width ?? phanttomSidebarWidth)
+    }
+
+    /// The grouping button's menu: a mode chooser, not a bare toggle, so
+    /// the current state is legible (checkmark) and future grouping modes
+    /// have somewhere to live.
+    @objc private func phanttomShowGroupingMenu(_ sender: NSButton) {
+        let grouped = PhanttomSettings.shared.sidebarGroupByProject
+        let menu = NSMenu()
+        let on = NSMenuItem(
+            title: "Group by Project",
+            action: #selector(phanttomEnableGrouping(_:)),
+            keyEquivalent: "")
+        on.target = self
+        on.state = grouped ? .on : .off
+        menu.addItem(on)
+        let off = NSMenuItem(
+            title: "No Grouping",
+            action: #selector(phanttomDisableGrouping(_:)),
+            keyEquivalent: "")
+        off.target = self
+        off.state = grouped ? .off : .on
+        menu.addItem(off)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: sender)
+    }
+
+    /// The setting is @Published app-wide state: every window's sidebar
+    /// re-renders instantly, and the Settings window checkbox stays in sync.
+    @objc private func phanttomEnableGrouping(_ sender: Any?) {
+        PhanttomSettings.shared.sidebarGroupByProject = true
+    }
+
+    @objc private func phanttomDisableGrouping(_ sender: Any?) {
+        PhanttomSettings.shared.sidebarGroupByProject = false
     }
 
     /// Cheap geometry-only update used during divider drags and the
@@ -122,6 +178,17 @@ extension TerminalWindow {
             .compactMap({ $0 as? PhanttomTitlebarDividerView }).first {
             divider.frame = NSRect(x: dividerX, y: 0, width: 1, height: bounds.height)
             divider.isHidden = width <= 0
+        }
+        if let button = titlebarView.subviews
+            .compactMap({ $0 as? PhanttomGroupingButton }).first {
+            let size: CGFloat = 20
+            button.frame = NSRect(
+                x: max(dividerX - size - 6, 0),
+                y: (bounds.height - size) / 2,
+                width: size, height: size)
+            // Gone (not squished against the traffic lights) while the
+            // sidebar is collapsed or dragged very narrow.
+            button.isHidden = width < 60
         }
     }
 
