@@ -138,7 +138,7 @@ background split keeps its identity — and stored sticky on the window
 - plain title (shell integration reclaiming the tab) → back to `terminal`,
   and clears the auto-name
 
-**Status** (trailing indicator):
+**Status** (leading slot on agent cards, trailing slot on terminal rows):
 - `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
   report (agents in non-focused splits count). Indeterminate reports (state 3,
   what the hooks emit) are exempt from upstream's 15s staleness timeout in
@@ -148,6 +148,9 @@ background split keeps its identity — and stored sticky on the window
 - `attention` (yellow `#F4BC2C`) — bell rang while unselected (judged against
   the bell window's own tab group)
 - selecting a tab clears done/attention
+- otherwise-idle tabs show their branch's GitHub PR state: green `#3FB950`
+  open, purple `#A371F7` merged (`PRStatusCache`, gh-CLI-backed, 60s
+  revalidate; silently absent without gh/auth/PR)
 - status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
 **Name priority**: manual rename (upstream's

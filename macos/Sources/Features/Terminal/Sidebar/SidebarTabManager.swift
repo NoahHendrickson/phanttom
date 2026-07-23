@@ -33,6 +33,7 @@ final class SidebarTabManager: ObservableObject {
         let autoTitle: String?
         let directory: String?
         let gitBranch: String?
+        let prState: PRStatusCache.PRState?
         let kind: TabKind
         let status: TabStatus
         let isSelected: Bool
@@ -279,13 +280,20 @@ final class SidebarTabManager: ObservableObject {
                 isSelected: isSelected
             )
 
+            let gitBranch = pwd.flatMap { GitBranchCache.shared.branch(at: $0) }
+            var prState: PRStatusCache.PRState?
+            if let pwd, let gitBranch {
+                prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
+            }
+
             newTabs.append(TabItem(
                 id: id,
                 title: w.title,
                 customTitle: controller?.titleOverride,
                 autoTitle: state?.autoTitle,
                 directory: pwd,
-                gitBranch: pwd.flatMap { GitBranchCache.shared.branch(at: $0) },
+                gitBranch: gitBranch,
+                prState: prState,
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
