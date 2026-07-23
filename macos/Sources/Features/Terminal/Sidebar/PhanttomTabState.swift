@@ -201,8 +201,10 @@ final class PhanttomTabState {
             // Markers are Claude-only today; the kind label covers the
             // empty-prompt case so the view model never re-parses fields.
             titleFallback = auto.isEmpty ? "Claude" : auto
-            // Only our Claude hook emits the marker; make the kind sticky.
-            if agentKind == nil { agentKind = .claude }
+            // Only our Claude hook emits the marker. Force kind even when a
+            // prior Codex session left agentKind sticky — otherwise the card
+            // stays Codex and the model badge (Claude-only) never shows.
+            agentKind = .claude
             return
         }
 

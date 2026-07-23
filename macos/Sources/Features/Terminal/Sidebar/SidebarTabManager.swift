@@ -69,7 +69,8 @@ final class SidebarTabManager: ObservableObject {
                   !CharacterSet.alphanumerics.contains(first) {
                 s = s.dropFirst()
             }
-            return s.trimmingCharacters(in: .whitespaces)
+            let cleaned = s.trimmingCharacters(in: .whitespaces)
+            return cleaned.isEmpty ? title : cleaned
         }
 
         /// The pwd's display leaf for the agent card subtitle when the

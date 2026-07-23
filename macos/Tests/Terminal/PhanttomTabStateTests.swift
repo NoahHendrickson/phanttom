@@ -183,6 +183,21 @@ struct PhanttomTabStateTests {
         #expect(state.titleFallback == nil)
     }
 
+    @Test func markerForcesKindBackFromCodex() {
+        // Codex first, then a Claude marker (no plain "claude" title): the
+        // marker path must flip kind to .claude so the model badge can show.
+        let state = PhanttomTabState()
+        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        #expect(state.kind == .codex)
+
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .claude)
+        #expect(state.model == "claude-fable-5")
+        #expect(state.autoTitle == "fix login bug")
+    }
+
     @Test func rearmKeepsTitleFallbackFromCurrentMarker() {
         // After Reset Name, autoTitle is nil but the still-current marker
         // prompt must remain available as the presentation fallback so the
