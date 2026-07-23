@@ -31,7 +31,7 @@ enum SidebarTabGroup: Identifiable {
         var byRoot: [String: [SidebarTabManager.TabItem]] = [:]
         var pending: [SidebarTabManager.TabItem] = []
         for tab in tabs {
-            if let root = tab.projectRoot ?? tab.directory {
+            if let root = tab.git?.projectRoot ?? tab.directory {
                 if byRoot[root] == nil { order.append(root) }
                 byRoot[root, default: []].append(tab)
             } else {

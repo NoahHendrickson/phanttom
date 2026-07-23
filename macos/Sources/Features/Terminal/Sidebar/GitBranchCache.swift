@@ -17,10 +17,9 @@ final class GitBranchCache {
     /// What one filesystem resolve learns about a pwd. `projectRoot` is the
     /// repository's top-level directory, with linked worktrees resolved to
     /// the repository they belong to — the sidebar's "project" identity, so
-    /// a worktree tab groups with its parent repo's tabs. `isWorktree` is
-    /// kept on the resolve result (and covered by tests) so a future
-    /// worktree icon can read it without rediscovering linked worktrees;
-    /// the sidebar does not consume it yet.
+    /// a worktree tab groups with its parent repo's tabs. `isWorktree`
+    /// distinguishes those linked-worktree checkouts; the sidebar's branch
+    /// glyph reacts to it.
     struct Resolved: Equatable {
         var branch: String?
         var projectRoot: String?

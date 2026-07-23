@@ -218,10 +218,26 @@ shell integration uses at each prompt), so no app-side plumbing is needed:
 when an agent session enters a linked worktree, the tab's pwd, directory
 label, branch, project group (worktrees group under their parent repo via
 `projectRoot`), and PR dot all follow the agent's checkout, and the row
-swaps the branch glyph for `arrow.triangle.branch` (`TabItem.isWorktree`,
-resolved by `GitBranchCache`). When the session ends, the next shell prompt
-re-reports the real pwd and the tab heals itself — the shell's own OSC 7
-never fires mid-session, so the two writers can't fight.
+swaps the branch glyph for `arrow.triangle.branch` (`Resolved.isWorktree`
+on `TabItem.git`). When the session ends, the next shell prompt re-reports
+the real pwd and the tab heals itself. The two writers can't fight because
+the shell's OSC 7 is emitted by its prompt hooks, and the prompt doesn't
+render while the CLI owns the foreground — it redraws (and re-reports) only
+after the CLI exits. If the CLI ever stops being the sole foreground
+process for the session's lifetime, that assumption breaks.
+
+The exact hook command (identical for all three events; kept here so its
+quoting/escaping is auditable — the installed copy lives in user config):
+
+```sh
+sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > /dev/tty 2>/dev/null; true'
+```
+
+`@uri` percent-encodes everything (spaces, UTF-8, control chars) so no raw
+byte from `.cwd` ever reaches the escape sequence; the `sed` only restores
+`/` so the encoded value still reads as a path. A missing `.cwd`, non-JSON
+input, or absent jq all produce no output (the `true` keeps the hook from
+ever failing the Claude Code call).
 
 Manual test commands (any tab):
 `printf '\033]9;4;3;0\033\\'` (rain) · `printf '\033]9;4;0;0\033\\'` (clear) ·

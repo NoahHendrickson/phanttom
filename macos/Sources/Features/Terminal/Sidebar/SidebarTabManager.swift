@@ -32,15 +32,12 @@ final class SidebarTabManager: ObservableObject {
         let customTitle: String?
         let autoTitle: String?
         let directory: String?
-        /// The repository toplevel this tab's pwd lives in (worktrees
-        /// resolved to their parent repo) — the sidebar's grouping key.
-        /// nil for non-git pwds.
-        let projectRoot: String?
-        let gitBranch: String?
-        /// True when the tab's pwd is a linked git worktree — the Claude
-        /// Code cwd hook (OSC 7) points agent tabs at their worktree, so
-        /// this marks agent sessions working on a checkout of their own.
-        let isWorktree: Bool
+        /// The resolved git metadata for the tab's pwd — branch,
+        /// `projectRoot` (the grouping key; worktrees resolve to their
+        /// parent repo), and the linked-worktree flag — as one snapshot,
+        /// so the fields can never disagree mid-resolve. nil while the pwd
+        /// has never finished a resolve.
+        let git: GitBranchCache.Resolved?
         let prState: PRStatusCache.PRState?
         let kind: TabKind
         let status: TabStatus
@@ -302,11 +299,9 @@ final class SidebarTabManager: ObservableObject {
                 state.lastGitMetadata = freshMeta
             }
             let gitMeta = state?.lastGitMetadata ?? freshMeta
-            let gitBranch = gitMeta?.branch
-            let projectRoot = gitMeta?.projectRoot
             var prState: PRStatusCache.PRState?
-            if let pwd, let gitBranch {
-                prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
+            if let pwd, let branch = gitMeta?.branch {
+                prState = PRStatusCache.shared.state(at: pwd, branch: branch)
             }
 
             newTabs.append(TabItem(
@@ -315,9 +310,7 @@ final class SidebarTabManager: ObservableObject {
                 customTitle: controller?.titleOverride,
                 autoTitle: state?.autoTitle,
                 directory: pwd,
-                projectRoot: projectRoot,
-                gitBranch: gitBranch,
-                isWorktree: gitMeta?.isWorktree ?? false,
+                git: gitMeta,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,

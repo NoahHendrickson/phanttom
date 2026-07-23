@@ -380,23 +380,9 @@ struct SidebarTabRow: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                    if let branch = tab.gitBranch {
+                    if let branch = tab.git?.branch {
                         HStack(spacing: 3) {
-                            if tab.isWorktree {
-                                // Linked worktree: the arrowed variant marks
-                                // a checkout of its own (agent tabs report
-                                // their worktree pwd via the OSC 7 hook).
-                                Image(systemName: "arrow.triangle.branch")
-                                    .font(.system(size: subtitleSize, weight: .medium))
-                                    .help("Linked worktree")
-                            } else {
-                                // GitHub's Octicon git-branch glyph (MIT), as a
-                                // template asset so it tints with the row text.
-                                Image("PhanttomGitBranch")
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: subtitleSize, height: subtitleSize)
-                            }
+                            branchGlyph(isWorktree: tab.git?.isWorktree == true)
                             Text(branch)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -406,6 +392,26 @@ struct SidebarTabRow: View {
                 }
                 .font(.system(size: subtitleSize))
             }
+        }
+    }
+
+    /// The glyph before the branch name: GitHub's Octicon git-branch (MIT,
+    /// a template asset so it tints with the row text) for a normal
+    /// checkout, the arrowed SF Symbol for a linked worktree. One sizing
+    /// contract for both, so a row doesn't shift when a tab's pwd moves
+    /// between a worktree and a plain checkout.
+    @ViewBuilder private func branchGlyph(isWorktree: Bool) -> some View {
+        if isWorktree {
+            Image(systemName: "arrow.triangle.branch")
+                .resizable()
+                .scaledToFit()
+                .frame(width: subtitleSize, height: subtitleSize)
+                .help("Linked worktree")
+        } else {
+            Image("PhanttomGitBranch")
+                .resizable()
+                .scaledToFit()
+                .frame(width: subtitleSize, height: subtitleSize)
         }
     }
 
