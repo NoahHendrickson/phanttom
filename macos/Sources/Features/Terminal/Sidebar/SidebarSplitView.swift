@@ -13,6 +13,14 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     private static let minWidth: CGFloat = 160
     private static let maxWidth: CGFloat = 360
     private static let defaultWidth: CGFloat = 271
+    /// The width the terminal pane keeps when the window is too narrow to
+    /// show the full sidebar: below this the sidebar yields (down to
+    /// `minWidth`) rather than crushing the terminal. ~200pt ≈ a couple dozen
+    /// columns at a typical cell width — enough to stay usable mid-resize.
+    /// Enforced on every automatic layout (window resize, restore, sync,
+    /// expand); a deliberate divider drag is intentionally *not* clamped to
+    /// it (see `constrainMaxCoordinate`), so it is not an absolute floor.
+    private static let terminalMinWidth: CGFloat = 200
 
     private let sidebar: NSView
     /// Exposed so BaseTerminalController.terminalViewContainer can route
@@ -46,9 +54,11 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         addSubview(sidebar)
         addSubview(terminal)
 
-        // The sidebar holds its width; the terminal absorbs window resizes.
-        setHoldingPriority(.init(260), forSubviewAt: 0)
-        setHoldingPriority(.init(250), forSubviewAt: 1)
+        // Window-resize layout is owned outright by
+        // splitView(_:resizeSubviewsWithOldSize:) — the sidebar is a
+        // fixed-width pane and the terminal takes the rest. No holding
+        // priorities: they only steer the default resize we've replaced, so
+        // setting them would just be a second, misleading width owner.
     }
 
     @available(*, unavailable)
@@ -60,6 +70,23 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         let saved = UserDefaults.standard.double(forKey: Self.widthDefaultsKey)
         guard saved > 0 else { return Self.defaultWidth }
         return min(max(saved, Self.minWidth), Self.maxWidth)
+    }
+
+    /// The chosen sidebar width clamped to what the current window can show
+    /// without crushing the terminal below `terminalMinWidth`.
+    ///
+    /// Before the window has a real size (`bounds.width` still zero at init /
+    /// pre-layout — the `> 1` guard tolerates sub-pixel noise) the desired
+    /// width is returned untouched; the first real layout re-fits it. The
+    /// final `min(_, bounds.width)` defends the degenerate case where the
+    /// window is narrower than `minWidth` itself (e.g. an odd intermediate
+    /// frame during a Stage Manager / Split View transition) so the sidebar
+    /// never overhangs its own bounds.
+    private func fittedWidth(_ desired: CGFloat) -> CGFloat {
+        guard bounds.width > 1 else { return desired }
+        let maxFit = bounds.width - dividerThickness - Self.terminalMinWidth
+        let fitted = min(max(desired, Self.minWidth), max(Self.minWidth, maxFit))
+        return min(fitted, bounds.width)
     }
 
     /// Re-applies the shared persisted state when this window becomes main.
@@ -115,7 +142,7 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         guard !didRestoreWidth else { return }
         didRestoreWidth = true
         layoutSubtreeIfNeeded()
-        setPosition(isSidebarCollapsed ? 0 : savedSidebarWidth, ofDividerAt: 0)
+        setPosition(isSidebarCollapsed ? 0 : fittedWidth(savedSidebarWidth), ofDividerAt: 0)
     }
 
     /// True while applying a sibling's state, so the apply itself doesn't
@@ -132,7 +159,7 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
             return
         }
         guard !isSidebarCollapsed, toggleAnimationTimer == nil else { return }
-        let width = savedSidebarWidth
+        let width = fittedWidth(savedSidebarWidth)
         guard abs(sidebar.frame.width - width) > 0.5 else { return }
         setPosition(width, ofDividerAt: 0)
         layoutSubtreeIfNeeded()
@@ -167,7 +194,7 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         toggleAnimationTimer = nil
 
         let start = sidebar.frame.width
-        let target = collapsed ? 0 : savedSidebarWidth
+        let target = collapsed ? 0 : fittedWidth(savedSidebarWidth)
         guard animated, window != nil, start != target else {
             setPosition(target, ofDividerAt: 0)
             layoutSubtreeIfNeeded()
@@ -198,6 +225,40 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
 
     func toggleSidebar(animated: Bool = true) {
         setSidebarCollapsed(!isSidebarCollapsed, animated: animated)
+    }
+
+    /// Own window-resize layout outright: the sidebar is a fixed-width pane at
+    /// `fittedWidth(savedSidebarWidth)` (or 0 collapsed) and the terminal takes
+    /// the rest. Implementing this delegate method *replaces* the default
+    /// holding-priority resize, so the shrink-then-grow drift it used to cause
+    /// simply can't happen — the sidebar recovers to its chosen width the
+    /// instant there's room and yields (down to `minWidth`) only while the
+    /// window is too narrow to keep the terminal usable.
+    ///
+    /// This fires only when our *own* frame changes (window resize), not for
+    /// divider drags or the collapse slide — those reposition the divider,
+    /// which lays subviews out through the normal path. The one exception it
+    /// must respect is a slide in flight: the timer owns the width then, so we
+    /// just reflow the terminal into the new bounds and let it finish.
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        let width = toggleAnimationTimer != nil
+            ? sidebar.frame.width
+            : (isSidebarCollapsed ? 0 : fittedWidth(savedSidebarWidth))
+        layoutPanes(sidebarWidth: width)
+        onSidebarWidthChange?(currentSidebarWidth)
+    }
+
+    /// Place the two panes for a given sidebar width, with the divider's gap
+    /// between them (collapsed to nothing when the sidebar is hidden). Setting
+    /// frames directly — no `setPosition`/`layoutSubtreeIfNeeded`, because
+    /// `resizeSubviewsWithOldSize` is already the layout pass.
+    private func layoutPanes(sidebarWidth: CGFloat) {
+        let width = max(0, min(sidebarWidth, bounds.width))
+        let gap = width < 1 ? 0 : dividerThickness
+        sidebar.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        terminalContainer.frame = NSRect(
+            x: width + gap, y: 0,
+            width: max(0, bounds.width - width - gap), height: bounds.height)
     }
 
     /// Forward the terminal's intrinsic size (plus our chrome) so the
