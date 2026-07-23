@@ -39,45 +39,58 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Area | Files |
 |---|---|
 | Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
-| Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
+| Tab-group model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
+| Pure title/kind/auto-name policy | `Features/Terminal/Sidebar/TabTitlePolicy.swift` |
+| Cached git branch lookup (off main hot path) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
 | `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
 | Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
 | Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |
+| Controller wiring (install/toggle/accessory) | `Features/Terminal/TerminalController+PhanttomSidebar.swift` |
 | Settings model (UserDefaults + config fragment) | `Features/Settings/PhanttomSettings.swift` |
-| Settings UI | `Features/Settings/SettingsView.swift` (replaces upstream's "Coming Soon" placeholder) |
+| Settings UI | `Features/Settings/PhanttomSettingsView.swift` (upstream `SettingsView` left alone) |
 | Settings window host | `Features/Settings/SettingsWindowController.swift` |
+| Title policy unit tests | `macos/Tests/Terminal/TabTitlePolicyTests.swift` |
 | Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
 
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
 
-- `TerminalController.swift`: sidebar creation in `windowDidLoad`, a
-  notification post in `relabelTabs`, the sidebar toggle accessory, and the
-  settings-change subscription.
+- `TerminalController.swift`: one-line `installPhanttomSidebar` call in
+  `windowDidLoad`, plus a notification post in `relabelTabs`. Stored
+  `sidebarTabManager` / `phanttomSettingsCancellable` stay on the class
+  (Swift stored properties can't live in extensions).
 - `TerminalWindow.swift`: `sidebarActive` (tab bar suppression),
-  `phanttomCustomTitle` / `phanttomAutoTitle` / `phanttomAgentKind` storage,
-  and a `syncPhanttomSidebarGlass()` call at the end of `syncAppearance`.
+  `phanttom*` title/status storage, and `syncPhanttomSidebarGlass()` at the
+  end of `syncAppearance`.
 - `AppDelegate.swift`: "Phanttom Settings…" menu item (⌘⇧,).
+- `MainMenu.xib`: Toggle Sidebar (⌘B).
 
 The Xcode project uses filesystem-synchronized groups: **new files under
-`macos/Sources/` are picked up automatically** — no pbxproj editing.
+`macos/Sources/` (and `macos/Tests/`) are picked up automatically** — no
+pbxproj editing.
 
 ## Architecture: how the sidebar works
 
 Ghostty macOS tabs are **native window tabs**: every tab is its own `NSWindow`
 (+ `TerminalController`) joined into an `NSWindowTabGroup`. Phanttom keeps that
 model. Each window's `contentView` is a `SidebarSplitView` =
-`[SwiftUI sidebar | TerminalViewContainer]`; each window has its own
-`SidebarTabManager` instance, all observing the shared tab group, so
-cross-window state must live **on the window** (see the `phanttom*` properties
-on `TerminalWindow`), never in a manager instance.
+`[SwiftUI sidebar | TerminalViewContainer]`.
+
+**One `SidebarTabManager` per tab group** (registry via `shared(for:)`);
+sibling sidebars observe the same object. Per-tab state that must agree across
+sidebars lives **on the window** (`phanttomCustomTitle`, `phanttomAutoTitle`,
+`phanttomAgentKind`, `phanttomDone`, `phanttomAttention`,
+`phanttomWasWorking`) — never in a manager instance. Title/kind/auto-name
+transitions go through pure `TabTitlePolicy` (unit-tested).
 
 `SidebarTabManager` is fully event-driven (no polling):
 - membership changes ride upstream's `relabelTabs` (fires on new tab, close,
   and mouse reorder) via `.phanttomSidebarTabsDidChange`
-- title/pwd via KVO on each window; selection via key-window notifications
+- title/pwd via per-window KVO kept until the window leaves the group
+- selection via key-window notifications
 - per-surface Combine subscriptions to `$progressReport` and
-  `$backgroundColor`
+  `$backgroundColor` (rebound only when the focused surface identity changes)
+- git branch via `GitBranchCache` (async; not on the refresh hot path)
 
 ### Native tab bar suppression — DO NOT "fix" this differently
 
@@ -167,7 +180,8 @@ the app-level getter can miss overrides.
 - `Ghostty.SurfaceView` (`macos/Sources/Ghostty/`, ~11k lines) owns input/IME/
   rendering polish — don't rewrite it, don't regress it. UI work should not
   touch `src/` (Zig) at all.
-- One `SidebarTabManager` per window: shared state goes on `TerminalWindow`.
+- One `SidebarTabManager` per tab group (`shared(for:)`); per-tab state
+  goes on `TerminalWindow` (`phanttom*` props).
 - The design source of truth is the Figma file ("Untitled",
   `MgM8y8QIVMfT2zNEbbxz1S`): component set "tab" with variants for
   kind/selection/status. Metrics: rows 255×29 (terminal) / 255×45 (agent),

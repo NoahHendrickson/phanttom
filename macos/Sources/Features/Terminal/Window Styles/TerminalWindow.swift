@@ -253,7 +253,7 @@ class TerminalWindow: NSWindow {
 
     /// Phanttom: a user-assigned tab name from the sidebar's rename action.
     /// When set, the sidebar shows this instead of the surface title. Stored
-    /// on the window so every sidebar instance in the tab group sees it.
+    /// on the window so every sidebar in the tab group sees it.
     var phanttomCustomTitle: String? = nil
 
     /// Phanttom: an automatic tab name derived from the user's last agent
@@ -262,10 +262,22 @@ class TerminalWindow: NSWindow {
     /// the shell reclaims the title.
     var phanttomAutoTitle: String? = nil
 
-    /// Phanttom: the last detected agent kind for this window, kept sticky
-    /// while decorated/marked titles come through so hook-set titles don't
-    /// flip the row back to a plain terminal.
-    var phanttomAgentKind: SidebarTabManager.TabKind? = nil
+    /// Phanttom: sticky agent kind for this window (`nil` = plain terminal).
+    /// Kept across decorated/marked titles so hook-set titles don't flip the
+    /// row back to a plain terminal. See `TabTitlePolicy`.
+    var phanttomAgentKind: PhanttomTabKind? = nil
+
+    /// Phanttom: work finished while this tab was unselected (blue square).
+    /// Cleared on selection. Owned on the window so every sidebar agrees.
+    var phanttomDone: Bool = false
+
+    /// Phanttom: bell rang while this tab was unselected (yellow square).
+    /// Cleared on selection.
+    var phanttomAttention: Bool = false
+
+    /// Phanttom: whether the surface was reporting progress at last refresh,
+    /// used to detect the working → done edge for unselected tabs.
+    var phanttomWasWorking: Bool = false
 
     /// Phanttom: when true, the native tab bar accessory is hidden as it is
     /// added because the sidebar provides the tab UI. Hiding the accessory

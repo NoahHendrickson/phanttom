@@ -91,9 +91,12 @@ struct SidebarTabRow: View {
     var body: some View {
         Group {
             switch tab.kind {
-            case .terminal: terminalRow
-            case .claude: agentRow(icon: "PhanttomClaude")
-            case .codex: agentRow(icon: "PhanttomCodex")
+            case .terminal:
+                terminalRow
+            case .claude:
+                agentRow(icon: "PhanttomClaude")
+            case .codex:
+                agentRow(icon: "PhanttomCodex")
             }
         }
         .padding(8)

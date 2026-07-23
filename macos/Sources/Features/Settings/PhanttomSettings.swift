@@ -70,15 +70,15 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
-    /// Behind-window glass material under the color layer (Finder-sidebar
-    /// style blur, independent of the terminal's window-level blur).
+    /// Window-level transparency + CGS blur behind the sidebar (see
+    /// `PhanttomWindowGlass`). Independent of the terminal's own blur when
+    /// the terminal is opaque.
     @Published var sidebarGlass: Bool {
         didSet { persist() }
     }
 
-    /// 0.1 ... 1.0 — how strong the glass material reads. AppKit's material
-    /// blur radius isn't publicly tunable, so this blends the frosted layer's
-    /// visibility instead, which is what "less blurry" looks like.
+    /// 0 ... 1.0 — maps to CGS blur radius 0…40 via `PhanttomWindowGlass`.
+    /// 0% is clear (transparency only); 100% is fully frosted.
     @Published var sidebarBlurAmount: Double {
         didSet { persist() }
     }
@@ -197,16 +197,18 @@ final class PhanttomSettings: ObservableObject {
 
     /// Ensure the user's main config includes our fragment (optional include,
     /// so a missing fragment is never an error). Appends exactly once.
+    private static let includeLine = "config-file = ?phanttom.conf"
+
     private func ensureIncluded() throws {
         let mainURL = URL(fileURLWithPath: mainConfigPath)
         let existing = (try? String(contentsOf: mainURL, encoding: .utf8)) ?? ""
-        guard !existing.contains("phanttom.conf") else { return }
+        guard !existing.contains(Self.includeLine) else { return }
 
         let include = existing.isEmpty || existing.hasSuffix("\n")
             ? "" : "\n"
         let addition = include
             + "\n# Phanttom: managed settings overrides (safe to remove)\n"
-            + "config-file = ?phanttom.conf\n"
+            + "\(Self.includeLine)\n"
         try (existing + addition).write(to: mainURL, atomically: true, encoding: .utf8)
     }
 

@@ -935,7 +935,8 @@ class AppDelegate: NSObject,
     // MARK: - IB Actions
 
     /// Phanttom: insert a "Phanttom Settings…" item above "Open Config" in the
-    /// app menu. Done programmatically so MainMenu.xib stays untouched.
+    /// app menu. (Toggle Sidebar ⌘B lives in MainMenu.xib; this item is added
+    /// programmatically so we don't also edit the Open Config neighborhood.)
     private func setupPhanttomSettingsMenu() {
         guard let openConfig = menuOpenConfig, let appMenu = openConfig.menu else { return }
         let item = NSMenuItem(

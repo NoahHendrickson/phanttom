@@ -30,8 +30,8 @@ final class SettingsWindowController: NSWindowController {
 
         PhanttomSettings.shared.ghosttyApp = ghostty
 
-        if window.contentView == nil || !(window.contentView is NSHostingView<SettingsView>) {
-            window.contentView = NSHostingView(rootView: SettingsView(ghostty: ghostty))
+        if window.contentView == nil || !(window.contentView is NSHostingView<PhanttomSettingsView>) {
+            window.contentView = NSHostingView(rootView: PhanttomSettingsView())
             window.center()
         }
 
