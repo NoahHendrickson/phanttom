@@ -14,8 +14,14 @@ struct SidebarView: View {
     /// titlebar accessory.
     @ObservedObject var updateModel: UpdateViewModel
     @ObservedObject private var settings = PhanttomSettings.shared
+    @ObservedObject private var collapseStore = ProjectCollapseStore.shared
 
-    let onNewTab: () -> Void
+    /// Create a new tab in the given working directory (nil = whatever the
+    /// default new-tab behavior inherits). The second argument is the window
+    /// to insert the new tab before in the native tab order — a group's "+"
+    /// passes its first tab so the new one lands at the top of that group;
+    /// nil appends at the default position.
+    let onNewTab: (String?, NSWindow?) -> Void
 
     /// The sidebar's base color per style: system, custom, or derived from
     /// the terminal theme (nudged so the split still reads). Prefer the
@@ -46,6 +52,52 @@ struct SidebarView: View {
             .ignoresSafeArea()
     }
 
+    /// Tabs partitioned by project — the repo toplevel of the tab's pwd
+    /// (worktrees resolve to their parent repo), else the pwd itself for
+    /// non-git directories — in first-appearance order so grouping never
+    /// shuffles more than it must. The group id doubles as the working
+    /// directory that the header's "+" button opens new tabs in. Tabs with
+    /// no known pwd yet (a brand-new surface before shell integration
+    /// reports) form a trailing unnamed bucket.
+    private struct TabGroup: Identifiable {
+        let id: String
+        let name: String?
+        let tabs: [SidebarTabManager.TabItem]
+    }
+
+    private var tabGroups: [TabGroup] {
+        var order: [String] = []
+        var byRoot: [String: [SidebarTabManager.TabItem]] = [:]
+        var ungrouped: [SidebarTabManager.TabItem] = []
+        for tab in tabManager.tabs {
+            if let root = tab.projectRoot ?? tab.directory {
+                if byRoot[root] == nil { order.append(root) }
+                byRoot[root, default: []].append(tab)
+            } else {
+                ungrouped.append(tab)
+            }
+        }
+        let home = NSHomeDirectory()
+        var groups = order.map { root in
+            TabGroup(
+                id: root,
+                name: root == home ? "~" : (root as NSString).lastPathComponent,
+                tabs: byRoot[root] ?? []
+            )
+        }
+        if !ungrouped.isEmpty {
+            // "\0" can't collide with a filesystem path.
+            groups.append(TabGroup(id: "\0ungrouped", name: nil, tabs: ungrouped))
+        }
+        return groups
+    }
+
+    /// Grouping is presentation-only; headers need at least one named group
+    /// (an all-unknown-pwd list has nothing to label).
+    private var showsGroups: Bool {
+        settings.sidebarGroupByProject && tabGroups.contains { $0.name != nil }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -53,16 +105,36 @@ struct SidebarView: View {
                 // unreliable inside lazy containers on macOS 13, and a tab
                 // list is small enough that laziness buys nothing.
                 VStack(spacing: 10) {
-                    ForEach(tabManager.tabs) { tab in
-                        SidebarTabRow(
-                            tab: tab,
-                            foreground: foreground,
-                            fontSize: settings.sidebarFontSize,
-                            onSelect: { tabManager.select(tab) },
-                            onClose: { tabManager.close(tab) },
-                            onRename: { tabManager.rename(tab, to: $0) }
-                        )
-                        .transition(.phanttomTabRow)
+                    if showsGroups {
+                        ForEach(tabGroups) { group in
+                            if let name = group.name {
+                                ProjectHeader(
+                                    name: name,
+                                    isCollapsed: collapseStore.isCollapsed(group.id),
+                                    foreground: foreground,
+                                    fontSize: settings.sidebarFontSize,
+                                    onToggle: {
+                                        withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                                            collapseStore.toggle(group.id)
+                                        }
+                                    },
+                                    onNewTab: {
+                                        collapseStore.expand(group.id)
+                                        onNewTab(group.id, group.tabs.first?.window)
+                                    }
+                                )
+                                .transition(.phanttomTabRow)
+                            }
+                            if group.name == nil || !collapseStore.isCollapsed(group.id) {
+                                ForEach(group.tabs) { tab in
+                                    tabRow(tab)
+                                }
+                            }
+                        }
+                    } else {
+                        ForEach(tabManager.tabs) { tab in
+                            tabRow(tab)
+                        }
                     }
 
                     // Full-width row-style button trailing the last tab; it
@@ -71,7 +143,15 @@ struct SidebarView: View {
                     NewTabRow(
                         foreground: foreground,
                         fontSize: settings.sidebarFontSize,
-                        action: onNewTab
+                        // The bottom "New tab" is project-neutral: it always
+                        // opens in the home directory (and thus the "~"
+                        // group), not whatever project happens to be focused.
+                        // Expand that group first — a row created into a
+                        // collapsed group would appear and instantly vanish.
+                        action: {
+                            collapseStore.expand(NSHomeDirectory())
+                            onNewTab(NSHomeDirectory(), nil)
+                        }
                     )
                 }
                 .padding(8)
@@ -98,6 +178,80 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
+    }
+
+    /// One tab row — shared between the flat and the grouped layout so the
+    /// row identity (and thus its insert/remove transition) is the same in
+    /// both.
+    private func tabRow(_ tab: SidebarTabManager.TabItem) -> some View {
+        SidebarTabRow(
+            tab: tab,
+            foreground: foreground,
+            fontSize: settings.sidebarFontSize,
+            onSelect: { tabManager.select(tab) },
+            onClose: { tabManager.close(tab) },
+            onRename: { tabManager.rename(tab, to: $0) }
+        )
+        .transition(.phanttomTabRow)
+    }
+}
+
+/// Section header for a project group: disclosure chevron + repo folder
+/// name (click anywhere on that stretch to collapse/expand), and a "+"
+/// button on the trailing edge that opens a new tab in the project's
+/// directory. Small and dimmed, Finder-sidebar style.
+private struct ProjectHeader: View {
+    let name: String
+    let isCollapsed: Bool
+    let foreground: Color
+    let fontSize: Double
+    let onToggle: () -> Void
+    let onNewTab: () -> Void
+
+    @State private var isHovering = false
+    @State private var isHoveringPlus = false
+
+    private var labelSize: Double { max(8, fontSize - 2) }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: onToggle) {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: max(6, fontSize - 4), weight: .bold))
+                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                    Text(name)
+                        .font(.system(size: labelSize, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(foreground.opacity(isHovering ? 0.75 : 0.45))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isCollapsed ? "Expand" : "Collapse")
+
+            Button(action: onNewTab) {
+                Image(systemName: "plus")
+                    .font(.system(size: max(6, fontSize - 3), weight: .semibold))
+                    .foregroundStyle(foreground.opacity(
+                        isHoveringPlus ? 0.95 : (isHovering ? 0.65 : 0.35)))
+                    .frame(width: 16, height: 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(foreground.opacity(isHoveringPlus ? 0.14 : 0))
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("New Tab in \(name)")
+            .onHover { isHoveringPlus = $0 }
+            .backport.pointerStyle(.link)
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .onHover { isHovering = $0 }
     }
 }
 

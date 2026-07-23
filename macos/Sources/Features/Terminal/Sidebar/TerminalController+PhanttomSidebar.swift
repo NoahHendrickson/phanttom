@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import GhosttyKit
 
 /// Phanttom's sidebar wiring for TerminalController, kept out of the upstream
 /// file so windowDidLoad carries a single fork-owned call.
@@ -33,7 +34,44 @@ extension TerminalController {
             // The app-wide Sparkle state; the fallback only exists so previews
             // and tests without an AppDelegate get an inert (idle) model.
             updateModel: (NSApp.delegate as? AppDelegate)?.updateViewModel ?? UpdateViewModel(),
-            onNewTab: { [weak self] in self?.newTab(nil) }
+            onNewTab: { [weak self] workingDirectory, insertBefore in
+                guard let self else { return }
+                guard let workingDirectory else {
+                    self.newTab(nil)
+                    return
+                }
+                // Start from the parent surface's inherited tab config (what
+                // the plain ⌘T path uses — font size etc. carry over) and
+                // swap in the explicit working directory.
+                var config: Ghostty.SurfaceConfiguration
+                if let surface = self.focusedSurface?.surface {
+                    config = Ghostty.SurfaceConfiguration(
+                        from: ghostty_surface_inherited_config(
+                            surface, GHOSTTY_SURFACE_CONTEXT_TAB))
+                } else {
+                    config = Ghostty.SurfaceConfiguration()
+                }
+                config.workingDirectory = workingDirectory
+                let controller = TerminalController.newTab(
+                    self.ghostty, from: self.window, withBaseConfig: config)
+                // Seed the sidebar grouping so the new row lands in its
+                // project group on the very first frame — the shell won't
+                // report a real pwd for another beat.
+                guard let newWindow = controller?.window else { return }
+                (newWindow as? TerminalWindow)?
+                    .phanttomTabState.seedDirectory = workingDirectory
+                // A group's "+" puts the new tab at the TOP of its group:
+                // reposition in the real (native) tab order, before the
+                // group's first window, so the sidebar, ⌘1-9, and ctrl-tab
+                // all agree. Runs before the deferred presentation, so
+                // there's no visible shuffle.
+                if let insertBefore, insertBefore !== newWindow,
+                   let tabGroup = insertBefore.tabGroup,
+                   tabGroup.windows.contains(newWindow) {
+                    tabGroup.removeWindow(newWindow)
+                    insertBefore.addTabbedWindowSafely(newWindow, ordered: .below)
+                }
+            }
         ))
         // Don't let SwiftUI's ideal size constrain the pane — the split view
         // owns the width, including collapsing it to zero.

@@ -36,6 +36,13 @@ final class PhanttomTabState {
 
     private(set) var status: Status = .idle
 
+    /// The working directory this tab was created into (sidebar group "+",
+    /// bottom New-tab row). Only a fallback: the sidebar uses it until the
+    /// shell integration reports a real pwd, so a brand-new tab lands in
+    /// its project group immediately instead of flashing through the
+    /// ungrouped bucket.
+    var seedDirectory: String?
+
     /// An automatic tab name derived from the user's first agent prompt of
     /// the session (set via a marker title emitted by the Claude Code
     /// UserPromptSubmit hook). Beaten by the user's rename (upstream's

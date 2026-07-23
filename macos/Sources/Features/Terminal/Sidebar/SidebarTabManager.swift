@@ -32,6 +32,10 @@ final class SidebarTabManager: ObservableObject {
         let customTitle: String?
         let autoTitle: String?
         let directory: String?
+        /// The repository toplevel this tab's pwd lives in (worktrees
+        /// resolved to their parent repo) — the sidebar's grouping key.
+        /// nil for non-git pwds.
+        let projectRoot: String?
         let gitBranch: String?
         let prState: PRStatusCache.PRState?
         let kind: TabKind
@@ -260,7 +264,15 @@ final class SidebarTabManager: ObservableObject {
             let id = ObjectIdentifier(w)
             let controller = w.windowController as? BaseTerminalController
             let surface = controller?.focusedSurface
-            let pwd = surface?.pwd ?? w.representedURL?.path
+            let state = (w as? TerminalWindow)?.phanttomTabState
+            // The seed is the directory a sidebar "+" created this tab
+            // into — a stand-in until shell integration reports the real
+            // pwd, so the row groups correctly from its very first frame.
+            // Once a real pwd exists the seed is done (and must not linger:
+            // it also marks the window as brand-new for the catch-up
+            // tie-break below).
+            if surface?.pwd != nil { state?.seedDirectory = nil }
+            let pwd = surface?.pwd ?? w.representedURL?.path ?? state?.seedDirectory
             let isSelected = w === selected
 
             // Working = any surface in the window reports progress; agents
@@ -273,7 +285,6 @@ final class SidebarTabManager: ObservableObject {
             // first records a transition and the rest agree. Identity is
             // judged from every split's title (the window title only
             // mirrors the focused one).
-            let state = (w as? TerminalWindow)?.phanttomTabState
             state?.update(
                 titles: surfaces.isEmpty ? [w.title] : surfaces.map(\.title),
                 isWorking: isWorking,
@@ -281,6 +292,7 @@ final class SidebarTabManager: ObservableObject {
             )
 
             let gitBranch = pwd.flatMap { GitBranchCache.shared.branch(at: $0) }
+            let projectRoot = pwd.flatMap { GitBranchCache.shared.projectRoot(at: $0) }
             var prState: PRStatusCache.PRState?
             if let pwd, let gitBranch {
                 prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
@@ -292,6 +304,7 @@ final class SidebarTabManager: ObservableObject {
                 customTitle: controller?.titleOverride,
                 autoTitle: state?.autoTitle,
                 directory: pwd,
+                projectRoot: projectRoot,
                 gitBranch: gitBranch,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
@@ -339,7 +352,15 @@ final class SidebarTabManager: ObservableObject {
                 }
                 if foreign.count > 1 { return true }
                 guard let only = foreign.first else { return false }
-                return only.offset < ownIndex
+                if only.offset < ownIndex { return true }
+                // A sidebar-created tab can be inserted ABOVE pre-existing
+                // rows (a group's "+" puts it at the top of its project
+                // group), making this shape identical to "established lone
+                // tab sees a new tab arrive below". The seed breaks the
+                // tie: it only exists between sidebar-driven creation and
+                // the first real pwd report — exactly while our own window
+                // is brand new and catching up.
+                return (window as? TerminalWindow)?.phanttomTabState.seedDirectory != nil
             }()
 
             if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
