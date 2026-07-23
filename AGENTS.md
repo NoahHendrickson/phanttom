@@ -2,6 +2,13 @@
 
 A file for [guiding coding agents](https://agents.md/).
 
+> **This is the Phanttom fork.** Read [PHANTTOM.md](PHANTTOM.md) FIRST — it
+> documents the fork's architecture (sidebar, settings, agent-tab semantics,
+> Claude Code hooks), where all Phanttom code lives, and hard-won gotchas
+> (e.g. never toggle the native tab bar). The rest of this file is upstream
+> Ghostty guidance and still applies, including: never create issues or PRs
+> against upstream.
+
 ## Commands
 
 - **Build:** `zig build`
