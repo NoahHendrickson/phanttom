@@ -581,6 +581,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 }
             }
         }
+
+        // Phanttom: upstream calls this on every tab membership change
+        // (new tab, close, mouse reorder), so it doubles as the sidebar's
+        // change signal.
+        NotificationCenter.default.post(name: .phanttomSidebarTabsDidChange, object: window)
     }
 
     private func fixTabBar() {
@@ -1047,6 +1052,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     // MARK: - NSWindowController
 
+    /// Phanttom: publishes tab metadata for the vertical tab sidebar.
+    private(set) var sidebarTabManager: SidebarTabManager?
+
     override func windowWillLoad() {
         // We do NOT want to cascade because we handle this manually from the manager.
         shouldCascadeWindows = false
@@ -1088,7 +1096,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // SwiftUI focus chain.
         container.initialContentSize = focusedSurface?.initialSize
 
-        window.contentView = container
+        // Phanttom: wrap the terminal in a [sidebar | terminal] split view.
+        let sidebarTabManager = SidebarTabManager(window: window)
+        self.sidebarTabManager = sidebarTabManager
+        let sidebarHost = NSHostingView(rootView: SidebarView(
+            tabManager: sidebarTabManager,
+            onNewTab: { [weak self] in self?.newTab(nil) }
+        ))
+        window.contentView = SidebarSplitView(sidebar: sidebarHost, terminal: container)
 
         // If we have a default size, we want to apply it.
         if let defaultSize {
