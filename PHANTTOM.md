@@ -56,7 +56,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
 | Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
 | Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`) |
-| Async git-branch cache (off-main .git/HEAD reads) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
+| Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
 | `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
 | Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
 | Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |

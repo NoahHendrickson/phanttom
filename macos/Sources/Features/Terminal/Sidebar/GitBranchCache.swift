@@ -1,7 +1,7 @@
 import AppKit
 
-/// The process-global pwd → git metadata (branch + project root) mapping
-/// shown in sidebar rows.
+/// The process-global pwd → git metadata (branch + project root + worktree)
+/// mapping shown in sidebar rows.
 ///
 /// One store, readable synchronously on the main actor: the accessors are
 /// peeks that return the last resolved value immediately and — at most once
@@ -17,10 +17,16 @@ final class GitBranchCache {
     /// What one filesystem resolve learns about a pwd. `projectRoot` is the
     /// repository's top-level directory, with linked worktrees resolved to
     /// the repository they belong to — the sidebar's "project" identity, so
-    /// a worktree tab groups with its parent repo's tabs.
+    /// a worktree tab groups with its parent repo's tabs. `isWorktree` is
+    /// kept on the resolve result (and covered by tests) so a future
+    /// worktree icon can read it without rediscovering linked worktrees;
+    /// the sidebar does not consume it yet.
     struct Resolved: Equatable {
         var branch: String?
         var projectRoot: String?
+        /// True when the pwd lives in a linked git worktree (`.git` is a
+        /// file whose `gitdir:` points under `<repo>/.git/worktrees/`).
+        var isWorktree: Bool = false
     }
 
     /// pwd → last resolved metadata. A stored empty value means "resolved:
@@ -86,6 +92,7 @@ final class GitBranchCache {
             if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDir) {
                 let headPath: String
                 var projectRoot = dir
+                var isWorktree = false
                 if isDir.boolValue {
                     headPath = (gitPath as NSString).appendingPathComponent("HEAD")
                 } else if let contents = try? String(contentsOfFile: gitPath, encoding: .utf8),
@@ -103,12 +110,21 @@ final class GitBranchCache {
                     // so worktree tabs group with the repository they came
                     // from. Anything else (e.g. a submodule's
                     // .git/modules/<name>) keeps the worktree dir itself.
-                    if let range = gitdirResolved.range(of: "/.git/worktrees/") {
+                    // Detection is lexical (`..`/`.` folded) so a gitdir
+                    // that merely routes *through* a worktrees path doesn't
+                    // count — and the same verdict gates the projectRoot
+                    // strip so the two fields can't disagree.
+                    isWorktree = isLinkedWorktreeGitdir(gitdirResolved)
+                    if isWorktree,
+                       let range = gitdirResolved.range(of: "/.git/worktrees/") {
                         projectRoot = String(gitdirResolved[..<range.lowerBound])
                     }
                 } else {
                     return Resolved()
                 }
+                // Unreadable HEAD: no usable checkout — keep the project
+                // identity for grouping, but don't claim worktree (a future
+                // glyph shouldn't badge a broken dir).
                 guard let head = try? String(contentsOfFile: headPath, encoding: .utf8)
                 else { return Resolved(branch: nil, projectRoot: projectRoot) }
                 let prefix = "ref: refs/heads/"
@@ -116,10 +132,41 @@ final class GitBranchCache {
                     ? head.dropFirst(prefix.count)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     : nil // detached HEAD
-                return Resolved(branch: branch, projectRoot: projectRoot)
+                return Resolved(
+                    branch: branch, projectRoot: projectRoot, isWorktree: isWorktree)
             }
             dir = (dir as NSString).deletingLastPathComponent
         }
         return Resolved()
+    }
+
+    /// True when `gitdir` is a linked worktree git dir:
+    /// `<repo>/.git/worktrees/<name>` after purely lexical `..` / `.` folding
+    /// (no filesystem touch — unlike `standardizingPath`).
+    nonisolated static func isLinkedWorktreeGitdir(_ gitdir: String) -> Bool {
+        let components = lexicallyNormalizedPathComponents(gitdir)
+        // Anchor on the last `.git` so an ancestor directory literally named
+        // `.git` (e.g. `~/.git/backups/repo/.git/worktrees/…`) doesn't win.
+        guard let gitIdx = components.lastIndex(of: ".git") else { return false }
+        return gitIdx + 2 < components.count
+            && components[gitIdx + 1] == "worktrees"
+            && components[gitIdx + 2] != "."
+            && components[gitIdx + 2] != ".."
+    }
+
+    /// Collapse `.` / `..` in a path without consulting the filesystem.
+    nonisolated static func lexicallyNormalizedPathComponents(_ path: String) -> [String] {
+        var stack: [String] = []
+        for component in (path as NSString).pathComponents {
+            if component == "." { continue }
+            if component == ".." {
+                if stack.last != nil, stack.last != "/" {
+                    stack.removeLast()
+                }
+                continue
+            }
+            stack.append(component)
+        }
+        return stack
     }
 }
