@@ -42,11 +42,6 @@ final class SidebarTabManager: ObservableObject {
         let kind: TabKind
         let status: TabStatus
         let isSelected: Bool
-        /// True when this tab's pwd lives in the checkout that built the
-        /// currently running Ghostty.app (`RunningAppSource`). Matched on
-        /// `directory` only — never on collapsed `projectRoot`, so a
-        /// worktree and its parent don't both light up.
-        let isRunningAppSource: Bool
         let window: NSWindow
 
         /// What the sidebar shows: the user's custom name, else the
@@ -74,6 +69,16 @@ final class SidebarTabManager: ObservableObject {
         /// Full pwd with ~ abbreviation, for compact terminal rows.
         var abbreviatedDirectory: String? {
             directory.map { ($0 as NSString).abbreviatingWithTildeInPath }
+        }
+
+        /// True when this tab's pwd lives in the checkout that built the
+        /// currently running Ghostty.app. Derived from `directory` only —
+        /// never collapsed `projectRoot` — so a worktree and its parent
+        /// don't both light up. Presentation cue; not stored on the
+        /// snapshot (same shape as `directoryName`).
+        var isRunningAppSource: Bool {
+            guard let directory else { return false }
+            return RunningAppSource.matchesCurrent(directory: directory)
         }
     }
 
@@ -309,16 +314,6 @@ final class SidebarTabManager: ObservableObject {
                 prState = PRStatusCache.shared.state(at: pwd, branch: branch)
             }
 
-            // Path-shaped gate: only local macos/build/… bundles yield a
-            // sourceRoot. Match every tab under that checkout (not
-            // projectRoot — worktrees collapse there).
-            let isRunningAppSource: Bool = {
-                guard let pwd,
-                      let sourceRoot = RunningAppSource.currentSourceRoot
-                else { return false }
-                return RunningAppSource.matches(directory: pwd, sourceRoot: sourceRoot)
-            }()
-
             newTabs.append(TabItem(
                 id: id,
                 title: w.title,
@@ -330,7 +325,6 @@ final class SidebarTabManager: ObservableObject {
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
-                isRunningAppSource: isRunningAppSource,
                 window: w
             ))
         }
