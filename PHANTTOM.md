@@ -63,6 +63,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Settings model (UserDefaults + config fragment) | `Features/Settings/PhanttomSettings.swift` |
 | Settings UI | `Features/Settings/SettingsView.swift` (replaces upstream's "Coming Soon" placeholder) |
 | Settings window host | `Features/Settings/SettingsWindowController.swift` |
+| Claude Code hook installer (consent, launch re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
 | Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
 
 Touches to upstream files are deliberately tiny and greppable — search
@@ -84,7 +85,9 @@ Touches to upstream files are deliberately tiny and greppable — search
   without this, config changes and macOS 26 glass never reach the container).
 - `AppDelegate.swift`: one `setupPhanttomMenus()` call (implementation in
   `AppDelegate+Phanttom.swift`; inserts "Phanttom Settings…" ⌘⇧, and
-  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched).
+  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched), and one
+  `PhanttomClaudeIntegration.shared.setupOnLaunch()` call right after it
+  (Claude Code hook install/re-sync; see the hooks protocol section).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
   the window falls back to plain upstream behavior. This is decided once per
@@ -196,8 +199,19 @@ same one isn't immediately re-captured).
 
 ## Claude Code integration (hooks protocol)
 
-Installed in the user's `~/.claude/settings.json` (not in this repo — it's
-user config; backup kept as `settings.json.bak-phanttom`). All hooks write
+The app installs and maintains these hooks itself — user config is no longer
+hand-maintained. `PhanttomClaudeIntegration` asks once on first launch
+(consent `NSAlert`), then re-syncs `~/.claude/settings.json` silently on
+every launch so protocol fixes ship with app updates; the toggle lives in
+Phanttom Settings → Agents. `hookSpecs` in
+`Features/Settings/PhanttomClaudeIntegration.swift` is the **source of
+truth** for the commands — keep this section in sync with it. Sync
+recognizes Phanttom's entries (current or legacy) by their escape-sequence
+payload signatures (`]9;4;3;0`, `]9;4;0;0`, the `❯`+U+2063 marker bytes,
+`file://localhost`) and replaces them, leaving everything else in the file
+untouched (a rewrite normalizes JSON formatting; original backed up once to
+`settings.json.bak-phanttom`; an unparsable settings file is never
+modified). All hooks write
 escape sequences to the session's terminal device (hook stdout is captured
 by Claude Code, the tty is not). Hooks cannot just open `/dev/tty`: Claude
 Code (observed in 2.1.218) spawns hook processes without a controlling
@@ -211,7 +225,7 @@ nothing (e.g. older Claude Code versions that don't export it):
 | Event | Emits | Phanttom effect |
 |---|---|---|
 | `UserPromptSubmit` | OSC 9;4 state 3 (indeterminate) | pixel rain starts |
-| `UserPromptSubmit` | OSC 2 title `❯⁣ <prompt, 56ch>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`), via `jq -r .prompt` | first prompt names the tab |
+| `UserPromptSubmit` | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`) before the prompt and a second U+2063 before the model id (last non-synthetic assistant turn of the transcript at `.transcript_path`; empty until the session's first response) | first prompt names the tab; model id becomes the card's bottom-right label ("Fable 5", prettified in `PhanttomTabState.modelDisplayName`) |
 | `UserPromptSubmit`, `SessionStart`, `PostToolUse` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (`jq -r '.cwd \| @uri'`, `%2F` restored to `/`) | tab pwd tracks the *agent's* directory, not just the shell's |
 | `Stop` | OSC 9;4 state 0 (clear) | rain stops → Done if unselected |
 | `Notification` | OSC 9;4 clear + BEL | → Attention if unselected |
@@ -233,15 +247,19 @@ render while the CLI owns the foreground — it redraws (and re-reports) only
 after the CLI exits. If the CLI ever stops being the sole foreground
 process for the session's lifetime, that assumption breaks.
 
-The exact hook command (identical for all three events; kept here so its
-quoting/escaping is auditable — the installed copy lives in user config):
+The exact cwd hook command (identical for all three cwd events; kept here so
+its quoting/escaping is auditable — the canonical builder is
+`PhanttomClaudeIntegration.hookSpecs`, the installed copy lives in user
+config):
 
 ```sh
 sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
 ```
 
-The other hooks (rain start/clear, bell, title) share the same
-`ps`-based tty resolution; only their printf payloads differ. If claude
+The other hooks share the same `ps`-based tty resolution; rain start/clear
+and bell differ only in their printf payloads, while the title hook also
+reads the hook's stdin JSON once (for `.prompt`) and tails the transcript
+file (for the model id). If claude
 itself has no tty (`ps` reports `??` — e.g. a headless or app-managed
 session), the fallback write to `/dev/tty` fails silently, which is
 correct: there is no terminal to paint.
@@ -261,7 +279,7 @@ ever failing the Claude Code call).
 Manual test commands (any tab):
 `printf '\033]9;4;3;0\033\\'` (rain) · `printf '\033]9;4;0;0\033\\'` (clear) ·
 `printf '\a'` (bell) ·
-`printf '\033]2;\xe2\x9d\xaf\xe2\x81\xa3 some name\007'` (auto-name) ·
+`printf '\033]2;\xe2\x9d\xaf\xe2\x81\xa3 some name\xe2\x81\xa3claude-fable-5\007'` (auto-name + model) ·
 `printf '\033]7;file://localhost/tmp\033\\'` (agent cwd).
 Tabs can be scripted via AppleScript: `tell application id
 "com.mitchellh.ghostty" to new tab in window 1`.
