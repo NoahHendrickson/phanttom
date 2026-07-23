@@ -61,3 +61,39 @@ Two different repos, two different rules — don't conflate them:
 (Upstream's own version of this section is an unconditional "never create a
 PR". That rule is about *their* repo — it does not apply to the fork, and
 tooling or agents reading this file should not treat fork PRs as forbidden.)
+
+## Cursor Cloud specific instructions
+
+The Cloud Agent VM is **Linux (Ubuntu 24.04, x86_64)**. Phanttom's own
+features are **macOS-only Swift** (`macos/`) and **cannot be built or run
+here** — Xcode/Metal/Swift 6 aren't available on Linux. On this VM you can
+build/run/test the upstream **GTK Linux app + `ghostty` CLI**, the **Zig
+core** (`zig build test`), and **libghostty-vt** (`zig build test-lib-vt`).
+Standard commands live in `AGENTS.md` (above), `HACKING.md`, and `PACKAGING.md`.
+
+The startup update script only refreshes Zig build deps
+(`zig build --fetch -Dversion-string=1.3.2-dev`). The toolchain is baked into
+the VM snapshot: Zig 0.16.0 (`/opt/zig`, on `PATH`), `blueprint-compiler`
+0.16.0 built from source into `/usr/local` (Ubuntu's apt only has 0.12.0, but
+the build requires ≥0.16.0), and the GTK4/libadwaita/X11/GL apt stack.
+
+Non-obvious gotchas on this VM:
+
+- **Always pass `-Dversion-string=1.3.2-dev`** (or any valid semver) to every
+  `zig build …` command. The `phanttom` branch tip currently sits exactly on
+  git tag `v1.5.0`, but `build.zig.zon` declares `1.3.2-dev`; the build's git
+  version detection then `@panic`s with "tagged releases must be in vX.Y.Z
+  format matching build.zig". An explicit `-Dversion-string` bypasses git
+  detection and is always accepted. (If future commits move HEAD off the tag,
+  plain `zig build` works again and the flag stays harmless.)
+- **Build/run/test with `-Dgtk-wayland=false`** (X11 only). `gtk4-layer-shell`
+  isn't packaged on Ubuntu, and the default (Wayland-enabled) build fails at
+  `translate-c … 'gtk4-layer-shell.h' not found`. Wayland isn't needed here —
+  the display is X11 (`DISPLAY=:1`).
+- **Run the GUI:** `DISPLAY=:1 ./zig-out/bin/ghostty` (add `-e <cmd>` to run a
+  command). GL is software (llvmpipe); the `libEGL … DRI3` warning is harmless.
+- **Lint:** `zig fmt --check .` reports failures from the gitignored `zig-pkg/`
+  dependency cache after a build. Check the real source with
+  `zig fmt --check src build.zig build.zig.zon` (CI runs fmt before fetching,
+  so bare `.` is fine there).
+- Full `zig build test` is slow — prefer `-Dtest-filter=<name>`.
