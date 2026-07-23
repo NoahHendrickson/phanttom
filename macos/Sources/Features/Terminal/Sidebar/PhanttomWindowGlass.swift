@@ -42,41 +42,50 @@ extension TerminalWindow {
     ///
     /// Respects the same exclusions as upstream's transparency branch: no
     /// transparency in native fullscreen or when the user forced an opaque
-    /// background. And when the terminal itself is transparent, the
-    /// terminal's configured blur owns the window — we never overwrite it.
+    /// background.
+    ///
+    /// Blur radius ownership: when the terminal itself is transparent,
+    /// upstream just applied the user's configured blur and we never touch
+    /// it. In every other case the radius is ours in BOTH directions — set
+    /// while glass is in effect, zeroed otherwise — so no other path needs
+    /// to undo it.
     func syncPhanttomSidebarGlass(_ surfaceConfig: Ghostty.SurfaceView.DerivedConfig) {
-        guard sidebarActive else { return }
+        // Upstream sets the window blur only for real transparency; its
+        // glass styles provide the material themselves (see syncAppearance).
+        let upstreamOwnsBlur = surfaceConfig.backgroundOpacity < 1
+            && !surfaceConfig.backgroundBlur.isGlassStyle
+        guard !upstreamOwnsBlur else { return }
+
         let settings = PhanttomSettings.shared
-        guard settings.sidebarGlass else { return }
 
         // Mirror upstream's exclusions (see syncAppearance): transparency in
         // native fullscreen turns the background gray and shows widgets, and
         // toggle-background-opacity must win over glass.
-        let forceOpaque = terminalController?.isBackgroundOpaque ?? false
-        guard !styleMask.contains(.fullScreen), !forceOpaque else { return }
+        let glassActive = sidebarActive
+            && settings.sidebarGlass
+            && !styleMask.contains(.fullScreen)
+            && !(terminalController?.isBackgroundOpaque ?? false)
 
-        if isOpaque {
+        if glassActive, isOpaque {
             isOpaque = false
             // Matches upstream's transparency branch (not .clear on purpose).
             backgroundColor = .white.withAlphaComponent(0.001)
         }
 
-        // If the terminal is transparent (or using a glass style), upstream
-        // just applied the user's configured blur — leave it alone.
-        let terminalOwnsBlur = surfaceConfig.backgroundOpacity < 1
-            || surfaceConfig.backgroundBlur.isGlassStyle
-        guard !terminalOwnsBlur else { return }
-
+        // Zero when glass is off (upstream already restored the opaque
+        // window) and when a terminal glass style supplies the material —
+        // a CGS radius must not stack on top of it.
+        let radius: Int32 = glassActive && !surfaceConfig.backgroundBlur.isGlassStyle
+            ? Int32((settings.sidebarBlurAmount * 40).rounded())
+            : 0
         CGSSetWindowBackgroundBlurRadius(
-            CGSDefaultConnectionForThread(),
-            windowNumber,
-            Int32((settings.sidebarBlurAmount * 40).rounded())
-        )
+            CGSDefaultConnectionForThread(), windowNumber, radius)
     }
 
     /// Re-apply appearance when glass settings change at runtime. Upstream's
-    /// syncAppearance restores the opaque window when glass turned off, then
-    /// re-enters syncPhanttomSidebarGlass when it's on.
+    /// syncAppearance restores the opaque window when glass turned off, and
+    /// its trailing syncPhanttomSidebarGlass call settles the blur radius in
+    /// both directions.
     func phanttomGlassSettingsChanged() {
         guard sidebarActive else { return }
         guard let surface = terminalController?.focusedSurface else {
@@ -93,13 +102,5 @@ extension TerminalWindow {
             return
         }
         syncAppearance(surface.derivedConfig)
-
-        // Glass off: zero our radius unless the terminal's own transparency
-        // owns the window blur.
-        if !PhanttomSettings.shared.sidebarGlass,
-           surface.derivedConfig.backgroundOpacity >= 1 {
-            CGSSetWindowBackgroundBlurRadius(
-                CGSDefaultConnectionForThread(), windowNumber, 0)
-        }
     }
 }
