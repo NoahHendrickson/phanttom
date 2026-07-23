@@ -26,14 +26,14 @@ extension AppDelegate {
 
         // The Terminal menu is found via its "Terminal Read-only" item
         // (first-responder target, so target is nil here).
-        let readonlySelector = Selector(("toggleReadonly:"))
+        let readonlySelector = #selector(Ghostty.SurfaceView.toggleReadonly(_:))
         for topItem in NSApp.mainMenu?.items ?? [] {
             guard let menu = topItem.submenu else { continue }
             let idx = menu.indexOfItem(withTarget: nil, andAction: readonlySelector)
             guard idx >= 0 else { continue }
             let item = NSMenuItem(
                 title: "Toggle Sidebar",
-                action: Selector(("togglePhanttomSidebar:")),
+                action: #selector(TerminalController.togglePhanttomSidebar(_:)),
                 keyEquivalent: "b"
             )
             item.keyEquivalentModifierMask = [.command]
