@@ -323,8 +323,6 @@ struct SidebarTabRow: View {
                         HStack(spacing: 3) {
                             // GitHub's Octicon git-branch glyph (MIT), as a
                             // template asset so it tints with the row text.
-                            // Worktree tabs also use this for now
-                            // (`tab.isWorktree` is plumbed for a custom icon later).
                             Image("PhanttomGitBranch")
                                 .resizable()
                                 .scaledToFit()

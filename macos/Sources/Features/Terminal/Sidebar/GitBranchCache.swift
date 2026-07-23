@@ -3,9 +3,9 @@ import AppKit
 /// The process-global pwd → git metadata (branch + worktree) mapping shown
 /// in sidebar rows.
 ///
-/// One store, readable synchronously on the main actor: the accessors are
-/// peeks that return the last resolved value immediately and — at most once
-/// per revalidate interval, deduped while in flight — kick a detached
+/// One store, readable synchronously on the main actor: `branch(at:)` is a
+/// peek that returns the last resolved value immediately and — at most once
+/// per revalidate interval, deduped while in flight — kicks a detached
 /// filesystem resolve so the UI path never walks `.git/HEAD`. When a
 /// resolved value changes, it posts `.phanttomSidebarTabsDidChange`, which
 /// every sidebar manager already observes, so `git checkout` shows up
@@ -14,7 +14,10 @@ import AppKit
 final class GitBranchCache {
     static let shared = GitBranchCache()
 
-    /// What one filesystem resolve learns about a pwd.
+    /// What one filesystem resolve learns about a pwd. `isWorktree` is kept
+    /// on the resolve result (and covered by tests) so a future worktree
+    /// icon can read it without rediscovering linked worktrees; the sidebar
+    /// does not consume it yet.
     struct Resolved: Equatable {
         var branch: String?
         /// True when the pwd lives in a linked git worktree (`.git` is a
@@ -30,19 +33,10 @@ final class GitBranchCache {
     private var inFlight: Set<String> = []
     private let revalidateInterval: Duration = .seconds(2)
 
-    /// The last known metadata for `pwd`, immediately.
-    func metadata(at pwd: String) -> Resolved {
-        peek(at: pwd)
-    }
-
-    /// The last known branch for `pwd`, immediately.
+    /// The last known branch for `pwd`, immediately. Schedules a background
+    /// (re)resolve when the value is stale and none is already running.
     func branch(at pwd: String) -> String? {
-        metadata(at: pwd).branch
-    }
-
-    /// Whether `pwd` is inside a linked git worktree, immediately.
-    func isWorktree(at pwd: String) -> Bool {
-        metadata(at: pwd).isWorktree
+        peek(at: pwd).branch
     }
 
     /// Return the cached value and schedule a background (re)resolve when
@@ -107,7 +101,7 @@ final class GitBranchCache {
                     headPath = (gitdirResolved as NSString).appendingPathComponent("HEAD")
                     // Linked worktrees point at <repo>/.git/worktrees/<name>.
                     // Submodules use .git/modules/<name> and are not worktrees.
-                    isWorktree = gitdirResolved.contains("/.git/worktrees/")
+                    isWorktree = isLinkedWorktreeGitdir(gitdirResolved)
                 } else {
                     return Resolved()
                 }
@@ -125,8 +119,14 @@ final class GitBranchCache {
         return Resolved()
     }
 
-    /// Compatibility shim for call sites that only need the branch string.
-    nonisolated static func readBranch(at pwd: String) -> String? {
-        readMetadata(at: pwd).branch
+    /// True when `gitdir` is a linked worktree git dir:
+    /// `<repo>/.git/worktrees/<name>` (after path standardization).
+    nonisolated static func isLinkedWorktreeGitdir(_ gitdir: String) -> Bool {
+        let components = (gitdir as NSString).standardizingPath.pathComponents
+        guard let gitIdx = components.firstIndex(of: ".git") else { return false }
+        return gitIdx + 2 < components.count
+            && components[gitIdx + 1] == "worktrees"
+            && components[gitIdx + 2] != "."
+            && components[gitIdx + 2] != ".."
     }
 }

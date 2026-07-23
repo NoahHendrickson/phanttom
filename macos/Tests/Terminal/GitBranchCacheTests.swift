@@ -73,6 +73,49 @@ struct GitBranchCacheTests {
         #expect(resolved.isWorktree == false)
     }
 
+    @Test func gitdirWithDotDotThroughWorktreesIsNotAWorktree() throws {
+        // Substring ".git/worktrees/" appears in the raw gitdir line, but
+        // after path standardization it resolves to .git/modules/<name>.
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let module = (root as NSString).appendingPathComponent("vendor/lib")
+        try FileManager.default.createDirectory(atPath: module, withIntermediateDirectories: true)
+
+        let moduleGitdir = (root as NSString).appendingPathComponent(".git/modules/lib")
+        try write(at: moduleGitdir, relative: "HEAD", contents: "ref: refs/heads/main\n")
+        // Also create the decoy worktrees segment the .. path walks through.
+        try FileManager.default.createDirectory(
+            atPath: (root as NSString).appendingPathComponent(".git/worktrees/decoy"),
+            withIntermediateDirectories: true
+        )
+        let sneakyGitdir = (root as NSString)
+            .appendingPathComponent(".git/worktrees/decoy/../../modules/lib")
+        try write(
+            at: module,
+            relative: ".git",
+            contents: "gitdir: \(sneakyGitdir)\n"
+        )
+
+        let resolved = GitBranchCache.readMetadata(at: module)
+        #expect(resolved.branch == "main")
+        #expect(resolved.isWorktree == false)
+    }
+
+    @Test func isLinkedWorktreeGitdirUsesPathComponents() {
+        #expect(GitBranchCache.isLinkedWorktreeGitdir(
+            "/repo/.git/worktrees/feature") == true)
+        #expect(GitBranchCache.isLinkedWorktreeGitdir(
+            "/repo/.git/modules/lib") == false)
+        #expect(GitBranchCache.isLinkedWorktreeGitdir(
+            "/repo/.git/worktrees") == false)
+        // Raw string contains "/.git/worktrees/" but standardizes away.
+        #expect(GitBranchCache.isLinkedWorktreeGitdir(
+            "/repo/.git/worktrees/x/../../modules/lib") == false)
+        #expect(GitBranchCache.isLinkedWorktreeGitdir(
+            "/repo/.git/worktrees_backup/x") == false)
+    }
+
     // MARK: - Helpers
 
     private func makeTempDir() throws -> String {

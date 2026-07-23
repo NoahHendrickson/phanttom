@@ -33,10 +33,6 @@ final class SidebarTabManager: ObservableObject {
         let autoTitle: String?
         let directory: String?
         let gitBranch: String?
-        /// True when `directory` is a linked git worktree. Plumbed for a
-        /// custom worktree icon later; the sidebar still uses the branch
-        /// glyph for now.
-        let isWorktree: Bool
         let prState: PRStatusCache.PRState?
         let kind: TabKind
         let status: TabStatus
@@ -284,9 +280,7 @@ final class SidebarTabManager: ObservableObject {
                 isSelected: isSelected
             )
 
-            let git = pwd.map { GitBranchCache.shared.metadata(at: $0) }
-            let gitBranch = git?.branch
-            let isWorktree = git?.isWorktree ?? false
+            let gitBranch = pwd.flatMap { GitBranchCache.shared.branch(at: $0) }
             var prState: PRStatusCache.PRState?
             if let pwd, let gitBranch {
                 prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
@@ -299,7 +293,6 @@ final class SidebarTabManager: ObservableObject {
                 autoTitle: state?.autoTitle,
                 directory: pwd,
                 gitBranch: gitBranch,
-                isWorktree: isWorktree,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,
