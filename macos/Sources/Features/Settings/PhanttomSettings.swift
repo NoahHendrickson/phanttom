@@ -100,6 +100,13 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// Color of the "working" (thinking) pixel-rain indicator.
+    static let defaultWorkingColor = Color.white
+
+    @Published var sidebarWorkingColor: Color {
+        didSet { persist() }
+    }
+
     /// The sidebar's base color per style, resolved to AppKit so both the
     /// SwiftUI sidebar and the window chrome (titlebar zone) derive from the
     /// same logic. `terminalBackground` feeds the `.matchTerminal` style.
@@ -130,6 +137,7 @@ final class PhanttomSettings: ObservableObject {
         static let sidebarGlass = "PhanttomSidebarGlass"
         static let sidebarBlurAmount = "PhanttomSidebarBlurAmount"
         static let sidebarFontSize = "PhanttomSidebarFontSize"
+        static let sidebarWorkingColor = "PhanttomSidebarWorkingColor"
     }
 
     private var loaded = false
@@ -148,6 +156,7 @@ final class PhanttomSettings: ObservableObject {
         sidebarGlass = defaults.bool(forKey: Keys.sidebarGlass)
         sidebarBlurAmount = defaults.object(forKey: Keys.sidebarBlurAmount) as? Double ?? 1.0
         sidebarFontSize = defaults.object(forKey: Keys.sidebarFontSize) as? Double ?? 11
+        sidebarWorkingColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarWorkingColor)) ?? Self.defaultWorkingColor
         loaded = true
     }
 
@@ -166,6 +175,7 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(sidebarGlass, forKey: Keys.sidebarGlass)
         defaults.set(sidebarBlurAmount, forKey: Keys.sidebarBlurAmount)
         defaults.set(sidebarFontSize, forKey: Keys.sidebarFontSize)
+        defaults.set(Self.hex(from: sidebarWorkingColor), forKey: Keys.sidebarWorkingColor)
     }
 
     // MARK: - Applying terminal settings

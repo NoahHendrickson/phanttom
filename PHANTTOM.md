@@ -140,7 +140,10 @@ background split keeps its identity — and stored sticky on the window
 
 **Status** (trailing indicator):
 - `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
-  report (agents in non-focused splits count)
+  report (agents in non-focused splits count). Indeterminate reports (state 3,
+  what the hooks emit) are exempt from upstream's 15s staleness timeout in
+  `SurfaceView_AppKit.swift`, so the rain runs for the whole task and stops
+  only on an explicit clear (Stop/Notification hooks) or surface close.
 - `done` (blue `#2C86F4`) — work finished while the tab was unselected
 - `attention` (yellow `#F4BC2C`) — bell rang while unselected (judged against
   the bell window's own tab group)
@@ -190,8 +193,9 @@ Two storage planes, deliberately different:
   main config gets a one-time optional include
   (`config-file = ?phanttom.conf`). Never write the user's own config beyond
   that line.
-- **Sidebar appearance** (style/color/opacity/glass/blur) is app-side only:
-  UserDefaults (`Phanttom*` keys), applied instantly via SwiftUI.
+- **Sidebar appearance** (style/color/opacity/glass/blur/working-indicator
+  color) is app-side only: UserDefaults (`Phanttom*` keys), applied instantly
+  via SwiftUI.
 
 `Ghostty.App.config` is `@Published`; SwiftUI observes it for theme
 reactivity. For the *actual rendered* terminal background, prefer the

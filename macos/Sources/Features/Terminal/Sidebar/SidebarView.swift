@@ -4,7 +4,7 @@ import SwiftUI
 /// compact rows for plain terminal tabs, two-line cards for agent tabs
 /// (Claude/Codex) with directory + git branch, and trailing status
 /// indicators (animated pixel sparkle while working, blue "done" and yellow
-/// "attention" squares).
+/// "attention" dots).
 struct SidebarView: View {
     @ObservedObject var ghostty: Ghostty.App
     @ObservedObject var tabManager: SidebarTabManager
@@ -63,58 +63,91 @@ struct SidebarView: View {
                         )
                         .transition(.phanttomTabRow)
                     }
+
+                    // Full-width row-style button trailing the last tab; it
+                    // rides the same layout animation, so it slides as tabs
+                    // come and go.
+                    NewTabRow(
+                        foreground: foreground,
+                        fontSize: settings.sidebarFontSize,
+                        action: onNewTab
+                    )
                 }
                 .padding(8)
                 // Whether a tab change animates is decided at the publish
-                // site (SidebarTabManager.refresh): removals animate,
-                // insertions and Reduce Motion stay instant.
+                // site (SidebarTabManager.refresh): removals and single-row
+                // inserts animate; bulk population and Reduce Motion stay
+                // instant.
             }
 
-            Rectangle()
-                .fill(foreground.opacity(0.08))
-                .frame(height: 1)
-
             // UpdatePill renders nothing when idle; the outer `if` also drops
-            // the row's padding so the footer doesn't grow an empty gap.
+            // the divider and padding so the footer doesn't grow an empty gap.
             if !updateModel.state.isIdle {
+                Rectangle()
+                    .fill(foreground.opacity(0.08))
+                    .frame(height: 1)
+
                 HStack {
                     UpdatePill(model: updateModel)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 19)
-                .padding(.top, 17)
+                .padding(.vertical, 17)
             }
-
-            Button(action: onNewTab) {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus")
-                        .font(.system(size: settings.sidebarFontSize, weight: .medium))
-                    Text("New tab")
-                        .font(.system(size: settings.sidebarFontSize))
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(foreground)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 19)
-            .padding(.vertical, 17)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
     }
 }
 
+/// The "New tab" row at the end of the tab list: same metrics and hover
+/// treatment as a terminal tab row, so it reads as "the next tab slot".
+private struct NewTabRow: View {
+    let foreground: Color
+    let fontSize: Double
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    private var iconSize: CGFloat { CGFloat(fontSize) + 2 }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: "plus")
+                    .font(.system(size: max(6, fontSize - 2), weight: .medium))
+                    .frame(width: iconSize, height: iconSize)
+                Text("New tab")
+                    .font(.system(size: fontSize))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(foreground.opacity(isHovering ? 1 : 0.7))
+            .padding(.vertical, 8)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(foreground.opacity(isHovering ? 0.04 : 0))
+        )
+        .onHover { isHovering = $0 }
+        .backport.pointerStyle(.link)
+        .help("New Tab (⌘T)")
+    }
+}
+
 extension AnyTransition {
-    /// Removal-only transition for sidebar tab rows: a closing tab fades
-    /// with a slight top-anchored compression so it reads as collapsing in
-    /// place, and the layout slide of the neighboring rows does the rest of
-    /// the storytelling. Insertion is identity — new rows just appear (see
-    /// SidebarTabManager.refresh for why inserts must not animate).
-    static let phanttomTabRow: AnyTransition = .asymmetric(
-        insertion: .identity,
-        removal: .opacity.combined(with: .scale(scale: 0.92, anchor: .top))
-    )
+    /// Transition for sidebar tab rows: a fade with a slight top-anchored
+    /// compression, so a closing tab reads as collapsing in place and a new
+    /// tab as unfolding downward; the layout slide of the neighboring rows
+    /// does the rest of the storytelling. Whether a given change animates at
+    /// all is decided at the publish site (SidebarTabManager.refresh):
+    /// removals and single-row inserts do, bulk population doesn't.
+    static let phanttomTabRow: AnyTransition = .opacity
+        .combined(with: .scale(scale: 0.92, anchor: .top))
 }
 
 struct SidebarTabRow: View {
@@ -258,7 +291,7 @@ struct SidebarTabRow: View {
     /// Two-line 45pt card: agent icon + title, then directory + branch.
     private func agentRow(icon: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Image(icon)
                     .resizable()
                     .frame(width: iconSize, height: iconSize)
@@ -316,11 +349,11 @@ struct SidebarTabRow: View {
                 case .working:
                     PixelSparkleView()
                 case .done:
-                    RoundedRectangle(cornerRadius: 2)
+                    Circle()
                         .fill(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
                         .frame(width: 8, height: 8)
                 case .attention:
-                    RoundedRectangle(cornerRadius: 2)
+                    Circle()
                         .fill(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
                         .frame(width: 8, height: 8)
                 }
@@ -336,8 +369,8 @@ struct SidebarTabRow: View {
 /// Ported from the design's canvas reference ("Bare rain, 4 col").
 struct PixelSparkleView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var settings = PhanttomSettings.shared
 
-    private static let color = Color(red: 0x7B / 255, green: 0x5E / 255, blue: 0xFF / 255)
     private static let rows = 5
     private static let cols = 4
     private static let pitch: CGFloat = 3.8
@@ -350,13 +383,17 @@ struct PixelSparkleView: View {
     }
 
     var body: some View {
-        Group {
+        let color = settings.sidebarWorkingColor
+        return Group {
             if reduceMotion {
-                Canvas { canvas, _ in Self.draw(t: 0.6, into: &canvas) }
+                Canvas { canvas, _ in Self.draw(t: 0.6, color: color, into: &canvas) }
             } else {
                 TimelineView(.animation) { context in
                     Canvas { canvas, _ in
-                        Self.draw(t: context.date.timeIntervalSinceReferenceDate, into: &canvas)
+                        Self.draw(
+                            t: context.date.timeIntervalSinceReferenceDate,
+                            color: color,
+                            into: &canvas)
                     }
                 }
             }
@@ -365,7 +402,7 @@ struct PixelSparkleView: View {
         .accessibilityLabel("Working")
     }
 
-    private static func draw(t: Double, into canvas: inout GraphicsContext) {
+    private static func draw(t: Double, color: Color, into canvas: inout GraphicsContext) {
         for i in 0..<cols {
             let speed = 2.5 + frac(Double(i) * 5.7) * 2.5
             let phase = frac(Double(i) * 9.1) * 7

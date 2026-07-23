@@ -103,6 +103,22 @@ struct PhanttomSettingsView: View {
                     }
                 }
 
+                HStack {
+                    ColorPicker(
+                        "Thinking animation",
+                        selection: $settings.sidebarWorkingColor,
+                        supportsOpacity: false
+                    )
+                    if PhanttomSettings.hex(from: settings.sidebarWorkingColor)
+                        != PhanttomSettings.hex(from: PhanttomSettings.defaultWorkingColor) {
+                        Button("Reset") {
+                            settings.sidebarWorkingColor = PhanttomSettings.defaultWorkingColor
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    }
+                }
+
                 Toggle("Glass effect", isOn: $settings.sidebarGlass)
 
                 LabeledSlider(
