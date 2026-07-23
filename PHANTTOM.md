@@ -14,7 +14,9 @@ covers everything Phanttom adds and the sharp edges we've already hit.
 - Remotes: `upstream` = ghostty-org/ghostty, `origin` = the fork,
   `reference-tom` = tomreinert/ghostty (prior-art sidebar fork, study only)
 - **Never open issues or PRs against upstream** (their AGENTS.md forbids
-  agent-created ones; we honor that). All work stays on the fork.
+  agent-created ones; we honor that). All work stays on the fork — and PRs
+  *on the fork* (`origin`, base `phanttom`) are the normal way changes land,
+  not an exception to that rule. See "Issue and PR Guidelines" in AGENTS.md.
 
 ## Build & run
 
