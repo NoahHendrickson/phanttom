@@ -25,9 +25,11 @@ final class GitBranchCache {
         var isWorktree: Bool = false
     }
 
-    /// pwd → last resolved metadata. A stored empty value means "resolved:
-    /// not a git pwd" — distinct from no entry, so always write through
-    /// `updateValue` semantics (the throttle relies on the key existing).
+    /// pwd → last resolved metadata. Always write through assignment (don't
+    /// remove keys) so the throttle can tell "resolved once" from "never
+    /// resolved". An empty `Resolved()` means "no branch to show" — both
+    /// non-git pwds and detached HEAD on a normal checkout produce that
+    /// shape; only the key's presence matters for throttling.
     private var resolved: [String: Resolved] = [:]
     private var lastResolvedAt: [String: ContinuousClock.Instant] = [:]
     private var inFlight: Set<String> = []
@@ -101,12 +103,16 @@ final class GitBranchCache {
                     headPath = (gitdirResolved as NSString).appendingPathComponent("HEAD")
                     // Linked worktrees point at <repo>/.git/worktrees/<name>.
                     // Submodules use .git/modules/<name> and are not worktrees.
+                    // Lexical only — cheap enough to keep even before a glyph
+                    // consumes `isWorktree`.
                     isWorktree = isLinkedWorktreeGitdir(gitdirResolved)
                 } else {
                     return Resolved()
                 }
+                // Unreadable HEAD: treat as no usable checkout (don't claim
+                // worktree either — a future glyph shouldn't badge a broken dir).
                 guard let head = try? String(contentsOfFile: headPath, encoding: .utf8)
-                else { return Resolved(branch: nil, isWorktree: isWorktree) }
+                else { return Resolved() }
                 let prefix = "ref: refs/heads/"
                 let branch: String? = head.hasPrefix(prefix)
                     ? head.dropFirst(prefix.count)
@@ -120,13 +126,32 @@ final class GitBranchCache {
     }
 
     /// True when `gitdir` is a linked worktree git dir:
-    /// `<repo>/.git/worktrees/<name>` (after path standardization).
+    /// `<repo>/.git/worktrees/<name>` after purely lexical `..` / `.` folding
+    /// (no filesystem touch — unlike `standardizingPath`).
     nonisolated static func isLinkedWorktreeGitdir(_ gitdir: String) -> Bool {
-        let components = (gitdir as NSString).standardizingPath.pathComponents
-        guard let gitIdx = components.firstIndex(of: ".git") else { return false }
+        let components = lexicallyNormalizedPathComponents(gitdir)
+        // Anchor on the last `.git` so an ancestor directory literally named
+        // `.git` (e.g. `~/.git/backups/repo/.git/worktrees/…`) doesn't win.
+        guard let gitIdx = components.lastIndex(of: ".git") else { return false }
         return gitIdx + 2 < components.count
             && components[gitIdx + 1] == "worktrees"
             && components[gitIdx + 2] != "."
             && components[gitIdx + 2] != ".."
+    }
+
+    /// Collapse `.` / `..` in a path without consulting the filesystem.
+    nonisolated static func lexicallyNormalizedPathComponents(_ path: String) -> [String] {
+        var stack: [String] = []
+        for component in (path as NSString).pathComponents {
+            if component == "." { continue }
+            if component == ".." {
+                if stack.last != nil, stack.last != "/" {
+                    stack.removeLast()
+                }
+                continue
+            }
+            stack.append(component)
+        }
+        return stack
     }
 }
