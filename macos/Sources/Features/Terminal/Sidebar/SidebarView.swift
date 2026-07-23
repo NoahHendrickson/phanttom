@@ -100,8 +100,13 @@ struct SidebarTabRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
         .contentShape(Rectangle())
-        .onTapGesture(count: 2, perform: startRename)
-        .onTapGesture(perform: onSelect)
+        // Double-tap as .gesture plus single-tap as .simultaneousGesture:
+        // chained onTapGesture modifiers would delay the single tap by the
+        // double-click disambiguation window (~300ms), which reads as tab-
+        // switching lag. This way selection fires on the first click
+        // immediately and a second click still starts a rename (Finder-style).
+        .gesture(TapGesture(count: 2).onEnded(startRename))
+        .simultaneousGesture(TapGesture().onEnded(onSelect))
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Rename Tab…", action: startRename)
