@@ -204,8 +204,13 @@ same one isn't immediately re-captured).
 
 Installed in the user's `~/.claude/settings.json` (not in this repo — it's
 user config; backup kept as `settings.json.bak-phanttom`). All hooks write
-escape sequences to `/dev/tty` (hook stdout is captured by Claude Code, the
-tty is not):
+escape sequences to the session's terminal device, resolved as
+`ps -o tty= -p "$CLAUDE_PID"` with `/dev/tty` as fallback (hook stdout is
+captured by Claude Code, the tty is not). The resolution step is **load-
+bearing**: hook processes have no controlling terminal, so a plain
+`> /dev/tty` write fails silently and the escape never arrives — diagnosed
+live when worktree tabs stopped following the agent's checkout while the
+`ps`-resolving hooks kept working:
 
 | Event                                                                             | Emits                                                                                                                                                                                                                                                                         | Phanttom effect                                                                                                                           |
 | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -254,7 +259,7 @@ The exact hook command (identical for all three events; kept here so its
 quoting/escaping is auditable — the installed copy lives in user config):
 
 ```sh
-sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > /dev/tty 2>/dev/null; true'
+sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
 ```
 
 `@uri` percent-encodes everything (spaces, UTF-8, control chars) so no raw
