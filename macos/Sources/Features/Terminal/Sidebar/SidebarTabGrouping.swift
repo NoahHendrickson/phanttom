@@ -76,8 +76,9 @@ struct ProjectHeader: View {
     private var labelSize: Double { fontSize }
 
     /// Fixed glyph slot, sized so the header text starts exactly where the
-    /// tab titles do: 17pt slot + 6pt spacing here = 15pt status slot +
-    /// 8pt spacing on the rows, at any font size.
+    /// tab titles do: this 17pt slot + 6pt spacing equals the rows' 15pt
+    /// status slot + 8pt spacing. Both sizes are constants (independent of
+    /// `fontSize`); the equality is what keeps left-edges aligned.
     private let glyphSize: CGFloat = 17
 
     var body: some View {

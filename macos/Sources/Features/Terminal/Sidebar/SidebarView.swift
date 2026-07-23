@@ -1,12 +1,13 @@
 import SwiftUI
 
 /// The vertical tab sidebar: compact rows for plain terminal tabs, two-line
-/// cards for agent tabs (Claude/Codex). Agent cards lead with the status
+/// cards for agent tabs (Claude/Codex). Both row styles lead with the status
 /// indicator (animated pixel rain while working, glowing "done"/"attention"
-/// dots), put the close button inline on the title row, and anchor the agent
-/// icon + model name at the bottom-right beside the git branch line (the
-/// project group header already names the directory). Terminal rows keep
-/// their trailing status/close slot.
+/// dots) so the dots form one column down the list. Agent cards put the
+/// close button inline on the title row and anchor the agent icon + model
+/// name at the bottom-right beside the git branch line (the project group
+/// header already names the directory). Terminal rows keep a trailing
+/// close slot only.
 struct SidebarView: View {
     @ObservedObject var ghostty: Ghostty.App
     @ObservedObject var tabManager: SidebarTabManager
@@ -400,10 +401,10 @@ struct SidebarTabRow: View {
         .font(.system(size: subtitleSize))
     }
 
-    /// Status indicator: leading slot on agent cards, trailing slot on
-    /// terminal rows. Agent activity wins; an otherwise-idle tab shows its
-    /// branch's GitHub PR state (green = open, purple = merged), and a
-    /// faint white dot when there's nothing else to say.
+    /// Status indicator: leading slot on both agent cards and terminal
+    /// rows. Agent activity wins; an otherwise-idle tab shows its branch's
+    /// GitHub PR state (green = open, purple = merged), and a faint white
+    /// dot when there's nothing else to say.
     @ViewBuilder private var statusIndicator: some View {
         switch tab.status {
         case .idle:
@@ -436,9 +437,9 @@ struct SidebarTabRow: View {
 
     /// Trailing column on agent cards: hover close button aligned with the
     /// title line, model label aligned with the subtitle line. With a known
-    /// model the label is the bare brand mark + model name (per the design);
-    /// until the hook has reported one (or for agents that never do, like
-    /// Codex) it stays the chip-style agent icon alone.
+    /// model on a Claude tab the label is the bare brand mark + model name
+    /// (per the design); until the hook has reported one — or for kinds
+    /// with no brand mark (Codex) — it stays the chip-style `icon`.
     private func agentTrailing(icon: String) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
             Group {
@@ -449,9 +450,12 @@ struct SidebarTabRow: View {
                 }
             }
             .frame(width: iconSize, height: iconSize)
-            if let model = tab.model {
+            // Model label is a Claude-only contract today; resolve the mark
+            // from kind so a stale model on another kind can't hardcode the
+            // Claude asset over the chip `icon`.
+            if let model = tab.model, let mark = brandMark(for: tab.kind) {
                 HStack(spacing: 3) {
-                    Image("PhanttomClaudeMark")
+                    Image(mark)
                         .resizable()
                         .scaledToFit()
                         .frame(width: CGFloat(subtitleSize) - 2,
@@ -467,6 +471,14 @@ struct SidebarTabRow: View {
                     .resizable()
                     .frame(width: iconSize, height: iconSize)
             }
+        }
+    }
+
+    /// Bare brand mark for the model-label trailing slot. nil → chip `icon`.
+    private func brandMark(for kind: SidebarTabManager.TabKind) -> String? {
+        switch kind {
+        case .claude: return "PhanttomClaudeMark"
+        case .codex, .terminal: return nil
         }
     }
 

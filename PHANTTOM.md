@@ -151,7 +151,7 @@ background split keeps its identity — and stored sticky on the window
 - plain title (shell integration reclaiming the tab) → back to `terminal`,
   and clears the auto-name
 
-**Status** (leading slot on agent cards, trailing slot on terminal rows):
+**Status** (leading slot on both agent cards and terminal rows):
 
 - `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
   report (agents in non-focused splits count). Indeterminate reports (state 3,
@@ -194,11 +194,14 @@ bucket.
 **Name priority**: manual rename (upstream's
 `BaseTerminalController.titleOverride` — shared with the titlebar, command
 palette, and window restoration, so custom names survive restart) → prompt
-auto-name (`phanttomTabState.autoTitle`) → title with leading decoration glyphs
-stripped. Auto-name comes from a marker title (`❯` + U+2063) and locks to the
-**first** prompt of a session; it re-arms when the shell reclaims the title
-or via context-menu **Reset Name** (which remembers the consumed title so the
-same one isn't immediately re-captured).
+auto-name (`phanttomTabState.autoTitle`) → state-owned title fallback
+(`phanttomTabState.titleFallback`: current marker prompt, or `"Claude"` for a
+model-only marker) → title with leading decoration glyphs stripped. Auto-name
+comes from a marker title (`❯` + U+2063) and locks to the **first** prompt of
+a session; it re-arms when the shell reclaims the title or via context-menu
+**Reset Name** (which remembers the consumed title so the same one isn't
+immediately re-captured). Marker-protocol parsing lives entirely in
+`PhanttomTabState` — the sidebar view model has no U+2063 awareness.
 
 ## Claude Code integration (hooks protocol)
 
@@ -215,7 +218,7 @@ live when worktree tabs stopped following the agent's checkout while the
 | Event                                                                             | Emits                                                                                                                                                                                                                                                                         | Phanttom effect                                                                                                                           |
 | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `UserPromptSubmit`                                                                | OSC 9;4 state 3 (indeterminate)                                                                                                                                                                                                                                               | pixel rain starts                                                                                                                         |
-| `UserPromptSubmit`                                                                | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`) before the prompt and a second U+2063 before the model id (last non-synthetic assistant turn of the transcript at `.transcript_path`; empty until the session's first response) | first prompt names the tab; model id becomes the card's bottom-right label ("Fable 5", prettified in `PhanttomTabState.modelDisplayName`) |
+| `UserPromptSubmit`                                                                | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`) before the prompt and a second U+2063 before the model id (last non-synthetic assistant turn of the transcript at `.transcript_path`; empty until the session's first response) | first prompt names the tab; raw model id is sticky on `PhanttomTabState` and pretty-printed at the `TabItem` edge via `modelDisplayName` ("Fable 5") |
 | `UserPromptSubmit`, `SessionStart`, `PostToolUse` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (`jq -r '.cwd \| @uri'`, `%2F` restored to `/`)                                                                                                                                                                                                 | tab pwd tracks the _agent's_ directory, not just the shell's                                                                              |
 | `Stop`                                                                            | OSC 9;4 state 0 (clear)                                                                                                                                                                                                                                                       | rain stops → Done if unselected                                                                                                           |
 | `Notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                                                                                                                                           | → Attention if unselected                                                                                                                 |
@@ -237,9 +240,8 @@ settings) relays the JSON to the user's real statusline script unchanged
 and sidebands the model as a model-only marker title — emitted only when
 the model _changes_ (cached per claude process in `$TMPDIR`), so the title
 channel isn't stomped on every render. App-side, a model-only marker sets
-kind/model but never the auto-name, and `displayTitle` cuts the model field
-off before glyph-stripping so a model id can't masquerade as a tab name
-(falls back to "Claude" when nothing nameable remains).
+kind/model and `titleFallback = "Claude"` but never the auto-name, so a
+model id can't masquerade as a tab name.
 
 The OSC 7 cwd report rides the terminal's normal pwd channel (the same one
 shell integration uses at each prompt), so no app-side plumbing is needed:

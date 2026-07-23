@@ -40,44 +40,36 @@ final class SidebarTabManager: ObservableObject {
         let git: GitBranchCache.Resolved?
         let prState: PRStatusCache.PRState?
         let kind: TabKind
-        /// Display name of the agent session's model ("Fable 5"), reported
-        /// through the marker-title protocol. nil until the hook has seen
-        /// an assistant turn (or for non-Claude tabs).
+        /// Display name of the agent session's model ("Fable 5"), pretty-
+        /// printed from the raw id in `PhanttomTabState` at snapshot time.
+        /// nil until the hook has seen an assistant turn (or for non-Claude
+        /// tabs).
         let model: String?
+        /// State-owned title when custom/auto are absent (marker prompt, or
+        /// kind label for a model-only marker). Nil means fall through to
+        /// glyph-stripping the surface title.
+        let titleFallback: String?
         let status: TabStatus
         let isSelected: Bool
         let window: NSWindow
 
         /// What the sidebar shows: the user's custom name, else the
-        /// prompt-derived auto name, else the surface title with leading
-        /// decoration glyphs stripped (agents like Claude Code prefix their
-        /// own "✳", which doubles our icon).
+        /// prompt-derived auto name, else the state's presentation
+        /// fallback, else the surface title with leading decoration glyphs
+        /// stripped (agents like Claude Code prefix their own "✳", which
+        /// doubles our icon). Marker-protocol parsing stays in
+        /// `PhanttomTabState` — this path has no U+2063 awareness.
         var displayTitle: String {
             if let customTitle, !customTitle.isEmpty { return customTitle }
             if let autoTitle, !autoTitle.isEmpty { return autoTitle }
+            if let titleFallback, !titleFallback.isEmpty { return titleFallback }
             guard kind != .terminal else { return title }
             var s = Substring(title)
-            // A marker title carries the model id after a second U+2063 —
-            // and a model-only marker (statusline sideband) has an empty
-            // prompt field. Cut the model off before the glyph strip so it
-            // can never masquerade as a name.
-            if s.hasPrefix(PhanttomTabState.autoNameMarker) {
-                s = s.dropFirst(PhanttomTabState.autoNameMarker.count)
-                if let cut = s.firstIndex(of: "\u{2063}") {
-                    s = s[..<cut]
-                }
-            }
             while let first = s.unicodeScalars.first,
                   !CharacterSet.alphanumerics.contains(first) {
                 s = s.dropFirst()
             }
-            let cleaned = s.trimmingCharacters(in: .whitespaces)
-            // Nothing nameable left (e.g. a model-only marker before the
-            // first prompt): name the agent rather than echoing raw title.
-            if cleaned.isEmpty {
-                return kind == .claude ? "Claude" : title
-            }
-            return cleaned
+            return s.trimmingCharacters(in: .whitespaces)
         }
 
         /// The pwd's display leaf for the agent card subtitle when the
@@ -335,7 +327,8 @@ final class SidebarTabManager: ObservableObject {
                 git: gitMeta,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
-                model: state?.model,
+                model: state?.model.map { PhanttomTabState.modelDisplayName($0) },
+                titleFallback: state?.titleFallback,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
                 window: w
