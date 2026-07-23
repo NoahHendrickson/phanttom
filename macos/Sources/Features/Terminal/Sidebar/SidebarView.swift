@@ -402,8 +402,8 @@ struct SidebarTabRow: View {
 
     /// Status indicator: leading slot on agent cards, trailing slot on
     /// terminal rows. Agent activity wins; an otherwise-idle tab shows its
-    /// branch's GitHub PR state (green = open, purple = merged), and an
-    /// empty (but reserved) slot when there's nothing to say.
+    /// branch's GitHub PR state (green = open, purple = merged), and a
+    /// faint white dot when there's nothing else to say.
     @ViewBuilder private var statusIndicator: some View {
         switch tab.status {
         case .idle:
@@ -413,7 +413,10 @@ struct SidebarTabRow: View {
             case .merged:
                 statusDot(Color(red: 0xA3 / 255, green: 0x71 / 255, blue: 0xF7 / 255))
             case nil:
-                Color.clear
+                // Faint presence mark — no glow, unlike done/attention dots.
+                Circle()
+                    .fill(Color.white.opacity(0.12))
+                    .frame(width: 8, height: 8)
             }
         case .working:
             PixelSparkleView()
