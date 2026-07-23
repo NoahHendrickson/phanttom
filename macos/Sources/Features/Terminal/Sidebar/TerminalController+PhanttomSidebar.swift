@@ -26,6 +26,9 @@ extension TerminalController {
         let sidebarHost = NSHostingView(rootView: SidebarView(
             ghostty: ghostty,
             tabManager: sidebarTabManager,
+            // The app-wide Sparkle state; the fallback only exists so previews
+            // and tests without an AppDelegate get an inert (idle) model.
+            updateModel: (NSApp.delegate as? AppDelegate)?.updateViewModel ?? UpdateViewModel(),
             onNewTab: { [weak self] in self?.newTab(nil) }
         ))
         // Don't let SwiftUI's ideal size constrain the pane — the split view

@@ -32,6 +32,15 @@ open -n macos/build/Debug/Ghostty.app                       # launch the debug a
 - Capture build exit codes directly (`cmd > log 2>&1; echo $?`) — piping
   through `grep`/`tail` masks failures.
 
+## Releasing
+
+Distribution + auto-updates (GitHub Releases feed, Sparkle EdDSA keys, the
+`phanttom-release.yml` workflow, sidebar update pill) are documented in
+[PHANTTOM-RELEASING.md](PHANTTOM-RELEASING.md). The update feed and the
+`SUPublicEDKey` in `Ghostty-Info.plist` are the fork's own — never point
+either back at Ghostty's servers/keys or users will be "updated" to stock
+Ghostty.
+
 ## Where Phanttom's code lives
 
 All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.

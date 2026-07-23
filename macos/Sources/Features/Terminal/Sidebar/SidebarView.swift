@@ -8,6 +8,10 @@ import SwiftUI
 struct SidebarView: View {
     @ObservedObject var ghostty: Ghostty.App
     @ObservedObject var tabManager: SidebarTabManager
+    /// The app-wide Sparkle update state, so "update available" is one click
+    /// away in the sidebar footer (Cursor-style) rather than only in the
+    /// titlebar accessory.
+    @ObservedObject var updateModel: UpdateViewModel
     @ObservedObject private var settings = PhanttomSettings.shared
 
     let onNewTab: () -> Void
@@ -69,6 +73,17 @@ struct SidebarView: View {
             Rectangle()
                 .fill(foreground.opacity(0.08))
                 .frame(height: 1)
+
+            // UpdatePill renders nothing when idle; the outer `if` also drops
+            // the row's padding so the footer doesn't grow an empty gap.
+            if !updateModel.state.isIdle {
+                HStack {
+                    UpdatePill(model: updateModel)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 19)
+                .padding(.top, 17)
+            }
 
             Button(action: onNewTab) {
                 HStack(spacing: 6) {

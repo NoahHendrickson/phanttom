@@ -7,12 +7,15 @@ extension UpdateDriver: SPUUpdaterDelegate {
             return nil
         }
 
-        // Sparkle supports a native concept of "channels" but it requires that
-        // you share a single appcast file. We don't want to do that so we
-        // do this instead.
+        // Phanttom: updates come from the fork's GitHub Releases, never from
+        // Ghostty's servers — an upstream appcast would "update" users to
+        // stock Ghostty and wipe out the fork. `releases/latest/download`
+        // always redirects to the newest non-prerelease asset, so the feed
+        // URL is stable across releases. The fork doesn't ship separate
+        // tip/stable channels (yet), so both map to the same feed.
         switch appDelegate.ghostty.config.autoUpdateChannel {
-        case .tip: return "https://tip.files.ghostty.org/appcast.xml"
-        case .stable: return "https://release.files.ghostty.org/appcast.xml"
+        case .tip, .stable:
+            return "https://github.com/NoahHendrickson/phanttom/releases/latest/download/appcast.xml"
         }
     }
 

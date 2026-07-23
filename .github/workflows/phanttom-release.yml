@@ -1,0 +1,206 @@
+# Phanttom release: build a downloadable, self-updating macOS app with no
+# Apple Developer Program membership.
+#
+#   - Push a tag like `v0.1.0` -> full release, becomes the Sparkle feed's
+#     "latest" (auto-update target for all users).
+#   - Manual dispatch -> prerelease tagged `tip-<build>`, for testing the
+#     pipeline; prereleases are NOT served by `releases/latest`, so they
+#     never reach users' auto-updates.
+#
+# The app is ad-hoc signed (no Apple certs). Gatekeeper will make each user
+# approve the first launch (System Settings -> Privacy & Security -> Open
+# Anyway); after that Sparkle self-updates silently, verified by the EdDSA
+# signature in the appcast. See PHANTTOM-RELEASING.md for the one-time
+# Sparkle key setup.
+#
+# Required repository secrets:
+#   SPARKLE_KEY_PUB      - Sparkle EdDSA public key (base64, from generate_keys)
+#   SPARKLE_PRIVATE_KEY  - Sparkle EdDSA private key (from generate_keys -x)
+name: Phanttom Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ZIP_NAME: phanttom-macos-universal.zip
+  SPARKLE_VERSION: "2.9.0"
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: the Sparkle build number is `git rev-list --count`.
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Compute version
+        id: version
+        run: |
+          BUILD=$(git rev-list --count HEAD)
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            TAG="${GITHUB_REF_NAME}"
+            PRERELEASE=false
+          else
+            VERSION="0.0.0-tip.${BUILD}"
+            TAG="tip-${BUILD}"
+            PRERELEASE=true
+          fi
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      # Build the Zig core + universal GhosttyKit.xcframework. Same recipe as
+      # upstream release CI, minus Nix (GitHub's macOS image has everything).
+      - name: Build GhosttyKit
+        run: zig build -Doptimize=ReleaseFast -Demit-macos-app=false
+
+      # ReleaseLocal is upstream's "optimized build without Apple signing
+      # certificates" configuration: ad-hoc signed (CODE_SIGN_IDENTITY=-).
+      # Run from the repo root (never cwd into macos/ -- see PHANTTOM.md).
+      - name: Build Phanttom.app
+        run: |
+          xcodebuild -project macos/Ghostty.xcodeproj \
+            -target Ghostty \
+            -configuration ReleaseLocal \
+            "SYMROOT=${PWD}/macos/build" \
+            build
+          test -d "macos/build/ReleaseLocal/Ghostty.app"
+
+      - name: Stamp version and Sparkle key
+        env:
+          SPARKLE_KEY_PUB: ${{ secrets.SPARKLE_KEY_PUB }}
+          BUILD: ${{ steps.version.outputs.build }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [[ -z "$SPARKLE_KEY_PUB" ]]; then
+            echo "SPARKLE_KEY_PUB secret is not set (see PHANTTOM-RELEASING.md)" >&2
+            exit 1
+          fi
+          PLIST="macos/build/ReleaseLocal/Ghostty.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_KEY_PUB" "$PLIST"
+          # The checked-in plist disables auto-checks for dev builds; released
+          # builds follow the user's `auto-update` config instead.
+          /usr/libexec/PlistBuddy -c "Delete :SUEnableAutomaticChecks" "$PLIST" || true
+
+      # Editing Info.plist invalidated the build signature, so re-sign
+      # everything ad-hoc, innermost first (same order as upstream CI).
+      - name: Re-sign (ad-hoc)
+        run: |
+          APP="macos/build/ReleaseLocal/Ghostty.app"
+          SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+          /usr/bin/codesign -f -s - -o runtime "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+          /usr/bin/codesign -f -s - -o runtime "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
+          /usr/bin/codesign -f -s - -o runtime "$SPARKLE/Versions/B/Autoupdate"
+          /usr/bin/codesign -f -s - -o runtime "$SPARKLE/Versions/B/Updater.app"
+          /usr/bin/codesign -f -s - -o runtime "$SPARKLE"
+          if [ -d "$APP/Contents/PlugIns/DockTilePlugin.plugin" ]; then
+            /usr/bin/codesign -f -s - -o runtime "$APP/Contents/PlugIns/DockTilePlugin.plugin"
+          fi
+          /usr/bin/codesign -f -s - -o runtime \
+            --entitlements "macos/GhosttyReleaseLocal.entitlements" "$APP"
+          /usr/bin/codesign --verify --verbose=2 "$APP"
+
+      # The bundle is renamed Phanttom.app for the download; Sparkle locates
+      # the app in the archive by bundle identifier, not filename, so
+      # self-update still works wherever/whatever the user installed it as.
+      - name: Package zip
+        run: |
+          cd macos/build/ReleaseLocal
+          mv Ghostty.app Phanttom.app
+          ditto -c -k --sequesterRsrc --keepParent Phanttom.app \
+            "$GITHUB_WORKSPACE/$ZIP_NAME"
+
+      - name: Sign update and generate appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          BUILD: ${{ steps.version.outputs.build }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "SPARKLE_PRIVATE_KEY secret is not set (see PHANTTOM-RELEASING.md)" >&2
+            exit 1
+          fi
+
+          # Sparkle's official signing tool, pinned to the same version the
+          # app links against.
+          curl -fsSL -o sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir sparkle-dist && tar -xJf sparkle.tar.xz -C sparkle-dist
+
+          echo "$SPARKLE_PRIVATE_KEY" > signing.key
+          SIGN_OUTPUT=$(./sparkle-dist/bin/sign_update -f signing.key "$ZIP_NAME")
+          rm signing.key
+          echo "sign_update: $SIGN_OUTPUT"
+          ED_SIG=$(echo "$SIGN_OUTPUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
+          LENGTH=$(echo "$SIGN_OUTPUT" | sed -E 's/.*length="([^"]+)".*/\1/')
+          test -n "$ED_SIG" && test -n "$LENGTH"
+
+          # Single-item appcast: Sparkle only needs the newest version, and
+          # the feed URL always points at the latest release's copy.
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ZIP_NAME}"
+          PUBDATE=$(LC_ALL=C date -u +"%a, %d %b %Y %H:%M:%S +0000")
+          cat > appcast.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Phanttom</title>
+              <link>https://github.com/${GITHUB_REPOSITORY}</link>
+              <item>
+                <title>Phanttom ${VERSION}</title>
+                <pubDate>${PUBDATE}</pubDate>
+                <sparkle:version>${BUILD}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>13.1</sparkle:minimumSystemVersion>
+                <sparkle:releaseNotesLink>https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}</sparkle:releaseNotesLink>
+                <enclosure url="${URL}"
+                           sparkle:edSignature="${ED_SIG}"
+                           length="${LENGTH}"
+                           type="application/octet-stream"/>
+              </item>
+            </channel>
+          </rss>
+          EOF
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Download `phanttom-macos-universal.zip`, unzip, and drag **Phanttom.app** to `/Applications`.
+
+          **First launch:** the app is not notarized by Apple, so macOS will block it once. Open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine /Applications/Phanttom.app`). This is a one-time step — the app updates itself automatically after that.
+          NOTES
+
+          ARGS=(--title "Phanttom $VERSION" --notes-file release-notes.md)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            ARGS+=(--prerelease --target "$GITHUB_SHA")
+          fi
+          gh release create "$TAG" "${ARGS[@]}" "$ZIP_NAME" appcast.xml
