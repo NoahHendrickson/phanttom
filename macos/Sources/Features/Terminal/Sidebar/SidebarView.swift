@@ -48,7 +48,8 @@ struct SidebarView: View {
                         SidebarTabRow(
                             tab: tab,
                             onSelect: { tabManager.select(tab) },
-                            onClose: { tabManager.close(tab) }
+                            onClose: { tabManager.close(tab) },
+                            onRename: { tabManager.rename(tab, to: $0) }
                         )
                     }
                 }
@@ -83,8 +84,12 @@ struct SidebarTabRow: View {
     let tab: SidebarTabManager.TabItem
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onRename: (String?) -> Void
 
     @State private var isHovering = false
+    @State private var isEditing = false
+    @State private var draft = ""
+    @FocusState private var editFocused: Bool
 
     private var rowBackground: Color {
         if tab.isSelected { return Color.white.opacity(0.08) }
@@ -104,9 +109,46 @@ struct SidebarTabRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
         .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: startRename)
         .onTapGesture(perform: onSelect)
         .onHover { isHovering = $0 }
+        .contextMenu {
+            Button("Rename Tab…", action: startRename)
+            if tab.customTitle != nil {
+                Button("Reset Name") { onRename(nil) }
+            }
+            Divider()
+            Button("Close Tab", action: onClose)
+        }
         .help(tab.directory ?? tab.title)
+    }
+
+    private func startRename() {
+        draft = tab.customTitle ?? tab.displayTitle
+        isEditing = true
+        editFocused = true
+    }
+
+    private func commitRename() {
+        guard isEditing else { return }
+        isEditing = false
+        onRename(draft)
+    }
+
+    /// Inline name editor swapped in for the title while renaming.
+    private var titleEditor: some View {
+        TextField("", text: $draft)
+            .textFieldStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundStyle(.white)
+            .focused($editFocused)
+            .onSubmit(commitRename)
+            .onChange(of: editFocused) { focused in
+                if !focused { commitRename() }
+            }
+            .onExitCommand {
+                isEditing = false
+            }
     }
 
     /// Compact 29pt row: terminal chip + abbreviated path.
@@ -120,11 +162,15 @@ struct SidebarTabRow: View {
                         .font(.system(size: 8))
                         .foregroundStyle(.white)
                 )
-            Text(tab.abbreviatedDirectory ?? (tab.title.isEmpty ? "Terminal" : tab.title))
-                .font(.system(size: 11))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            if isEditing {
+                titleEditor
+            } else {
+                Text(tab.customTitle ?? tab.abbreviatedDirectory ?? (tab.title.isEmpty ? "Terminal" : tab.title))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer(minLength: 0)
             trailing
         }
@@ -139,11 +185,15 @@ struct SidebarTabRow: View {
                     Image(icon)
                         .resizable()
                         .frame(width: 13, height: 13)
-                    Text(tab.title.isEmpty ? "Terminal" : tab.title)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    if isEditing {
+                        titleEditor
+                    } else {
+                        Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
                 HStack(spacing: 8) {
                     if let dir = tab.directoryName {

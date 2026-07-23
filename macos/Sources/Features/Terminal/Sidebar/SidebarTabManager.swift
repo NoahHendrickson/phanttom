@@ -39,12 +39,28 @@ final class SidebarTabManager: ObservableObject {
     struct TabItem: Identifiable, Equatable {
         let id: ObjectIdentifier
         let title: String
+        let customTitle: String?
         let directory: String?
         let gitBranch: String?
         let kind: TabKind
         let status: TabStatus
         let isSelected: Bool
         let window: NSWindow
+
+        /// What the sidebar shows: the user's custom name if set, otherwise
+        /// the surface title with leading decoration glyphs stripped (agents
+        /// like Claude Code prefix their own "✳", which doubles our icon).
+        var displayTitle: String {
+            if let customTitle, !customTitle.isEmpty { return customTitle }
+            guard kind != .terminal else { return title }
+            var s = Substring(title)
+            while let first = s.unicodeScalars.first,
+                  !CharacterSet.alphanumerics.contains(first) {
+                s = s.dropFirst()
+            }
+            let cleaned = s.trimmingCharacters(in: .whitespaces)
+            return cleaned.isEmpty ? title : cleaned
+        }
 
         /// The last path component of the pwd, "/name" style per the design.
         var directoryName: String? {
@@ -58,6 +74,7 @@ final class SidebarTabManager: ObservableObject {
 
         static func == (lhs: TabItem, rhs: TabItem) -> Bool {
             lhs.id == rhs.id && lhs.title == rhs.title
+                && lhs.customTitle == rhs.customTitle
                 && lhs.directory == rhs.directory
                 && lhs.gitBranch == rhs.gitBranch
                 && lhs.kind == rhs.kind
@@ -135,6 +152,15 @@ final class SidebarTabManager: ObservableObject {
         tab.window.makeKeyAndOrderFront(nil)
     }
 
+    /// Set (or clear, with nil/empty) a user-assigned tab name. Stored on the
+    /// window; the change notification refreshes every sidebar in the group.
+    func rename(_ tab: TabItem, to name: String?) {
+        guard let window = tab.window as? TerminalWindow else { return }
+        let trimmed = name?.trimmingCharacters(in: .whitespaces)
+        window.phanttomCustomTitle = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        NotificationCenter.default.post(name: .phanttomSidebarTabsDidChange, object: window)
+    }
+
     func close(_ tab: TabItem) {
         // Route through the controller so close confirmation logic applies.
         if let controller = tab.window.windowController as? TerminalController {
@@ -188,6 +214,7 @@ final class SidebarTabManager: ObservableObject {
             newTabs.append(TabItem(
                 id: id,
                 title: w.title,
+                customTitle: (w as? TerminalWindow)?.phanttomCustomTitle,
                 directory: pwd,
                 gitBranch: pwd.flatMap { Self.gitBranch(at: $0) },
                 kind: Self.kind(forTitle: w.title),

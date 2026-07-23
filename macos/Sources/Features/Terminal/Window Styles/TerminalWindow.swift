@@ -251,6 +251,11 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// Phanttom: a user-assigned tab name from the sidebar's rename action.
+    /// When set, the sidebar shows this instead of the surface title. Stored
+    /// on the window so every sidebar instance in the tab group sees it.
+    var phanttomCustomTitle: String? = nil
+
     /// Phanttom: when true, the native tab bar accessory is hidden as it is
     /// added because the sidebar provides the tab UI. Hiding the accessory
     /// (instead of toggling the tab bar) doesn't fight AppKit, which force-
