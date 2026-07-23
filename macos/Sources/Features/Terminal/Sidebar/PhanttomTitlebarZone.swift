@@ -87,7 +87,7 @@ extension TerminalWindow {
         }
         divider.layer?.backgroundColor =
             ((contentView as? SidebarSplitView)?.dividerColor
-                ?? .white.withAlphaComponent(0.12)).cgColor
+                ?? NSColor(white: 0.35, alpha: 0.4)).cgColor
 
         phanttomTitlebarZoneSetWidth(width ?? phanttomSidebarWidth)
     }
