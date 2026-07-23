@@ -100,9 +100,13 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
-    /// Group sidebar tabs under a header per project (git repository, with
-    /// worktrees folded into their parent repo). Headers only appear once
-    /// tabs span more than one project.
+    /// Group sidebar tabs under a header per project (git repo toplevel,
+    /// with worktrees folded into their parent repo; non-git tabs group by
+    /// pwd). Headers render whenever grouping is on and at least one tab
+    /// has a known directory — including a single-project list, since the
+    /// header carries the collapse control and the per-project "+". Also
+    /// switchable from the titlebar grouping menu. The partition itself
+    /// lives in `SidebarTabGroup`.
     @Published var sidebarGroupByProject: Bool {
         didSet { persist() }
     }

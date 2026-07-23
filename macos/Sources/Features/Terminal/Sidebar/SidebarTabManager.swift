@@ -268,9 +268,6 @@ final class SidebarTabManager: ObservableObject {
             // The seed is the directory a sidebar "+" created this tab
             // into — a stand-in until shell integration reports the real
             // pwd, so the row groups correctly from its very first frame.
-            // Once a real pwd exists the seed is done (and must not linger:
-            // it also marks the window as brand-new for the catch-up
-            // tie-break below).
             if surface?.pwd != nil { state?.seedDirectory = nil }
             let pwd = surface?.pwd ?? w.representedURL?.path ?? state?.seedDirectory
             let isSelected = w === selected
@@ -291,8 +288,9 @@ final class SidebarTabManager: ObservableObject {
                 isSelected: isSelected
             )
 
-            let gitBranch = pwd.flatMap { GitBranchCache.shared.branch(at: $0) }
-            let projectRoot = pwd.flatMap { GitBranchCache.shared.projectRoot(at: $0) }
+            let gitMeta = pwd.map { GitBranchCache.shared.metadata(at: $0) }
+            let gitBranch = gitMeta?.branch
+            let projectRoot = gitMeta?.projectRoot
             var prState: PRStatusCache.PRState?
             if let pwd, let gitBranch {
                 prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
@@ -347,20 +345,31 @@ final class SidebarTabManager: ObservableObject {
                 guard tabs.allSatisfy({ $0.id == ownID }),
                       let ownIndex = newTabs.firstIndex(where: { $0.id == ownID })
                 else { return false }
+                let ownState = (window as? TerminalWindow)?.phanttomTabState
+                // Sidebar-created windows mark themselves — deterministic,
+                // and covers a group "+" inserting our brand-new row ABOVE
+                // the pre-existing rows, where the position heuristic below
+                // would read the shape backwards.
+                if ownState?.pendingSidebarCatchUp == true { return true }
+                // Only a window created moments ago can be catching up at
+                // all. Without this gate, an ESTABLISHED lone tab watching
+                // a sibling get inserted above it (its own group's "+")
+                // matches the position heuristic and stages its own row
+                // away — a tab that was open the whole time vanishes for
+                // the fallback timer's full two seconds.
+                guard let ownState,
+                      ContinuousClock.now - ownState.createdAt < .seconds(2)
+                else { return false }
                 let foreign = newTabs.enumerated().filter {
                     $0.element.id != ownID && !oldIDs.contains($0.element.id)
                 }
                 if foreign.count > 1 { return true }
                 guard let only = foreign.first else { return false }
-                if only.offset < ownIndex { return true }
-                // A sidebar-created tab can be inserted ABOVE pre-existing
-                // rows (a group's "+" puts it at the top of its project
-                // group), making this shape identical to "established lone
-                // tab sees a new tab arrive below". The seed breaks the
-                // tie: it only exists between sidebar-driven creation and
-                // the first real pwd report — exactly while our own window
-                // is brand new and catching up.
-                return (window as? TerminalWindow)?.phanttomTabState.seedDirectory != nil
+                // Native flows always join a new tab AFTER its parent, so
+                // for young windows position still breaks the tie: a
+                // pre-existing row materializes above our own row, a
+                // genuinely new tab below.
+                return only.offset < ownIndex
             }()
 
             if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -403,6 +412,15 @@ final class SidebarTabManager: ObservableObject {
                     tabs = newTabs
                 }
             }
+        }
+
+        // The catch-up question is settled once this manager has processed a
+        // list containing rows other than its own; retire the creation flag
+        // so it can't leak into a later, genuinely ambiguous shape.
+        if let ownState = (window as? TerminalWindow)?.phanttomTabState,
+           ownState.pendingSidebarCatchUp,
+           newTabs.contains(where: { $0.id != ObjectIdentifier(window) }) {
+            ownState.pendingSidebarCatchUp = false
         }
 
         let selectedSurface = (selected.windowController as? BaseTerminalController)?.focusedSurface

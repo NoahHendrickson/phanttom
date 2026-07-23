@@ -31,19 +31,11 @@ final class GitBranchCache {
     private var inFlight: Set<String> = []
     private let revalidateInterval: Duration = .seconds(2)
 
-    /// The last known branch for `pwd`, immediately.
-    func branch(at pwd: String) -> String? {
-        peek(at: pwd).branch
-    }
-
-    /// The last known project root for `pwd`, immediately.
-    func projectRoot(at pwd: String) -> String? {
-        peek(at: pwd).projectRoot
-    }
-
-    /// Return the cached value and schedule a background (re)resolve when
-    /// it's stale and none is already running.
-    private func peek(at pwd: String) -> Resolved {
+    /// The last known metadata for `pwd`, immediately — one call per cache
+    /// entry; callers pick the fields they need from the snapshot.
+    /// Schedules a background (re)resolve when the value is stale and none
+    /// is already running.
+    func metadata(at pwd: String) -> Resolved {
         let now = ContinuousClock.now
         let fresh = lastResolvedAt[pwd].map { now - $0 < revalidateInterval } ?? false
         if !fresh, !inFlight.contains(pwd) {

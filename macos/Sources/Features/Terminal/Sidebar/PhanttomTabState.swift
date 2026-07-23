@@ -37,11 +37,26 @@ final class PhanttomTabState {
     private(set) var status: Status = .idle
 
     /// The working directory this tab was created into (sidebar group "+",
-    /// bottom New-tab row). Only a fallback: the sidebar uses it until the
-    /// shell integration reports a real pwd, so a brand-new tab lands in
-    /// its project group immediately instead of flashing through the
-    /// ungrouped bucket.
+    /// bottom New-tab row). Only a pwd fallback: the sidebar uses it until
+    /// the shell integration reports a real pwd, so a brand-new tab lands
+    /// in its project group immediately instead of flashing through the
+    /// pending bucket. Cleared on the first real pwd.
     var seedDirectory: String?
+
+    /// True from sidebar-driven creation until this window's own sidebar
+    /// has published a list containing rows other than its own — i.e.
+    /// while it is still "catching up" to the existing tab group. Breaks
+    /// the catch-up vs new-arrival ambiguity in `SidebarTabManager` when a
+    /// group "+" inserts the new tab ABOVE existing rows. Deliberately a
+    /// separate lifetime from `seedDirectory`, which dies as soon as a
+    /// real pwd exists.
+    var pendingSidebarCatchUp = false
+
+    /// When this state (and thus its window — the state is a stored `let`
+    /// on `TerminalWindow`) was created. The sidebar treats only freshly
+    /// created windows as catch-up candidates; an established window must
+    /// never stage its own row away no matter where a new sibling lands.
+    let createdAt = ContinuousClock.now
 
     /// An automatic tab name derived from the user's first agent prompt of
     /// the session (set via a marker title emitted by the Claude Code
