@@ -164,6 +164,27 @@ background split keeps its identity — and stored sticky on the window
   revalidate; silently absent without gh/auth/PR)
 - status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
+**Project grouping** (settings toggle "Group tabs by project", default on;
+also switchable from the grouping button at the sidebar's right edge of the
+titlebar — a mode menu in `PhanttomTitlebarZone`, geometry synced with the
+divider):
+rows are grouped under a header per project — the repo toplevel of the tab's
+pwd, with linked worktrees resolved to their parent repo (`GitBranchCache`
+resolves branch + project root in one walk), else the pwd itself for non-git
+directories (the home directory renders as "~"). Resolved metadata is sticky
+per window (`PhanttomTabState.lastGitMetadata`): while the cache has no
+answer for a pwd — resolve in flight, or the entry pruned — rows keep their
+last known group instead of flapping through an interim one. Headers carry a disclosure
+chevron (click the header to collapse/expand; state is process-global in
+`ProjectCollapseStore` because every window hosts its own sidebar, and
+persisted in UserDefaults) and a trailing "+" that opens a new tab in that
+project's directory (explicit `SurfaceConfiguration.workingDirectory`, the
+window-restoration path). The bottom "New tab" row is project-neutral: it
+always opens in the home directory. Grouping is presentation-only in
+`SidebarView`: native tab order, animations, and all cross-window state are
+untouched. Tabs whose pwd isn't known yet form a trailing header-less
+bucket.
+
 **Name priority**: manual rename (upstream's
 `BaseTerminalController.titleOverride` — shared with the titlebar, command
 palette, and window restoration, so custom names survive restart) → prompt

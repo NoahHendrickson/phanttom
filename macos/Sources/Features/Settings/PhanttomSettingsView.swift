@@ -119,6 +119,8 @@ struct PhanttomSettingsView: View {
                     }
                 }
 
+                Toggle("Group tabs by project", isOn: $settings.sidebarGroupByProject)
+
                 Toggle("Glass effect", isOn: $settings.sidebarGlass)
 
                 LabeledSlider(

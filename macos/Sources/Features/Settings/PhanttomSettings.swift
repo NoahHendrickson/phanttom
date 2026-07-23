@@ -100,6 +100,17 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// Group sidebar tabs under a header per project (git repo toplevel,
+    /// with worktrees folded into their parent repo; non-git tabs group by
+    /// pwd). Headers render whenever grouping is on and at least one tab
+    /// has a known directory — including a single-project list, since the
+    /// header carries the collapse control and the per-project "+". Also
+    /// switchable from the titlebar grouping menu. The partition itself
+    /// lives in `SidebarTabGroup`.
+    @Published var sidebarGroupByProject: Bool {
+        didSet { persist() }
+    }
+
     /// Color of the "working" (thinking) pixel-rain indicator.
     static let defaultWorkingColor = Color.white
 
@@ -137,6 +148,7 @@ final class PhanttomSettings: ObservableObject {
         static let sidebarGlass = "PhanttomSidebarGlass"
         static let sidebarBlurAmount = "PhanttomSidebarBlurAmount"
         static let sidebarFontSize = "PhanttomSidebarFontSize"
+        static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
         static let sidebarWorkingColor = "PhanttomSidebarWorkingColor"
     }
 
@@ -156,6 +168,7 @@ final class PhanttomSettings: ObservableObject {
         sidebarGlass = defaults.bool(forKey: Keys.sidebarGlass)
         sidebarBlurAmount = defaults.object(forKey: Keys.sidebarBlurAmount) as? Double ?? 1.0
         sidebarFontSize = defaults.object(forKey: Keys.sidebarFontSize) as? Double ?? 11
+        sidebarGroupByProject = defaults.object(forKey: Keys.sidebarGroupByProject) as? Bool ?? true
         sidebarWorkingColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarWorkingColor)) ?? Self.defaultWorkingColor
         loaded = true
     }
@@ -175,6 +188,7 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(sidebarGlass, forKey: Keys.sidebarGlass)
         defaults.set(sidebarBlurAmount, forKey: Keys.sidebarBlurAmount)
         defaults.set(sidebarFontSize, forKey: Keys.sidebarFontSize)
+        defaults.set(sidebarGroupByProject, forKey: Keys.sidebarGroupByProject)
         defaults.set(Self.hex(from: sidebarWorkingColor), forKey: Keys.sidebarWorkingColor)
     }
 
