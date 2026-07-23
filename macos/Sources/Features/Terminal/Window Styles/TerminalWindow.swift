@@ -256,6 +256,17 @@ class TerminalWindow: NSWindow {
     /// on the window so every sidebar instance in the tab group sees it.
     var phanttomCustomTitle: String? = nil
 
+    /// Phanttom: an automatic tab name derived from the user's last agent
+    /// prompt (set via a "❯ "-marked title emitted by the Claude Code
+    /// UserPromptSubmit hook). Beaten by phanttomCustomTitle; cleared when
+    /// the shell reclaims the title.
+    var phanttomAutoTitle: String? = nil
+
+    /// Phanttom: the last detected agent kind for this window, kept sticky
+    /// while decorated/marked titles come through so hook-set titles don't
+    /// flip the row back to a plain terminal.
+    var phanttomAgentKind: SidebarTabManager.TabKind? = nil
+
     /// Phanttom: when true, the native tab bar accessory is hidden as it is
     /// added because the sidebar provides the tab UI. Hiding the accessory
     /// (instead of toggling the tab bar) doesn't fight AppKit, which force-

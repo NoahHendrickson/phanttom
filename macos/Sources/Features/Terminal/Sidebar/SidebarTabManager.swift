@@ -41,6 +41,7 @@ final class SidebarTabManager: ObservableObject {
         let id: ObjectIdentifier
         let title: String
         let customTitle: String?
+        let autoTitle: String?
         let directory: String?
         let gitBranch: String?
         let kind: TabKind
@@ -48,11 +49,13 @@ final class SidebarTabManager: ObservableObject {
         let isSelected: Bool
         let window: NSWindow
 
-        /// What the sidebar shows: the user's custom name if set, otherwise
-        /// the surface title with leading decoration glyphs stripped (agents
-        /// like Claude Code prefix their own "✳", which doubles our icon).
+        /// What the sidebar shows: the user's custom name, else the
+        /// prompt-derived auto name, else the surface title with leading
+        /// decoration glyphs stripped (agents like Claude Code prefix their
+        /// own "✳", which doubles our icon).
         var displayTitle: String {
             if let customTitle, !customTitle.isEmpty { return customTitle }
+            if let autoTitle, !autoTitle.isEmpty { return autoTitle }
             guard kind != .terminal else { return title }
             var s = Substring(title)
             while let first = s.unicodeScalars.first,
@@ -76,6 +79,7 @@ final class SidebarTabManager: ObservableObject {
         static func == (lhs: TabItem, rhs: TabItem) -> Bool {
             lhs.id == rhs.id && lhs.title == rhs.title
                 && lhs.customTitle == rhs.customTitle
+                && lhs.autoTitle == rhs.autoTitle
                 && lhs.directory == rhs.directory
                 && lhs.gitBranch == rhs.gitBranch
                 && lhs.kind == rhs.kind
@@ -218,13 +222,17 @@ final class SidebarTabManager: ObservableObject {
                 : attentionWindows.contains(id) ? .attention
                 : .idle
 
+            let terminalWindow = w as? TerminalWindow
+            let kind = Self.processTitle(w.title, window: terminalWindow)
+
             newTabs.append(TabItem(
                 id: id,
                 title: w.title,
-                customTitle: (w as? TerminalWindow)?.phanttomCustomTitle,
+                customTitle: terminalWindow?.phanttomCustomTitle,
+                autoTitle: terminalWindow?.phanttomAutoTitle,
                 directory: pwd,
                 gitBranch: pwd.flatMap { Self.gitBranch(at: $0) },
-                kind: Self.kind(forTitle: w.title),
+                kind: kind,
                 status: status,
                 isSelected: isSelected,
                 window: w
@@ -273,12 +281,38 @@ final class SidebarTabManager: ObservableObject {
 
     // MARK: - Detection helpers
 
-    /// Detect what's running from the window/surface title. Cheap heuristic;
-    /// a hooks-driven IPC can refine this later.
-    private static func kind(forTitle title: String) -> TabKind {
+    /// Interpret a title update: detect the agent kind (sticky across
+    /// decorated titles), and capture "❯ "-marked titles from the Claude
+    /// Code UserPromptSubmit hook as the tab's auto-name. A plain title
+    /// (shell integration reclaiming it) resets both.
+    private static func processTitle(_ title: String, window: TerminalWindow?) -> TabKind {
+        // Our hook's marker: store the prompt-derived auto name.
+        if title.hasPrefix("❯") {
+            let auto = title.dropFirst().trimmingCharacters(in: .whitespaces)
+            if !auto.isEmpty { window?.phanttomAutoTitle = auto }
+            return window?.phanttomAgentKind ?? .claude
+        }
+
         let t = title.lowercased()
-        if t.contains("claude") { return .claude }
-        if t.contains("codex") { return .codex }
+        if t.contains("claude") {
+            window?.phanttomAgentKind = .claude
+            return .claude
+        }
+        if t.contains("codex") {
+            window?.phanttomAgentKind = .codex
+            return .codex
+        }
+
+        // Decorated titles (leading symbol glyph, e.g. Claude Code's "✳ …")
+        // keep the previous agent kind; a plain title means the shell took
+        // the tab back, so the agent session and its auto-name are over.
+        if let first = title.unicodeScalars.first,
+           !CharacterSet.alphanumerics.contains(first),
+           let sticky = window?.phanttomAgentKind {
+            return sticky
+        }
+        window?.phanttomAgentKind = nil
+        window?.phanttomAutoTitle = nil
         return .terminal
     }
 
