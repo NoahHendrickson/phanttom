@@ -1100,6 +1100,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let sidebarTabManager = SidebarTabManager(window: window)
         self.sidebarTabManager = sidebarTabManager
         let sidebarHost = NSHostingView(rootView: SidebarView(
+            ghostty: ghostty,
             tabManager: sidebarTabManager,
             onNewTab: { [weak self] in self?.newTab(nil) }
         ))

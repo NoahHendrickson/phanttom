@@ -3,9 +3,27 @@ import SwiftUI
 /// The vertical tab sidebar. Deliberately minimal styling for now — this is
 /// the skeleton that the real Phanttom design will be applied to.
 struct SidebarView: View {
+    @ObservedObject var ghostty: Ghostty.App
     @ObservedObject var tabManager: SidebarTabManager
+    @ObservedObject private var settings = PhanttomSettings.shared
 
     let onNewTab: () -> Void
+
+    /// The sidebar background per settings: system, custom, or derived from
+    /// the terminal theme (nudged so the split still reads, translucency
+    /// matching the terminal's opacity).
+    private var background: Color {
+        switch settings.sidebarStyle {
+        case .system:
+            return Color(nsColor: .windowBackgroundColor)
+        case .custom:
+            return settings.sidebarColor
+        case .matchTerminal:
+            let base = OSColor(ghostty.config.backgroundColor)
+            let nudged = base.isLightColor ? base.darken(by: 0.06) : base.darken(by: 0.25)
+            return Color(nsColor: nudged).opacity(ghostty.config.backgroundOpacity)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,7 +51,7 @@ struct SidebarView: View {
             .padding(10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(background)
     }
 }
 
