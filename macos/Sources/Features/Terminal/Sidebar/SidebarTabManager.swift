@@ -37,6 +37,10 @@ final class SidebarTabManager: ObservableObject {
         /// nil for non-git pwds.
         let projectRoot: String?
         let gitBranch: String?
+        /// True when the tab's pwd is a linked git worktree — the Claude
+        /// Code cwd hook (OSC 7) points agent tabs at their worktree, so
+        /// this marks agent sessions working on a checkout of their own.
+        let isWorktree: Bool
         let prState: PRStatusCache.PRState?
         let kind: TabKind
         let status: TabStatus
@@ -313,6 +317,7 @@ final class SidebarTabManager: ObservableObject {
                 directory: pwd,
                 projectRoot: projectRoot,
                 gitBranch: gitBranch,
+                isWorktree: gitMeta?.isWorktree ?? false,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,

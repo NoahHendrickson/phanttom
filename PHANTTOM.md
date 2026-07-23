@@ -197,14 +197,15 @@ same one isn't immediately re-captured).
 ## Claude Code integration (hooks protocol)
 
 Installed in the user's `~/.claude/settings.json` (not in this repo — it's
-user config; backup kept as `settings.json.bak-phanttom`). Three hooks, all
-writing escape sequences to `/dev/tty` (hook stdout is captured by Claude
-Code, the tty is not):
+user config; backup kept as `settings.json.bak-phanttom`). All hooks write
+escape sequences to `/dev/tty` (hook stdout is captured by Claude Code, the
+tty is not):
 
 | Event | Emits | Phanttom effect |
 |---|---|---|
 | `UserPromptSubmit` | OSC 9;4 state 3 (indeterminate) | pixel rain starts |
 | `UserPromptSubmit` | OSC 2 title `❯⁣ <prompt, 56ch>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`), via `jq -r .prompt` | first prompt names the tab |
+| `UserPromptSubmit`, `SessionStart`, `PostToolUse` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (`jq -r '.cwd \| @uri'`, `%2F` restored to `/`) | tab pwd tracks the *agent's* directory, not just the shell's |
 | `Stop` | OSC 9;4 state 0 (clear) | rain stops → Done if unselected |
 | `Notification` | OSC 9;4 clear + BEL | → Attention if unselected |
 
@@ -212,10 +213,21 @@ The U+2063 INVISIBLE SEPARATOR makes the marker collision-proof: a bare "❯"
 is the default prompt char of starship/pure/p10k and must NOT trigger
 auto-naming (it's treated as a decorated title instead).
 
+The OSC 7 cwd report rides the terminal's normal pwd channel (the same one
+shell integration uses at each prompt), so no app-side plumbing is needed:
+when an agent session enters a linked worktree, the tab's pwd, directory
+label, branch, project group (worktrees group under their parent repo via
+`projectRoot`), and PR dot all follow the agent's checkout, and the row
+swaps the branch glyph for `arrow.triangle.branch` (`TabItem.isWorktree`,
+resolved by `GitBranchCache`). When the session ends, the next shell prompt
+re-reports the real pwd and the tab heals itself — the shell's own OSC 7
+never fires mid-session, so the two writers can't fight.
+
 Manual test commands (any tab):
 `printf '\033]9;4;3;0\033\\'` (rain) · `printf '\033]9;4;0;0\033\\'` (clear) ·
 `printf '\a'` (bell) ·
-`printf '\033]2;\xe2\x9d\xaf\xe2\x81\xa3 some name\007'` (auto-name).
+`printf '\033]2;\xe2\x9d\xaf\xe2\x81\xa3 some name\007'` (auto-name) ·
+`printf '\033]7;file://localhost/tmp\033\\'` (agent cwd).
 Tabs can be scripted via AppleScript: `tell application id
 "com.mitchellh.ghostty" to new tab in window 1`.
 

@@ -382,12 +382,21 @@ struct SidebarTabRow: View {
                     }
                     if let branch = tab.gitBranch {
                         HStack(spacing: 3) {
-                            // GitHub's Octicon git-branch glyph (MIT), as a
-                            // template asset so it tints with the row text.
-                            Image("PhanttomGitBranch")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: subtitleSize, height: subtitleSize)
+                            if tab.isWorktree {
+                                // Linked worktree: the arrowed variant marks
+                                // a checkout of its own (agent tabs report
+                                // their worktree pwd via the OSC 7 hook).
+                                Image(systemName: "arrow.triangle.branch")
+                                    .font(.system(size: subtitleSize, weight: .medium))
+                                    .help("Linked worktree")
+                            } else {
+                                // GitHub's Octicon git-branch glyph (MIT), as a
+                                // template asset so it tints with the row text.
+                                Image("PhanttomGitBranch")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: subtitleSize, height: subtitleSize)
+                            }
                             Text(branch)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
