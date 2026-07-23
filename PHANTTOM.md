@@ -198,8 +198,15 @@ same one isn't immediately re-captured).
 
 Installed in the user's `~/.claude/settings.json` (not in this repo — it's
 user config; backup kept as `settings.json.bak-phanttom`). All hooks write
-escape sequences to `/dev/tty` (hook stdout is captured by Claude Code, the
-tty is not):
+escape sequences to the session's terminal device (hook stdout is captured
+by Claude Code, the tty is not). Hooks cannot just open `/dev/tty`: Claude
+Code (observed in 2.1.218) spawns hook processes without a controlling
+terminal, so that open fails with "Device not configured" — and the
+`2>/dev/null; true` guard swallows it, making the failure look like the
+hook never ran. Instead each hook resolves the real device from
+`CLAUDE_PID` (the claude process's PID, exported to hooks), via
+`ps -o tty= -p $CLAUDE_PID`, falling back to `/dev/tty` when that yields
+nothing (e.g. older Claude Code versions that don't export it):
 
 | Event | Emits | Phanttom effect |
 |---|---|---|
@@ -230,8 +237,20 @@ The exact hook command (identical for all three events; kept here so its
 quoting/escaping is auditable — the installed copy lives in user config):
 
 ```sh
-sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > /dev/tty 2>/dev/null; true'
+sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
 ```
+
+The other hooks (rain start/clear, bell, title) share the same
+`ps`-based tty resolution; only their printf payloads differ. If claude
+itself has no tty (`ps` reports `??` — e.g. a headless or app-managed
+session), the fallback write to `/dev/tty` fails silently, which is
+correct: there is no terminal to paint.
+
+One caveat discovered while debugging this: in Claude Desktop–managed
+sessions (stream-json transport), the `UserPromptSubmit` event does not
+fire at all — so first-prompt tab naming and rain-start don't happen
+there. `SessionStart`, `PostToolUse`, `Stop`, and `Notification` still
+fire, so agent-cwd tracking and rain-clear keep working.
 
 `@uri` percent-encodes everything (spaces, UTF-8, control chars) so no raw
 byte from `.cwd` ever reaches the escape sequence; the `sed` only restores
