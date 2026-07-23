@@ -98,6 +98,135 @@ struct PhanttomTabStateTests {
         #expect(state.autoTitle == "add dark mode")
     }
 
+    // MARK: - Model reporting
+
+    @Test func markerModelSuffixSetsModelAndStaysSticky() {
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.autoTitle == "fix login bug")
+        // State stores the raw id; pretty-printing is a TabItem/view concern.
+        #expect(state.model == "claude-fable-5")
+        #expect(state.titleFallback == "fix login bug")
+
+        // An empty model field (first turn of a fresh session, transcript
+        // not yet written) keeps the last known model.
+        state.update(
+            titles: ["\(marker) another prompt\u{2063}"],
+            isWorking: false, isSelected: true)
+        #expect(state.model == "claude-fable-5")
+
+        // A model switch mid-session (e.g. /model) updates the id even
+        // though the auto-name stays locked to the first prompt.
+        state.update(
+            titles: ["\(marker) another prompt\u{2063}claude-opus-4-8"],
+            isWorking: false, isSelected: true)
+        #expect(state.autoTitle == "fix login bug")
+        #expect(state.model == "claude-opus-4-8")
+    }
+
+    @Test func modelOnlyMarkerSetsModelWithoutNamingTab() {
+        // The statusline sideband emits "❯" + U+2063 + U+2063 + model at
+        // session start, before any prompt exists: model and kind must be
+        // captured, the (empty) prompt field must not become an auto-name,
+        // and titleFallback carries the kind label for the sidebar.
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker)\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .claude)
+        #expect(state.model == "claude-fable-5")
+        #expect(state.autoTitle == nil)
+        #expect(state.titleFallback == "Claude")
+
+        // The first real prompt still names the tab afterwards.
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.autoTitle == "fix login bug")
+        #expect(state.titleFallback == "fix login bug")
+    }
+
+    @Test func markerWithoutModelSuffixLeavesModelNil() {
+        let state = PhanttomTabState()
+        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isSelected: true)
+        #expect(state.model == nil)
+    }
+
+    @Test func shellReclaimClearsModel() {
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        state.update(titles: ["zsh"], isWorking: false, isSelected: true)
+        #expect(state.kind == .terminal)
+        #expect(state.model == nil)
+        #expect(state.titleFallback == nil)
+    }
+
+    @Test func kindChangeClearsStaleModel() {
+        // Claude session reports a model, then Codex starts in the same tab
+        // without a plain interstitial title — the namedKind branch must
+        // drop the previous session's model so the Codex card can't show a
+        // stale Claude badge.
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .claude)
+        #expect(state.model == "claude-fable-5")
+
+        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        #expect(state.kind == .codex)
+        #expect(state.model == nil)
+        #expect(state.titleFallback == nil)
+    }
+
+    @Test func markerForcesKindBackFromCodex() {
+        // Codex first, then a Claude marker (no plain "claude" title): the
+        // marker path must flip kind to .claude so the model badge can show.
+        let state = PhanttomTabState()
+        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        #expect(state.kind == .codex)
+
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .claude)
+        #expect(state.model == "claude-fable-5")
+        #expect(state.autoTitle == "fix login bug")
+    }
+
+    @Test func rearmKeepsTitleFallbackFromCurrentMarker() {
+        // After Reset Name, autoTitle is nil but the still-current marker
+        // prompt must remain available as the presentation fallback so the
+        // view model never re-parses the wire format.
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        state.rearmAutoTitle()
+        #expect(state.autoTitle == nil)
+
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.autoTitle == nil)
+        #expect(state.titleFallback == "fix login bug")
+    }
+
+    @Test func modelDisplayNames() {
+        #expect(PhanttomTabState.modelDisplayName("claude-fable-5") == "Fable 5")
+        #expect(PhanttomTabState.modelDisplayName("claude-opus-4-8") == "Opus 4.8")
+        #expect(PhanttomTabState.modelDisplayName("claude-haiku-4-5-20251001") == "Haiku 4.5")
+        #expect(PhanttomTabState.modelDisplayName("claude-3-5-sonnet-20241022") == "Sonnet 3.5")
+        // Qualifiers after the version are not version tokens.
+        #expect(PhanttomTabState.modelDisplayName("claude-opus-4-8-preview-2") == "Opus 4.8")
+        // No recognizable family word: show the id rather than hiding.
+        #expect(PhanttomTabState.modelDisplayName("claude") == "claude")
+    }
+
     // MARK: - Status transitions
 
     @Test func workingEndsUnselectedBecomesDone() {

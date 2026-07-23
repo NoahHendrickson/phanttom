@@ -40,17 +40,29 @@ final class SidebarTabManager: ObservableObject {
         let git: GitBranchCache.Resolved?
         let prState: PRStatusCache.PRState?
         let kind: TabKind
+        /// Display name of the agent session's model ("Fable 5"), pretty-
+        /// printed from the raw id in `PhanttomTabState` at snapshot time.
+        /// nil until the hook has seen an assistant turn (or for non-Claude
+        /// tabs).
+        let model: String?
+        /// State-owned title when custom/auto are absent (marker prompt, or
+        /// kind label for a model-only marker). Nil means fall through to
+        /// glyph-stripping the surface title.
+        let titleFallback: String?
         let status: TabStatus
         let isSelected: Bool
         let window: NSWindow
 
         /// What the sidebar shows: the user's custom name, else the
-        /// prompt-derived auto name, else the surface title with leading
-        /// decoration glyphs stripped (agents like Claude Code prefix their
-        /// own "✳", which doubles our icon).
+        /// prompt-derived auto name, else the state's presentation
+        /// fallback, else the surface title with leading decoration glyphs
+        /// stripped (agents like Claude Code prefix their own "✳", which
+        /// doubles our icon). Marker-protocol parsing stays in
+        /// `PhanttomTabState` — this path has no U+2063 awareness.
         var displayTitle: String {
             if let customTitle, !customTitle.isEmpty { return customTitle }
             if let autoTitle, !autoTitle.isEmpty { return autoTitle }
+            if let titleFallback, !titleFallback.isEmpty { return titleFallback }
             guard kind != .terminal else { return title }
             var s = Substring(title)
             while let first = s.unicodeScalars.first,
@@ -61,9 +73,12 @@ final class SidebarTabManager: ObservableObject {
             return cleaned.isEmpty ? title : cleaned
         }
 
-        /// The last path component of the pwd, "/name" style per the design.
-        var directoryName: String? {
-            directory.map { "/" + ($0 as NSString).lastPathComponent }
+        /// The pwd's display leaf for the agent card subtitle when the
+        /// directory has no git branch: last path component, home as "~".
+        var directoryLeaf: String? {
+            directory.map {
+                (($0 as NSString).abbreviatingWithTildeInPath as NSString).lastPathComponent
+            }
         }
 
         /// Full pwd with ~ abbreviation, for compact terminal rows.
@@ -313,6 +328,8 @@ final class SidebarTabManager: ObservableObject {
                 git: gitMeta,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
+                model: state?.model.map { PhanttomTabState.modelDisplayName($0) },
+                titleFallback: state?.titleFallback,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
                 window: w
