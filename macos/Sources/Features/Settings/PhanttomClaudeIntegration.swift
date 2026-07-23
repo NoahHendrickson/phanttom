@@ -94,8 +94,11 @@ final class PhanttomClaudeIntegration: ObservableObject {
     /// /dev/tty: Claude Code (observed in 2.1.218) spawns hook processes
     /// without a controlling terminal, so that open fails silently. CLAUDE_PID
     /// (the claude process itself, exported to hooks) still has the tab's pty.
+    /// Treats empty/`?`/`??` as "no tty" — some `ps` variants report a bare
+    /// `?` rather than `??`. A missing `ps` or empty CLAUDE_PID yields empty
+    /// and falls back the same way.
     private static let ttyResolve =
-        #"t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac"#
+        #"t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"?"|"??") t=/dev/tty;; *) t=/dev/$t;; esac"#
 
     private static func hookCommand(_ body: String) -> String {
         "sh -c '\(ttyResolve); \(body); true'"

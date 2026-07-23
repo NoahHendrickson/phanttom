@@ -218,9 +218,14 @@ Code (observed in 2.1.218) spawns hook processes without a controlling
 terminal, so that open fails with "Device not configured" — and the
 `2>/dev/null; true` guard swallows it, making the failure look like the
 hook never ran. Instead each hook resolves the real device from
-`CLAUDE_PID` (the claude process's PID, exported to hooks), via
-`ps -o tty= -p $CLAUDE_PID`, falling back to `/dev/tty` when that yields
-nothing (e.g. older Claude Code versions that don't export it):
+`CLAUDE_PID` (the claude process's PID, exported to hooks — observed in
+2.1.218, not a documented/stable contract), via `ps -o tty= -p
+$CLAUDE_PID`, falling back to `/dev/tty` when that yields nothing, `?`,
+or `??` (no controlling terminal; some `ps` variants report a bare `?`).
+If `ps` itself is unavailable the command substitution is empty and the
+same fallback applies. If a future Claude Code release stops exporting
+`CLAUDE_PID` or changes its meaning, the hooks silently degrade to the
+old `/dev/tty` behavior:
 
 | Event | Emits | Phanttom effect |
 |---|---|---|
@@ -253,14 +258,14 @@ its quoting/escaping is auditable — the canonical builder is
 config):
 
 ```sh
-sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
+sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"?"|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
 ```
 
 The other hooks share the same `ps`-based tty resolution; rain start/clear
 and bell differ only in their printf payloads, while the title hook also
 reads the hook's stdin JSON once (for `.prompt`) and tails the transcript
 file (for the model id). If claude
-itself has no tty (`ps` reports `??` — e.g. a headless or app-managed
+itself has no tty (`ps` reports `?`/`??` — e.g. a headless or app-managed
 session), the fallback write to `/dev/tty` fails silently, which is
 correct: there is no terminal to paint.
 

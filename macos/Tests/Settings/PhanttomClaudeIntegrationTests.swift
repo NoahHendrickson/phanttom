@@ -174,6 +174,9 @@ struct PhanttomClaudeIntegrationTests {
     @Test func everySpecResolvesTtyViaClaudePid() {
         for spec in Integration.hookSpecs {
             #expect(spec.command.contains("CLAUDE_PID"))
+            // Empty/`?`/`??` all mean "no controlling terminal"; a bare `?`
+            // must not become `/dev/?`.
+            #expect(spec.command.contains(#"|"?"|"??"#))
             #expect(Integration.isPhanttomCommand(spec.command))
         }
     }
