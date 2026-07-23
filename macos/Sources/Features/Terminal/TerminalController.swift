@@ -1109,11 +1109,18 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             tabManager: sidebarTabManager,
             onNewTab: { [weak self] in self?.newTab(nil) }
         ))
+        // Don't let SwiftUI's ideal size constrain the pane — the split view
+        // owns the width, including collapsing it to zero.
+        sidebarHost.sizingOptions = []
         let sidebarSplit = SidebarSplitView(sidebar: sidebarHost, terminal: container)
-        window.contentView = sidebarSplit
+        // Full sync (not just geometry): a sidebar toggle never runs
+        // syncAppearance, so this is also what restores the zone colors after
+        // the window style repaints the titlebar. Assigned before contentView
+        // so the width restore in viewDidMoveToWindow isn't lost.
         sidebarSplit.onSidebarWidthChange = { [weak self] width in
-            (self?.window as? TerminalWindow)?.phanttomTitlebarZoneSetWidth(width)
+            (self?.window as? TerminalWindow)?.syncPhanttomTitlebarZone(width: width)
         }
+        window.contentView = sidebarSplit
         addSidebarToggleAccessory(to: window)
         phanttomSettingsCancellable = PhanttomSettings.shared.objectWillChange
             .receive(on: DispatchQueue.main)

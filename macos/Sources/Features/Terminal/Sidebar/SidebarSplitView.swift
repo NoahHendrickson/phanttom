@@ -25,7 +25,7 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     /// The width of the sidebar pane as the titlebar sees it: everything left
     /// of the divider's right edge, 0 when collapsed.
     var currentSidebarWidth: CGFloat {
-        sidebar.isHidden ? 0 : sidebar.frame.width + dividerThickness
+        sidebar.frame.width < 1 ? 0 : sidebar.frame.width + dividerThickness
     }
 
     init(sidebar: NSView, terminal: TerminalViewContainer) {
@@ -56,46 +56,108 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         return min(max(saved, Self.minWidth), Self.maxWidth)
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard window != nil, !didRestoreWidth else { return }
-        didRestoreWidth = true
-        layoutSubtreeIfNeeded()
-        if isSidebarCollapsed {
-            sidebar.isHidden = true
-            adjustSubviews()
-        } else {
-            setPosition(savedSidebarWidth, ofDividerAt: 0)
+    /// Re-applies the shared persisted state when this window becomes main.
+    private var becomeMainObserver: NSObjectProtocol?
+
+    deinit {
+        if let becomeMainObserver {
+            NotificationCenter.default.removeObserver(becomeMainObserver)
         }
     }
 
-    /// Collapse or expand the sidebar. Expanding restores the last
-    /// user-chosen width.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+
+        if let becomeMainObserver {
+            NotificationCenter.default.removeObserver(becomeMainObserver)
+            self.becomeMainObserver = nil
+        }
+        guard let window else { return }
+
+        // Tabs are sibling windows, each with its own split view, while the
+        // width/collapse state is shared (persisted). Re-apply it whenever
+        // this window is selected so the sidebar keeps one width across tabs
+        // instead of whatever this window had when it was last visible.
+        becomeMainObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.syncSharedSidebarState()
+        }
+
+        guard !didRestoreWidth else { return }
+        didRestoreWidth = true
+        layoutSubtreeIfNeeded()
+        setPosition(isSidebarCollapsed ? 0 : savedSidebarWidth, ofDividerAt: 0)
+    }
+
+    private func syncSharedSidebarState() {
+        let collapsed = UserDefaults.standard.bool(forKey: Self.collapsedDefaultsKey)
+        if collapsed != isSidebarCollapsed {
+            // Applies the shared width too when expanding.
+            setSidebarCollapsed(collapsed, animated: false)
+            return
+        }
+        guard !isSidebarCollapsed else { return }
+        let width = savedSidebarWidth
+        guard abs(sidebar.frame.width - width) > 0.5 else { return }
+        setPosition(width, ofDividerAt: 0)
+        layoutSubtreeIfNeeded()
+        onSidebarWidthChange?(currentSidebarWidth)
+    }
+
+    /// Drives the collapse/expand slide; see setSidebarCollapsed.
+    private var toggleAnimationTimer: Timer?
+
+    /// Collapse or expand the sidebar by moving the divider (a hidden-subview
+    /// collapse fights the SwiftUI hosting view's layout constraints).
+    /// Expanding restores the last user-chosen width.
+    ///
+    /// The slide steps plain setPosition calls from a timer instead of using
+    /// an implicit-animation group: with Auto-Layout-backed subviews the
+    /// split view defers implicitly-animated frame changes past the group,
+    /// so the delegate only ever hears the pre-toggle width and the divider
+    /// is never redrawn (leaving a stale line at the old position). Stepping
+    /// keeps every frame on the same synchronous path as a user divider
+    /// drag: real frames, correct delegate callbacks, and the divider drawn
+    /// and hidden on time.
     func setSidebarCollapsed(_ collapsed: Bool, animated: Bool = true) {
         guard collapsed != isSidebarCollapsed else { return }
         isSidebarCollapsed = collapsed
         UserDefaults.standard.set(collapsed, forKey: Self.collapsedDefaultsKey)
 
-        let apply = {
-            self.sidebar.isHidden = collapsed
-            self.adjustSubviews()
-            if !collapsed {
-                self.setPosition(self.savedSidebarWidth, ofDividerAt: 0)
-            }
-            self.layoutSubtreeIfNeeded()
-            self.onSidebarWidthChange?(self.currentSidebarWidth)
+        toggleAnimationTimer?.invalidate()
+        toggleAnimationTimer = nil
+
+        let start = sidebar.frame.width
+        let target = collapsed ? 0 : savedSidebarWidth
+        guard animated, window != nil, start != target else {
+            setPosition(target, ofDividerAt: 0)
+            layoutSubtreeIfNeeded()
+            onSidebarWidthChange?(currentSidebarWidth)
+            return
         }
 
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
-                context.timingFunction = .init(name: .easeInEaseOut)
-                context.allowsImplicitAnimation = true
-                apply()
+        let duration = 0.18
+        let startTime = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
             }
-        } else {
-            apply()
+            let t = min((CACurrentMediaTime() - startTime) / duration, 1)
+            let eased = t * t * (3 - 2 * t) // smoothstep, ≈ ease-in-ease-out
+            self.setPosition(start + (target - start) * eased, ofDividerAt: 0)
+            self.layoutSubtreeIfNeeded()
+            self.onSidebarWidthChange?(self.currentSidebarWidth)
+            if t >= 1 {
+                timer.invalidate()
+                self.toggleAnimationTimer = nil
+            }
         }
+        toggleAnimationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     func toggleSidebar(animated: Bool = true) {
@@ -116,6 +178,12 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         )
     }
 
+    /// A light separator between the sidebar and the terminal (hidden with
+    /// the divider while collapsed). Matches the sidebar's hairline styling.
+    override var dividerColor: NSColor {
+        .white.withAlphaComponent(0.12)
+    }
+
     // MARK: - NSSplitViewDelegate
 
     func splitView(
@@ -123,7 +191,9 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         constrainMinCoordinate proposedMinimumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
-        Self.minWidth
+        // No minimum while the toggle slide runs, so the expand animation can
+        // sweep 0 → width instead of popping to the minimum on its first step.
+        (isSidebarCollapsed || toggleAnimationTimer != nil) ? 0 : Self.minWidth
     }
 
     func splitView(
@@ -134,17 +204,13 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         Self.maxWidth
     }
 
-    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
-        subview === sidebar
-    }
-
     func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
-        sidebar.isHidden
+        sidebar.frame.width < 1
     }
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
         onSidebarWidthChange?(currentSidebarWidth)
-        guard didRestoreWidth, !sidebar.isHidden, sidebar.frame.width >= Self.minWidth else { return }
+        guard didRestoreWidth, !isSidebarCollapsed, sidebar.frame.width >= Self.minWidth else { return }
         UserDefaults.standard.set(sidebar.frame.width, forKey: Self.widthDefaultsKey)
     }
 }
