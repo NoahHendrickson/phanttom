@@ -22,6 +22,14 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      xcframework-target:
+        description:
+          "GhosttyKit architectures (native = current runner arch only;
+          faster, for pipeline testing — the zip keeps its universal name)"
+        type: choice
+        options: ["universal", "native"]
+        default: "universal"
 
 permissions:
   contents: write
@@ -39,7 +47,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Full history: the Sparkle build number is `git rev-list --count`.
+          # blob:none keeps the fetch fast — commit history without old file
+          # contents (rev-list only needs commits).
           fetch-depth: 0
+          filter: blob:none
 
       - name: Select Xcode
         run: |
@@ -52,6 +63,35 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      # Zig's cache validates by content hash, so it survives fresh checkouts:
+      # restoring the previous run's .zig-cache makes the ReleaseFast
+      # GhosttyKit build incremental (only changed files recompile).
+      # setup-zig already caches the *global* cache (fetched packages); this
+      # is the project-local cache where compilation artifacts live. The key
+      # ends in the commit SHA so every run saves an updated cache;
+      # restore-keys fall back to the most recent one. A universal cache is a
+      # superset of a native one, so both target flavors share the namespace.
+      - name: Cache Zig build artifacts
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache
+          key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig', 'build.zig.zon') }}-${{ github.sha }}
+          restore-keys: |
+            zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig', 'build.zig.zon') }}-
+            zig-cache-${{ runner.os }}-${{ runner.arch }}-
+
+      # Xcode intermediates (OBJROOT) only — products (SYMROOT) are excluded
+      # so the stamped/renamed app bundle never leaks into the cache. Swift
+      # incremental state is mtime-sensitive, so cross-run reuse is partial,
+      # but module/PCH artifacts still help.
+      - name: Cache Xcode intermediates
+        uses: actions/cache@v4
+        with:
+          path: macos/build-intermediates
+          key: xcode-objroot-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            xcode-objroot-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Compute version
         id: version
@@ -80,10 +120,16 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: git tag -d "$GITHUB_REF_NAME"
 
-      # Build the Zig core + universal GhosttyKit.xcframework. Same recipe as
-      # upstream release CI, minus Nix (GitHub's macOS image has everything).
+      # Build the Zig core + GhosttyKit.xcframework. Same recipe as upstream
+      # release CI, minus Nix (GitHub's macOS image has everything). Tag
+      # releases are always universal; manual dispatch may pick native for a
+      # faster pipeline test.
       - name: Build GhosttyKit
-        run: zig build -Doptimize=ReleaseFast -Demit-macos-app=false
+        env:
+          XCFRAMEWORK_TARGET: ${{ inputs.xcframework-target || 'universal' }}
+        run: |
+          zig build -Doptimize=ReleaseFast -Demit-macos-app=false \
+            "-Dxcframework-target=${XCFRAMEWORK_TARGET}"
 
       # ReleaseLocal is upstream's "optimized build without Apple signing
       # certificates" configuration: ad-hoc signed (CODE_SIGN_IDENTITY=-).
@@ -94,6 +140,7 @@ jobs:
             -target Ghostty \
             -configuration ReleaseLocal \
             "SYMROOT=${PWD}/macos/build" \
+            "OBJROOT=${PWD}/macos/build-intermediates" \
             build
           test -d "macos/build/ReleaseLocal/Ghostty.app"
 
