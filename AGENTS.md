@@ -51,9 +51,12 @@ Two different repos, two different rules — don't conflate them:
   ```
 
 - **Upstream — `ghostty-org/ghostty`, remote `upstream`: never create issues
-  or PRs there, and never push branches to it.** Upstream's AGENTS.md forbids
-  agent-created contributions and we honor that. If something belongs
-  upstream, say so and let the user handle it themselves.
+  or PRs there, never push branches to it, never try to get anything merged
+  there.** This fork does not contribute back to upstream — not now, not
+  later, not via the user. The relationship is strictly one-way: we pull
+  upstream in (rebase policy in PHANTTOM.md); nothing ever flows the other
+  direction. Don't propose upstreaming a change, don't prepare
+  "upstream-ready" patches, don't treat upstream as a target at all.
 
 (Upstream's own version of this section is an unconditional "never create a
 PR". That rule is about *their* repo — it does not apply to the fork, and

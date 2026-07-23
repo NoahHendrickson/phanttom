@@ -13,10 +13,14 @@ covers everything Phanttom adds and the sharp edges we've already hit.
 - Repo: `github.com/NoahHendrickson/phanttom`, branch `phanttom` (default)
 - Remotes: `upstream` = ghostty-org/ghostty, `origin` = the fork,
   `reference-tom` = tomreinert/ghostty (prior-art sidebar fork, study only)
-- **Never open issues or PRs against upstream** (their AGENTS.md forbids
-  agent-created ones; we honor that). All work stays on the fork — and PRs
-  *on the fork* (`origin`, base `phanttom`) are the normal way changes land,
-  not an exception to that rule. See "Issue and PR Guidelines" in AGENTS.md.
+- **Never open issues or PRs against upstream, and never try to merge
+  anything into upstream** (their AGENTS.md forbids agent-created
+  contributions; we honor that — and beyond that, this fork simply doesn't
+  contribute back, ever). The relationship with upstream is one-way: we
+  rebase onto their releases, nothing flows the other direction. All work
+  stays on the fork — and PRs *on the fork* (`origin`, base `phanttom`) are
+  the normal way changes land, not an exception to that rule. See "Issue and
+  PR Guidelines" in AGENTS.md.
 
 ## Build & run
 
