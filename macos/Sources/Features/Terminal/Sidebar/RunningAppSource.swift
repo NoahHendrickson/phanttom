@@ -12,16 +12,22 @@ enum RunningAppSource {
     ]
 
     /// Checkout root for the running binary, or nil when the bundle path
-    /// isn't a local build tree. Resolved once — the process doesn't move.
+    /// isn't a local build tree. Normalized once — the process doesn't move.
     static let currentSourceRoot: String? = sourceRoot(
         fromBundlePath: Bundle.main.bundleURL.path
     )
 
-    /// Absolute, symlink-resolved, standardized path. One normalize step
-    /// for both bundle stripping and containment checks.
+    /// Absolute, symlink-resolved, standardized path.
     private static func normalizedPath(_ path: String) -> String {
         (URL(fileURLWithPath: path).resolvingSymlinksInPath().path as NSString)
             .standardizingPath
+    }
+
+    /// Prefix-safe containment for already-normalized absolute paths.
+    private static func contains(directory dir: String, sourceRoot root: String) -> Bool {
+        if dir == root { return true }
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return dir.hasPrefix(prefix)
     }
 
     /// Strip a checkout-shaped bundle path down to its source root.
@@ -41,18 +47,18 @@ enum RunningAppSource {
     }
 
     /// True when `directory` is under the running app's source checkout.
+    /// Normalizes only the tab pwd; `currentSourceRoot` is already clean.
     static func matchesCurrent(directory: String) -> Bool {
         guard let root = currentSourceRoot else { return false }
-        return matches(directory: directory, sourceRoot: root)
+        return contains(directory: normalizedPath(directory), sourceRoot: root)
     }
 
     /// True when `directory` is the source root or a path inside it.
     /// Boundary-safe: `/foo` does not match `/foobar`.
     static func matches(directory: String, sourceRoot: String) -> Bool {
-        let dir = normalizedPath(directory)
-        let root = normalizedPath(sourceRoot)
-        if dir == root { return true }
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        return dir.hasPrefix(prefix)
+        contains(
+            directory: normalizedPath(directory),
+            sourceRoot: normalizedPath(sourceRoot)
+        )
     }
 }
