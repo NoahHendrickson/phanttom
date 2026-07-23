@@ -210,14 +210,34 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         sidebar.frame.width < 1
     }
 
+    /// True while the user is dragging the divider — this delegate method is
+    /// only invoked for interactive drags, never for programmatic position
+    /// changes, so it positively identifies the one resize source whose
+    /// width is a deliberate user choice. Cleared on the next runloop turn
+    /// (after the drag step's resize callbacks have run).
+    private var isDraggingDivider = false
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainSplitPosition proposedPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        if !isDraggingDivider {
+            isDraggingDivider = true
+            DispatchQueue.main.async { [weak self] in self?.isDraggingDivider = false }
+        }
+        return proposedPosition
+    }
+
     func splitViewDidResizeSubviews(_ notification: Notification) {
         onSidebarWidthChange?(currentSidebarWidth)
         guard didRestoreWidth, !isSidebarCollapsed, sidebar.frame.width >= Self.minWidth else { return }
-        // Only persist deliberate widths: skip the collapse/expand animation
-        // frames (interrupting the slide would save a mid-animation width)
-        // and window live-resizes (autolayout can squeeze the sidebar, which
-        // must not overwrite the user's chosen width for every window).
-        guard toggleAnimationTimer == nil, window?.inLiveResize != true else { return }
+        // Only a divider drag persists its width. Every other resize source
+        // is transient — the collapse/expand slide, window live-resize, and
+        // programmatic frame changes (fullscreen transitions, zoom, Stage
+        // Manager / Split View tiling) where autolayout can squeeze the
+        // sidebar — and must not overwrite the user's chosen width.
+        guard isDraggingDivider, toggleAnimationTimer == nil else { return }
         UserDefaults.standard.set(sidebar.frame.width, forKey: Self.widthDefaultsKey)
     }
 }
