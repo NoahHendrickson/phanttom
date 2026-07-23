@@ -78,6 +78,7 @@ struct SidebarTabRow: View {
     let onRename: (String?) -> Void
 
     @State private var isHovering = false
+    @State private var isCloseHovering = false
     @State private var isEditing = false
     @State private var draft = ""
     @FocusState private var editFocused: Bool
@@ -89,25 +90,36 @@ struct SidebarTabRow: View {
     }
 
     var body: some View {
-        Group {
-            switch tab.kind {
-            case .terminal: terminalRow
-            case .claude: agentRow(icon: "PhanttomClaude")
-            case .codex: agentRow(icon: "PhanttomCodex")
+        // Keep select/rename gestures on the label only — wrapping the close
+        // button made X clicks also call onSelect (makeKeyAndOrderFront),
+        // which felt like close lag.
+        HStack(spacing: 4) {
+            Group {
+                switch tab.kind {
+                case .terminal: terminalRow
+                case .claude: agentRow(icon: "PhanttomClaude")
+                case .codex: agentRow(icon: "PhanttomCodex")
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            // Double-tap as .gesture plus single-tap as .simultaneousGesture:
+            // chained onTapGesture modifiers would delay the single tap by the
+            // double-click disambiguation window (~300ms), which reads as tab-
+            // switching lag. This way selection fires on the first click
+            // immediately and a second click still starts a rename (Finder-style).
+            .gesture(TapGesture(count: 2).onEnded(startRename))
+            .simultaneousGesture(TapGesture().onEnded(onSelect))
+
+            trailing
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
-        .contentShape(Rectangle())
-        // Double-tap as .gesture plus single-tap as .simultaneousGesture:
-        // chained onTapGesture modifiers would delay the single tap by the
-        // double-click disambiguation window (~300ms), which reads as tab-
-        // switching lag. This way selection fires on the first click
-        // immediately and a second click still starts a rename (Finder-style).
-        .gesture(TapGesture(count: 2).onEnded(startRename))
-        .simultaneousGesture(TapGesture().onEnded(onSelect))
-        .onHover { isHovering = $0 }
+        .onHover { hovering in
+            isHovering = hovering
+            if !hovering { isCloseHovering = false }
+        }
         .contextMenu {
             Button("Rename Tab…", action: startRename)
             if tab.customTitle != nil || tab.autoTitle != nil {
@@ -168,46 +180,41 @@ struct SidebarTabRow: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 0)
-            trailing
         }
         .frame(height: 13)
     }
 
     /// Two-line 45pt card: agent icon + title, then directory + branch.
     private func agentRow(icon: String) -> some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(icon)
-                        .resizable()
-                        .frame(width: 13, height: 13)
-                    if isEditing {
-                        titleEditor
-                    } else {
-                        Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(icon)
+                    .resizable()
+                    .frame(width: 13, height: 13)
+                if isEditing {
+                    titleEditor
+                } else {
+                    Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
-                HStack(spacing: 8) {
-                    if let dir = tab.directoryName {
-                        Text(dir)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    if let branch = tab.gitBranch {
-                        Text(branch)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
-                .font(.system(size: 10))
-                .foregroundStyle(.white.opacity(0.65))
             }
-            Spacer(minLength: 0)
-            trailing
+            HStack(spacing: 8) {
+                if let dir = tab.directoryName {
+                    Text(dir)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let branch = tab.gitBranch {
+                    Text(branch)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.white.opacity(0.65))
         }
     }
 
@@ -217,10 +224,18 @@ struct SidebarTabRow: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.65))
+                    .foregroundStyle(.white.opacity(isCloseHovering ? 0.95 : 0.55))
+                    .frame(width: 16, height: 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.white.opacity(isCloseHovering ? 0.14 : 0))
+                    )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Close Tab")
+            .onHover { isCloseHovering = $0 }
+            .backport.pointerStyle(.link)
         } else {
             switch tab.status {
             case .idle:
