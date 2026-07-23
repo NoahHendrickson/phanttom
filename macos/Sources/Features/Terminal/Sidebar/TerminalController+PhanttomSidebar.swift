@@ -99,3 +99,16 @@ extension TerminalController {
         window.addTitlebarAccessoryViewController(accessory)
     }
 }
+
+extension BaseTerminalController {
+    /// Phanttom: called from `titleOverride`'s didSet so EVERY writer — the
+    /// sidebar rename, the ⌘-rename prompt, the native tab bar's inline
+    /// editor — keeps the sidebar auto-name in sync. Clearing the override
+    /// must also clear the auto-name: the sidebar falls back to the
+    /// auto-name, so a clear that leaves it behind appears to do nothing.
+    func phanttomTitleOverrideDidChange() {
+        guard titleOverride == nil,
+              let window = window as? TerminalWindow else { return }
+        window.phanttomTabState.rearmAutoTitle()
+    }
+}
