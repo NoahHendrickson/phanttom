@@ -529,6 +529,10 @@ class TerminalWindow: NSWindow {
             let backgroundColor = preferredBackgroundColor ?? NSColor(surfaceConfig.backgroundColor)
             self.backgroundColor = backgroundColor.withAlphaComponent(1)
         }
+
+        // Phanttom: sidebar glass may re-open window transparency with its
+        // own blur radius (no-op when the sidebar/glass is off).
+        syncPhanttomSidebarGlass()
     }
 
     /// The preferred window background color. The current window background color may not be set

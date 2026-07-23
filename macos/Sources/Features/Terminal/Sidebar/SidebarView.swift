@@ -29,18 +29,14 @@ struct SidebarView: View {
         }
     }
 
-    /// Layered background: optional behind-window glass material with the
-    /// base color over it at the configured opacity. Glass + low opacity =
-    /// frosted sidebar; no glass + full opacity = flat color.
+    /// The sidebar background: base color at the configured opacity. When
+    /// glass is on, the window itself is transparent behind the sidebar
+    /// (see PhanttomWindowGlass) — so translucent pixels here reveal a
+    /// genuinely blurred (or clear, at 0) view of what's behind the window.
     @ViewBuilder private var background: some View {
-        ZStack {
-            if settings.sidebarGlass {
-                SidebarGlassBackground()
-                    .opacity(settings.sidebarBlurAmount)
-            }
-            baseColor.opacity(settings.sidebarOpacity)
-        }
-        .ignoresSafeArea()
+        baseColor
+            .opacity(settings.sidebarOpacity)
+            .ignoresSafeArea()
     }
 
     var body: some View {
@@ -307,18 +303,3 @@ struct PixelSparkleView: View {
     }
 }
 
-/// Behind-window blur for the sidebar (Finder-sidebar style). Independent of
-/// the terminal's window-level `background-blur` — this blurs whatever is
-/// behind the window in the sidebar's region only.
-private struct SidebarGlassBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.autoresizingMask = [.width, .height]
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
-}

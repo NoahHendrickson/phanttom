@@ -75,12 +75,12 @@ struct SettingsView: View {
                 LabeledSlider(
                     label: "Blur amount",
                     value: $settings.sidebarBlurAmount,
-                    range: 0.1...1.0,
+                    range: 0...1.0,
                     display: String(format: "%.0f%%", settings.sidebarBlurAmount * 100)
                 )
                 .disabled(!settings.sidebarGlass)
 
-                Text("Glass blurs what’s behind the window in the sidebar’s region only. Lower the opacity to let it show through — the terminal side is unaffected.")
+                Text("Glass makes the sidebar see through the window — lower the sidebar opacity to reveal it. Blur amount controls how frosted that view is; 0% is completely clear. The terminal side is unaffected.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

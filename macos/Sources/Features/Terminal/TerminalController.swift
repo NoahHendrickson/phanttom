@@ -1055,6 +1055,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// Phanttom: publishes tab metadata for the vertical tab sidebar.
     private(set) var sidebarTabManager: SidebarTabManager?
 
+    /// Phanttom: re-applies window glass when sidebar settings change.
+    private var phanttomSettingsCancellable: AnyCancellable?
+
     override func windowWillLoad() {
         // We do NOT want to cascade because we handle this manually from the manager.
         shouldCascadeWindows = false
@@ -1107,6 +1110,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             onNewTab: { [weak self] in self?.newTab(nil) }
         ))
         window.contentView = SidebarSplitView(sidebar: sidebarHost, terminal: container)
+        phanttomSettingsCancellable = PhanttomSettings.shared.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                // Next runloop turn so the changed value has landed.
+                DispatchQueue.main.async {
+                    (self?.window as? TerminalWindow)?.phanttomGlassSettingsChanged()
+                }
+            }
 
         // If we have a default size, we want to apply it.
         if let defaultSize {
