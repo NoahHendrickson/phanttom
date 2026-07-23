@@ -134,13 +134,22 @@ jobs:
       # ReleaseLocal is upstream's "optimized build without Apple signing
       # certificates" configuration: ad-hoc signed (CODE_SIGN_IDENTITY=-).
       # Run from the repo root (never cwd into macos/ -- see PHANTTOM.md).
+      # A native GhosttyKit has no x86_64 slice, so the app must match it —
+      # ReleaseLocal otherwise builds universal and fails to link.
       - name: Build Phanttom.app
+        env:
+          XCFRAMEWORK_TARGET: ${{ inputs.xcframework-target || 'universal' }}
         run: |
+          ARCH_ARGS=()
+          if [[ "$XCFRAMEWORK_TARGET" == "native" ]]; then
+            ARCH_ARGS=("ARCHS=$(uname -m)" "ONLY_ACTIVE_ARCH=YES")
+          fi
           xcodebuild -project macos/Ghostty.xcodeproj \
             -target Ghostty \
             -configuration ReleaseLocal \
             "SYMROOT=${PWD}/macos/build" \
             "OBJROOT=${PWD}/macos/build-intermediates" \
+            "${ARCH_ARGS[@]}" \
             build
           test -d "macos/build/ReleaseLocal/Ghostty.app"
 
