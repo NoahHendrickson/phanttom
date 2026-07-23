@@ -315,6 +315,12 @@ class AppDelegate: NSObject,
         setupMenuImages()
         setupPhanttomMenus()
 
+        // One-time Claude Code integration prompt (after menus exist so
+        // "Open Settings" can present the window).
+        DispatchQueue.main.async { [weak self] in
+            self?.maybePromptClaudeIntegrationSetup()
+        }
+
         // Setup signal handlers
         setupSignals()
 

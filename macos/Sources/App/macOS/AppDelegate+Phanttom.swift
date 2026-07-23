@@ -46,4 +46,50 @@ extension AppDelegate {
     @IBAction func openPhanttomSettings(_ sender: Any?) {
         SettingsWindowController.shared.show(ghostty: ghostty)
     }
+
+    /// One-time prompt when Claude Code is present but Phanttom's hooks are
+    /// not installed (or only the legacy hand-installed form remains).
+    @MainActor
+    func maybePromptClaudeIntegrationSetup() {
+        // Ghostty.app is the XCTest host — never prompt (or install) there.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+
+        let key = PhanttomClaudeIntegration.setupPromptedKey
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+
+        let result = PhanttomClaudeIntegration.currentStatus()
+        if result.error == .claudeNotFound {
+            return
+        }
+        switch result.status {
+        case .notInstalled, .legacyInline:
+            break
+        case .installedCurrent, .installedOutdated:
+            return
+        }
+
+        // Set regardless of choice — one prompt, ever.
+        UserDefaults.standard.set(true, forKey: key)
+
+        let alert = NSAlert()
+        alert.messageText = "Set Up Claude Code Integration?"
+        alert.informativeText =
+            "Phanttom can install hooks so Claude Code tabs get pixel rain, " +
+            "auto-naming, agent directory tracking, and a model label. " +
+            "This writes ~/.claude/settings.json (with a backup)."
+        alert.addButton(withTitle: "Set Up")
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Not Now")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            _ = PhanttomClaudeIntegration.performInstall()
+        case .alertSecondButtonReturn:
+            SettingsWindowController.shared.show(ghostty: ghostty)
+        default:
+            break
+        }
+    }
 }

@@ -135,10 +135,117 @@ struct PhanttomSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            ClaudeCodeIntegrationSection()
         }
         .formStyle(.grouped)
         .frame(width: 440)
         .frame(minHeight: 360)
+    }
+}
+
+/// Claude Code hooks/statusline installer (see `PhanttomClaudeIntegration`).
+private struct ClaudeCodeIntegrationSection: View {
+    @State private var caption = "…"
+    @State private var status: PhanttomClaudeIntegration.IntegrationStatus = .notInstalled
+    @State private var claudeMissing = false
+    @State private var lastError: String?
+    @State private var confirmRemove = false
+
+    var body: some View {
+        Section {
+            Text(lastError ?? caption)
+                .font(.caption)
+                .foregroundStyle(lastError == nil ? Color.secondary : Color.red)
+
+            HStack {
+                if showPrimaryButton {
+                    Button(primaryButtonTitle) {
+                        runInstall()
+                    }
+                    .disabled(claudeMissing)
+                }
+                Button("Remove…") {
+                    confirmRemove = true
+                }
+                .disabled(claudeMissing || status == .notInstalled)
+            }
+        } header: {
+            Text("Claude Code")
+        } footer: {
+            Text(
+                "Installs Phanttom hooks for pixel rain, tab auto-naming, " +
+                "agent pwd tracking, and the model label. Writes " +
+                "~/.claude/settings.json (with a timestamped backup)."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .onAppear { refresh() }
+        .alert("Remove Claude Code Integration?", isPresented: $confirmRemove) {
+            Button("Remove", role: .destructive) { runUninstall() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Restores your previous statusline (if any) and removes Phanttom's hooks and helper script.")
+        }
+    }
+
+    private var showPrimaryButton: Bool {
+        switch status {
+        case .installedCurrent: return false
+        case .notInstalled, .installedOutdated, .legacyInline: return true
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        switch status {
+        case .notInstalled: return "Set Up"
+        case .legacyInline, .installedOutdated: return "Update"
+        case .installedCurrent: return "Set Up"
+        }
+    }
+
+    private func refresh() {
+        let result = PhanttomClaudeIntegration.currentStatus()
+        claudeMissing = result.error == .claudeNotFound
+        status = result.status
+        if result.error == .settingsCorrupt {
+            lastError = result.message
+            caption = result.message
+        } else if claudeMissing {
+            lastError = nil
+            caption = result.message
+        } else {
+            lastError = nil
+            caption = result.message
+        }
+    }
+
+    private func runInstall() {
+        let result = PhanttomClaudeIntegration.performInstall()
+        status = result.status
+        claudeMissing = result.error == .claudeNotFound
+        if let err = result.error, err != .claudeNotFound {
+            lastError = result.message
+        } else {
+            lastError = nil
+            caption = result.message
+        }
+        if result.error == nil {
+            caption = result.message
+        }
+    }
+
+    private func runUninstall() {
+        let result = PhanttomClaudeIntegration.performUninstall()
+        status = result.status
+        claudeMissing = result.error == .claudeNotFound
+        if let err = result.error, err != .claudeNotFound {
+            lastError = result.message
+        } else {
+            lastError = nil
+            caption = result.message
+        }
     }
 }
 

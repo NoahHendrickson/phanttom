@@ -18,7 +18,7 @@ covers everything Phanttom adds and the sharp edges we've already hit.
   contributions; we honor that — and beyond that, this fork simply doesn't
   contribute back, ever). The relationship with upstream is one-way: we
   rebase onto their releases, nothing flows the other direction. All work
-  stays on the fork — and PRs *on the fork* (`origin`, base `phanttom`) are
+  stays on the fork — and PRs _on the fork_ (`origin`, base `phanttom`) are
   the normal way changes land, not an exception to that rule. See "Issue and
   PR Guidelines" in AGENTS.md.
 
@@ -51,19 +51,20 @@ Ghostty.
 
 All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 
-| Area | Files |
-|---|---|
-| Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
-| Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
-| Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`) |
-| Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
-| `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
-| Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
-| Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |
-| Settings model (UserDefaults + config fragment) | `Features/Settings/PhanttomSettings.swift` |
-| Settings UI | `Features/Settings/SettingsView.swift` (replaces upstream's "Coming Soon" placeholder) |
-| Settings window host | `Features/Settings/SettingsWindowController.swift` |
-| Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
+| Area                                                                  | Files                                                                                                                    |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Sidebar UI (rows, status, rename, pixel rain)                         | `Features/Terminal/Sidebar/SidebarView.swift`                                                                            |
+| Tab model + event plumbing                                            | `Features/Terminal/Sidebar/SidebarTabManager.swift`                                                                      |
+| Per-tab state machine (kind, status, auto-name)                       | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`)           |
+| Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift`                                                                         |
+| `[sidebar \| terminal]` split, collapse, width persistence            | `Features/Terminal/Sidebar/SidebarSplitView.swift`                                                                       |
+| Window glass (transparency + CGS blur radius)                         | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift`                                                                    |
+| Titlebar zone tracking sidebar width                                  | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift`                                                                   |
+| Settings model (UserDefaults + config fragment)                       | `Features/Settings/PhanttomSettings.swift`                                                                               |
+| Settings UI                                                           | `Features/Settings/PhanttomSettingsView.swift` (upstream `SettingsView.swift` placeholder untouched)                     |
+| Claude Code hooks installer                                           | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
+| Settings window host                                                  | `Features/Settings/SettingsWindowController.swift`                                                                       |
+| Claude/Codex icons                                                    | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset`                                                |
 
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
@@ -108,6 +109,7 @@ cross-window state must live **on the window** (see
 `TerminalWindow.phanttomTabState`), never in a manager instance.
 
 `SidebarTabManager` is fully event-driven (no polling):
+
 - membership changes ride upstream's `relabelTabs` (fires on new tab, close,
   and mouse reorder) via `.phanttomSidebarTabsDidChange`
 - title/pwd via KVO on each window; selection via key-window notifications
@@ -132,7 +134,7 @@ via `CGSSetWindowBackgroundBlurRadius` (same undocumented API upstream uses
 for terminal blur; declared via `@_silgen_name` in `PhanttomWindowGlass.swift`).
 The terminal surface paints its own opaque background, so only the sidebar's
 translucent pixels reveal what's behind. Blur slider = radius 0–40. Caveat:
-the radius is per-window, so if the *terminal* also uses transparency, the
+the radius is per-window, so if the _terminal_ also uses transparency, the
 terminal's configured blur owns the window.
 
 ## Tab semantics (the behavioral contract)
@@ -141,6 +143,7 @@ terminal's configured blur owns the window.
 every split's title, not just the focused one, so an idle agent in a
 background split keeps its identity — and stored sticky on the window
 (`phanttomTabState`):
+
 - title starts with the hook marker `❯` + U+2063 (invisible separator) →
   `claude`, stored sticky (only our hook emits the marker)
 - title contains "claude"/"codex" → that kind
@@ -150,6 +153,7 @@ background split keeps its identity — and stored sticky on the window
   and clears the auto-name
 
 **Status** (leading slot on agent cards, trailing slot on terminal rows):
+
 - `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
   report (agents in non-focused splits count). Indeterminate reports (state 3,
   what the hooks emit) are exempt from upstream's 15s staleness timeout in
@@ -196,22 +200,60 @@ same one isn't immediately re-captured).
 
 ## Claude Code integration (hooks protocol)
 
-Installed in the user's `~/.claude/settings.json` (not in this repo — it's
-user config; backup kept as `settings.json.bak-phanttom`). All hooks write
-escape sequences to `/dev/tty` (hook stdout is captured by Claude Code, the
-tty is not):
+Installed from **Phanttom Settings → Claude Code** (`Set Up` / `Update` /
+`Remove…`), or via the one-time first-launch prompt when `~/.claude` exists
+but Phanttom's hooks are missing. Implementation:
+`macos/Sources/Features/Settings/PhanttomClaudeIntegration.swift`.
 
-| Event | Emits | Phanttom effect |
-|---|---|---|
-| `UserPromptSubmit` | OSC 9;4 state 3 (indeterminate) | pixel rain starts |
-| `UserPromptSubmit` | OSC 2 title `❯⁣ <prompt, 56ch>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`), via `jq -r .prompt` | first prompt names the tab |
-| `UserPromptSubmit`, `SessionStart`, `PostToolUse` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (`jq -r '.cwd \| @uri'`, `%2F` restored to `/`) | tab pwd tracks the *agent's* directory, not just the shell's |
-| `Stop` | OSC 9;4 state 0 (clear) | rain stops → Done if unselected |
-| `Notification` | OSC 9;4 clear + BEL | → Attention if unselected |
+**Architecture.** One versioned helper script at
+`~/.claude/phanttom-hook.sh` (embedded in the app as `hookScript`; payload
+version is `payloadVersion`). Every hook and the statusline are thin
+dispatch calls — no shell-quoting-inside-JSON:
+
+```sh
+sh "$HOME/.claude/phanttom-hook.sh" prompt-submit
+sh "$HOME/.claude/phanttom-hook.sh" session-start
+sh "$HOME/.claude/phanttom-hook.sh" post-tool-use
+sh "$HOME/.claude/phanttom-hook.sh" stop
+sh "$HOME/.claude/phanttom-hook.sh" notification
+sh "$HOME/.claude/phanttom-hook.sh" statusline
+```
+
+**Files the installer touches** (under `~/.claude/`):
+
+| File                                           | Role                                                                         |
+| ---------------------------------------------- | ---------------------------------------------------------------------------- |
+| `settings.json`                                | Hooks + `statusLine` entries (unknown keys round-trip)                       |
+| `settings.json.bak-phanttom-<yyyyMMdd-HHmmss>` | Timestamped backup before every write (keep ≤5)                              |
+| `phanttom-hook.sh`                             | Versioned payload (`chmod 0755`)                                             |
+| `phanttom-integration.json`                    | `{"version", "originalStatusLine"}` — statusline chains to the saved command |
+
+**Version bump rule.** Any change to the script text or the desired hook /
+statusline spec **must** bump `payloadVersion` — that's what drives
+Settings' "Update available".
+
+All hooks write escape sequences to the session tty (hook stdout is captured
+by Claude Code). Tty resolution is
+`ps -o tty= -p "${CLAUDE_PID:-$PPID}"` with `""|"??"` → `/dev/tty` fallback
+— plain `/dev/tty` alone is known-broken (hook processes have no controlling
+terminal). `CLAUDE_PID` is undocumented; keep the full fallback chain.
+JSON parsing prefers `jq` when present, else `/usr/bin/perl` + `JSON::PP`
+(no Homebrew / CLT dependency).
+
+| Event / subcommand                                                                | Emits                                                                                                                                                            | Phanttom effect                                                                     |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `prompt-submit`                                                                   | OSC 9;4 state 3 (indeterminate)                                                                                                                                  | pixel rain starts                                                                   |
+| `prompt-submit`                                                                   | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`)                                                                           | first prompt names the tab; model from last non-synthetic assistant transcript turn |
+| `prompt-submit`, `session-start`, `post-tool-use` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (URI-encoded, `%2F` restored to `/`)                                                                                               | tab pwd tracks the _agent's_ directory, not just the shell's                        |
+| `stop`                                                                            | OSC 9;4 state 0 (clear)                                                                                                                                          | rain stops → Done if unselected                                                     |
+| `notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                              | → Attention if unselected                                                           |
+| `statusline`                                                                      | model-only marker `❯⁣⁣<model-id>` on change (cache file under `$TMPDIR`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
 
 The U+2063 INVISIBLE SEPARATOR makes the marker collision-proof: a bare "❯"
 is the default prompt char of starship/pure/p10k and must NOT trigger
-auto-naming (it's treated as a decorated title instead).
+auto-naming (it's treated as a decorated title instead). Hook stdin JSON has
+**no model field** on any event — the statusline is the only pre-first-response
+model source, which is why the statusline wrapper exists.
 
 The OSC 7 cwd report rides the terminal's normal pwd channel (the same one
 shell integration uses at each prompt), so no app-side plumbing is needed:
@@ -226,19 +268,6 @@ render while the CLI owns the foreground — it redraws (and re-reports) only
 after the CLI exits. If the CLI ever stops being the sole foreground
 process for the session's lifetime, that assumption breaks.
 
-The exact hook command (identical for all three events; kept here so its
-quoting/escaping is auditable — the installed copy lives in user config):
-
-```sh
-sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > /dev/tty 2>/dev/null; true'
-```
-
-`@uri` percent-encodes everything (spaces, UTF-8, control chars) so no raw
-byte from `.cwd` ever reaches the escape sequence; the `sed` only restores
-`/` so the encoded value still reads as a path. A missing `.cwd`, non-JSON
-input, or absent jq all produce no output (the `true` keeps the hook from
-ever failing the Claude Code call).
-
 Manual test commands (any tab):
 `printf '\033]9;4;3;0\033\\'` (rain) · `printf '\033]9;4;0;0\033\\'` (clear) ·
 `printf '\a'` (bell) ·
@@ -250,6 +279,7 @@ Tabs can be scripted via AppleScript: `tell application id
 ## Settings architecture
 
 Two storage planes, deliberately different:
+
 - **Terminal appearance** (background color/opacity/blur) flows through
   Ghostty's real config system: `PhanttomSettings` writes a managed fragment
   `~/.config/ghostty/phanttom.conf` and triggers `reloadConfig()`. The user's
@@ -261,7 +291,7 @@ Two storage planes, deliberately different:
   via SwiftUI.
 
 `Ghostty.App.config` is `@Published`; SwiftUI observes it for theme
-reactivity. For the *actual rendered* terminal background, prefer the
+reactivity. For the _actual rendered_ terminal background, prefer the
 surface's `$backgroundColor` (see `SidebarTabManager.terminalBackground`) —
 the app-level getter can miss overrides.
 
