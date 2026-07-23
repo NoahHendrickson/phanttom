@@ -16,9 +16,19 @@ struct SidebarView: View {
     /// the terminal theme (nudged so the split still reads). Prefer the
     /// selected surface's live background for the terminal input — the
     /// app-level config getter can lag or miss overrides (e.g. phanttom.conf).
-    private var baseColor: Color {
+    private var resolvedBase: OSColor {
         let terminal = OSColor(tabManager.terminalBackground ?? ghostty.config.backgroundColor)
-        return Color(nsColor: settings.resolvedSidebarColor(terminalBackground: terminal))
+        return settings.resolvedSidebarColor(terminalBackground: terminal)
+    }
+
+    private var baseColor: Color {
+        Color(nsColor: resolvedBase)
+    }
+
+    /// Foreground derived from the base color's lightness so light sidebar
+    /// styles (System in light mode, light terminal themes) stay legible.
+    private var foreground: Color {
+        resolvedBase.isLightColor ? .black : .white
     }
 
     /// The sidebar background: base color at the configured opacity. When
@@ -38,6 +48,7 @@ struct SidebarView: View {
                     ForEach(tabManager.tabs) { tab in
                         SidebarTabRow(
                             tab: tab,
+                            foreground: foreground,
                             onSelect: { tabManager.select(tab) },
                             onClose: { tabManager.close(tab) },
                             onRename: { tabManager.rename(tab, to: $0) }
@@ -48,7 +59,7 @@ struct SidebarView: View {
             }
 
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(foreground.opacity(0.08))
                 .frame(height: 1)
 
             Button(action: onNewTab) {
@@ -59,7 +70,7 @@ struct SidebarView: View {
                         .font(.system(size: 11))
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(foreground)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -73,18 +84,21 @@ struct SidebarView: View {
 
 struct SidebarTabRow: View {
     let tab: SidebarTabManager.TabItem
+    let foreground: Color
     let onSelect: () -> Void
     let onClose: () -> Void
     let onRename: (String?) -> Void
 
     @State private var isHovering = false
+    @State private var isHoveringClose = false
     @State private var isEditing = false
     @State private var draft = ""
+    @State private var draftOriginal = ""
     @FocusState private var editFocused: Bool
 
     private var rowBackground: Color {
-        if tab.isSelected { return Color.white.opacity(0.08) }
-        if isHovering { return Color.white.opacity(0.04) }
+        if tab.isSelected { return foreground.opacity(0.08) }
+        if isHovering { return foreground.opacity(0.04) }
         return Color.clear
     }
 
@@ -106,7 +120,11 @@ struct SidebarTabRow: View {
         // switching lag. This way selection fires on the first click
         // immediately and a second click still starts a rename (Finder-style).
         .gesture(TapGesture(count: 2).onEnded(startRename))
-        .simultaneousGesture(TapGesture().onEnded(onSelect))
+        // simultaneousGesture also fires for clicks on the child close
+        // button; skip selection there so closing a tab doesn't front it.
+        .simultaneousGesture(TapGesture().onEnded {
+            if !isHoveringClose { onSelect() }
+        })
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Rename Tab…", action: startRename)
@@ -121,13 +139,21 @@ struct SidebarTabRow: View {
 
     private func startRename() {
         draft = tab.customTitle ?? tab.displayTitle
+        draftOriginal = draft
         isEditing = true
-        editFocused = true
+        // Focus a turn later: the TextField doesn't exist yet in this
+        // transaction, and a same-transaction focus write can be dropped
+        // (macOS 13 especially).
+        DispatchQueue.main.async { editFocused = true }
     }
 
     private func commitRename() {
         guard isEditing else { return }
         isEditing = false
+        // An untouched draft is a cancel, not a rename: committing the
+        // prefilled display title would freeze an ephemeral auto/derived
+        // name into a permanent custom one.
+        guard draft != draftOriginal || tab.customTitle != nil else { return }
         onRename(draft)
     }
 
@@ -136,7 +162,7 @@ struct SidebarTabRow: View {
         TextField("", text: $draft)
             .textFieldStyle(.plain)
             .font(.system(size: 11))
-            .foregroundStyle(.white)
+            .foregroundStyle(foreground)
             .focused($editFocused)
             .onSubmit(commitRename)
             .onChange(of: editFocused) { focused in
@@ -151,19 +177,19 @@ struct SidebarTabRow: View {
     private var terminalRow: some View {
         HStack(spacing: 4) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(Color.white.opacity(0.12))
+                .fill(foreground.opacity(0.12))
                 .frame(width: 13, height: 13)
                 .overlay(
                     Image(systemName: "apple.terminal.fill")
                         .font(.system(size: 8))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(foreground)
                 )
             if isEditing {
                 titleEditor
             } else {
                 Text(tab.customTitle ?? tab.abbreviatedDirectory ?? (tab.title.isEmpty ? "Terminal" : tab.title))
                     .font(.system(size: 11))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(foreground)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -186,7 +212,7 @@ struct SidebarTabRow: View {
                     } else {
                         Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
                             .font(.system(size: 11))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(foreground)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
@@ -204,7 +230,7 @@ struct SidebarTabRow: View {
                     }
                 }
                 .font(.system(size: 10))
-                .foregroundStyle(.white.opacity(0.65))
+                .foregroundStyle(foreground.opacity(0.65))
             }
             Spacer(minLength: 0)
             trailing
@@ -217,9 +243,10 @@ struct SidebarTabRow: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.65))
+                    .foregroundStyle(foreground.opacity(0.65))
             }
             .buttonStyle(.plain)
+            .onHover { isHoveringClose = $0 }
             .help("Close Tab")
         } else {
             switch tab.status {

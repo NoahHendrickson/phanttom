@@ -17,6 +17,7 @@ final class SettingsWindowController: NSWindowController {
         window.title = "Phanttom Settings"
         window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = false
+        window.contentView = NSHostingView(rootView: PhanttomSettingsView())
         super.init(window: window)
     }
 
@@ -25,13 +26,20 @@ final class SettingsWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private var didCenter = false
+
     func show(ghostty: Ghostty.App) {
         guard let window else { return }
 
         PhanttomSettings.shared.ghosttyApp = ghostty
 
-        if window.contentView == nil || !(window.contentView is NSHostingView<SettingsView>) {
-            window.contentView = NSHostingView(rootView: SettingsView(ghostty: ghostty))
+        if !didCenter {
+            didCenter = true
+            // Size to the SwiftUI content before centering so we don't
+            // center a zero-size frame.
+            if let fitting = window.contentView?.fittingSize, fitting != .zero {
+                window.setContentSize(fitting)
+            }
             window.center()
         }
 

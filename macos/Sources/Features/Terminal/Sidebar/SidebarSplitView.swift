@@ -11,7 +11,9 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     private static let defaultWidth: CGFloat = 271
 
     private let sidebar: NSView
-    private let terminalContainer: TerminalViewContainer
+    /// Exposed so BaseTerminalController.terminalViewContainer can route
+    /// through the split (upstream casts contentView directly).
+    let terminalContainer: TerminalViewContainer
     private var didRestoreWidth = false
 
     /// Fired whenever the sidebar's effective width changes (divider drags,
@@ -211,6 +213,11 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         onSidebarWidthChange?(currentSidebarWidth)
         guard didRestoreWidth, !isSidebarCollapsed, sidebar.frame.width >= Self.minWidth else { return }
+        // Only persist deliberate widths: skip the collapse/expand animation
+        // frames (interrupting the slide would save a mid-animation width)
+        // and window live-resizes (autolayout can squeeze the sidebar, which
+        // must not overwrite the user's chosen width for every window).
+        guard toggleAnimationTimer == nil, window?.inLiveResize != true else { return }
         UserDefaults.standard.set(sidebar.frame.width, forKey: Self.widthDefaultsKey)
     }
 }
