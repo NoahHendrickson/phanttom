@@ -39,6 +39,17 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist(); scheduleApply() }
     }
 
+    // MARK: - Font (applied via config fragment)
+
+    @Published var overrideFontSize: Bool {
+        didSet { persist(); scheduleApply() }
+    }
+
+    /// Font size in points. Ghostty's default is 13.
+    @Published var fontSize: Double {
+        didSet { persist(); scheduleApply() }
+    }
+
     // MARK: - Sidebar (applied instantly, app-side only)
 
     enum SidebarStyle: String, CaseIterable, Identifiable {
@@ -83,6 +94,19 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// Sidebar row title size in points; secondary text and icons scale from
+    /// it. The design's baseline is 11.
+    @Published var sidebarFontSize: Double {
+        didSet { persist() }
+    }
+
+    /// Color of the "working" (thinking) pixel-rain indicator.
+    static let defaultWorkingColor = Color.white
+
+    @Published var sidebarWorkingColor: Color {
+        didSet { persist() }
+    }
+
     /// The sidebar's base color per style, resolved to AppKit so both the
     /// SwiftUI sidebar and the window chrome (titlebar zone) derive from the
     /// same logic. `terminalBackground` feeds the `.matchTerminal` style.
@@ -105,11 +129,15 @@ final class PhanttomSettings: ObservableObject {
         static let backgroundColor = "PhanttomBackgroundColor"
         static let backgroundOpacity = "PhanttomBackgroundOpacity"
         static let backgroundBlur = "PhanttomBackgroundBlur"
+        static let overrideFontSize = "PhanttomOverrideFontSize"
+        static let fontSize = "PhanttomFontSize"
         static let sidebarStyle = "PhanttomSidebarStyle"
         static let sidebarColor = "PhanttomSidebarColor"
         static let sidebarOpacity = "PhanttomSidebarOpacity"
         static let sidebarGlass = "PhanttomSidebarGlass"
         static let sidebarBlurAmount = "PhanttomSidebarBlurAmount"
+        static let sidebarFontSize = "PhanttomSidebarFontSize"
+        static let sidebarWorkingColor = "PhanttomSidebarWorkingColor"
     }
 
     private var loaded = false
@@ -120,11 +148,15 @@ final class PhanttomSettings: ObservableObject {
         backgroundColor = Self.color(fromHex: defaults.string(forKey: Keys.backgroundColor)) ?? Color(red: 0.11, green: 0.11, blue: 0.13)
         backgroundOpacity = defaults.object(forKey: Keys.backgroundOpacity) as? Double ?? 1.0
         backgroundBlur = defaults.object(forKey: Keys.backgroundBlur) as? Double ?? 0
+        overrideFontSize = defaults.bool(forKey: Keys.overrideFontSize)
+        fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 13
         sidebarStyle = SidebarStyle(rawValue: defaults.string(forKey: Keys.sidebarStyle) ?? "") ?? .matchTerminal
         sidebarColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarColor)) ?? Color(red: 0.09, green: 0.09, blue: 0.11)
         sidebarOpacity = defaults.object(forKey: Keys.sidebarOpacity) as? Double ?? 1.0
         sidebarGlass = defaults.bool(forKey: Keys.sidebarGlass)
         sidebarBlurAmount = defaults.object(forKey: Keys.sidebarBlurAmount) as? Double ?? 1.0
+        sidebarFontSize = defaults.object(forKey: Keys.sidebarFontSize) as? Double ?? 11
+        sidebarWorkingColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarWorkingColor)) ?? Self.defaultWorkingColor
         loaded = true
     }
 
@@ -135,11 +167,15 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(Self.hex(from: backgroundColor), forKey: Keys.backgroundColor)
         defaults.set(backgroundOpacity, forKey: Keys.backgroundOpacity)
         defaults.set(backgroundBlur, forKey: Keys.backgroundBlur)
+        defaults.set(overrideFontSize, forKey: Keys.overrideFontSize)
+        defaults.set(fontSize, forKey: Keys.fontSize)
         defaults.set(sidebarStyle.rawValue, forKey: Keys.sidebarStyle)
         defaults.set(Self.hex(from: sidebarColor), forKey: Keys.sidebarColor)
         defaults.set(sidebarOpacity, forKey: Keys.sidebarOpacity)
         defaults.set(sidebarGlass, forKey: Keys.sidebarGlass)
         defaults.set(sidebarBlurAmount, forKey: Keys.sidebarBlurAmount)
+        defaults.set(sidebarFontSize, forKey: Keys.sidebarFontSize)
+        defaults.set(Self.hex(from: sidebarWorkingColor), forKey: Keys.sidebarWorkingColor)
     }
 
     // MARK: - Applying terminal settings
@@ -190,6 +226,9 @@ final class PhanttomSettings: ObservableObject {
             lines.append("background = \(Self.hex(from: backgroundColor))")
             lines.append("background-opacity = \(String(format: "%.2f", backgroundOpacity))")
             lines.append("background-blur = \(Int(backgroundBlur))")
+        }
+        if overrideFontSize {
+            lines.append("font-size = \(String(format: "%g", fontSize))")
         }
         try FileManager.default.createDirectory(
             at: configDirectory, withIntermediateDirectories: true)

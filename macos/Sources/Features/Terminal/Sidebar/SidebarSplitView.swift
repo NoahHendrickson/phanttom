@@ -6,6 +6,10 @@ import AppKit
 final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     private static let widthDefaultsKey = "PhanttomSidebarWidth"
     private static let collapsedDefaultsKey = "PhanttomSidebarCollapsed"
+    /// Posted (object: the originating split view) whenever the shared
+    /// width/collapse state changes, so sibling tab windows re-apply it while
+    /// still hidden instead of visibly resizing when they become main.
+    private static let stateDidChange = Notification.Name("PhanttomSidebarStateDidChange")
     private static let minWidth: CGFloat = 160
     private static let maxWidth: CGFloat = 360
     private static let defaultWidth: CGFloat = 271
@@ -60,10 +64,15 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
 
     /// Re-applies the shared persisted state when this window becomes main.
     private var becomeMainObserver: NSObjectProtocol?
+    /// Re-applies the shared persisted state when a sibling split changes it.
+    private var siblingStateObserver: NSObjectProtocol?
 
     deinit {
         if let becomeMainObserver {
             NotificationCenter.default.removeObserver(becomeMainObserver)
+        }
+        if let siblingStateObserver {
+            NotificationCenter.default.removeObserver(siblingStateObserver)
         }
     }
 
@@ -74,12 +83,27 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
             NotificationCenter.default.removeObserver(becomeMainObserver)
             self.becomeMainObserver = nil
         }
+        if let siblingStateObserver {
+            NotificationCenter.default.removeObserver(siblingStateObserver)
+            self.siblingStateObserver = nil
+        }
         guard let window else { return }
 
         // Tabs are sibling windows, each with its own split view, while the
-        // width/collapse state is shared (persisted). Re-apply it whenever
-        // this window is selected so the sidebar keeps one width across tabs
-        // instead of whatever this window had when it was last visible.
+        // width/collapse state is shared (persisted). Apply a sibling's
+        // change immediately — while this window is still hidden — so
+        // switching tabs never shows the terminal resizing to catch up.
+        siblingStateObserver = NotificationCenter.default.addObserver(
+            forName: Self.stateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, (notification.object as? SidebarSplitView) !== self else { return }
+            self.syncSharedSidebarState()
+        }
+
+        // Fallback for anything the broadcast missed (e.g. state persisted
+        // before this split existed).
         becomeMainObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeMainNotification,
             object: window,
@@ -94,14 +118,20 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         setPosition(isSidebarCollapsed ? 0 : savedSidebarWidth, ofDividerAt: 0)
     }
 
+    /// True while applying a sibling's state, so the apply itself doesn't
+    /// re-broadcast and echo back to the originator mid-animation.
+    private var isApplyingSharedState = false
+
     private func syncSharedSidebarState() {
+        isApplyingSharedState = true
+        defer { isApplyingSharedState = false }
         let collapsed = UserDefaults.standard.bool(forKey: Self.collapsedDefaultsKey)
         if collapsed != isSidebarCollapsed {
             // Applies the shared width too when expanding.
             setSidebarCollapsed(collapsed, animated: false)
             return
         }
-        guard !isSidebarCollapsed else { return }
+        guard !isSidebarCollapsed, toggleAnimationTimer == nil else { return }
         let width = savedSidebarWidth
         guard abs(sidebar.frame.width - width) > 0.5 else { return }
         setPosition(width, ofDividerAt: 0)
@@ -128,6 +158,10 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         guard collapsed != isSidebarCollapsed else { return }
         isSidebarCollapsed = collapsed
         UserDefaults.standard.set(collapsed, forKey: Self.collapsedDefaultsKey)
+        // Siblings jump straight to the final state; only this window slides.
+        if !isApplyingSharedState {
+            NotificationCenter.default.post(name: Self.stateDidChange, object: self)
+        }
 
         toggleAnimationTimer?.invalidate()
         toggleAnimationTimer = nil
@@ -244,5 +278,6 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         // sidebar — and must not overwrite the user's chosen width.
         guard isDraggingDivider, toggleAnimationTimer == nil else { return }
         UserDefaults.standard.set(sidebar.frame.width, forKey: Self.widthDefaultsKey)
+        NotificationCenter.default.post(name: Self.stateDidChange, object: self)
     }
 }

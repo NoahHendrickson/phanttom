@@ -106,8 +106,14 @@
 	</array>
 	<key>SUEnableAutomaticChecks</key>
 	<false/>
+	<!-- Phanttom: this must be the FORK's Sparkle EdDSA public key, never
+	     Ghostty's — see PHANTTOM-RELEASING.md. Release CI overwrites it from
+	     the SPARKLE_KEY_PUB secret; commit your own key here after running
+	     generate_keys so local ReleaseLocal builds can validate updates too.
+	     Empty means dev builds can't verify updates (auto-checks are already
+	     off above). -->
 	<key>SUPublicEDKey</key>
-	<string>wsNcGf5hirwtdXMVnYoxRIX/SqZQLMOsYlD3q3imeok=</string>
+	<string>s3fpb0KUi+HAzud+N4qZocormdC9gZBwj/+PtUOUaHk=</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

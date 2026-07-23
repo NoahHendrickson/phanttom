@@ -15,9 +15,11 @@ extension TerminalWindow {
     /// own full-width fill is cleared so the translucent left zone isn't
     /// backed by an opaque layer.
     ///
-    /// Called (deferred a runloop turn) from syncAppearance so it runs after
-    /// subclass overrides repaint the titlebar, and therefore survives all
-    /// the redraw triggers (tab switches, tab bar recreation, settings).
+    /// Called (deferred via a same-pass runloop block — see
+    /// phanttomSyncAppearanceDidRun) from syncAppearance so it runs after
+    /// subclass overrides repaint the titlebar but before the frame commits,
+    /// and therefore survives all the redraw triggers (tab switches, tab bar
+    /// recreation, settings) without a visible flash.
     ///
     /// Pass `width` when the caller knows the divider position better than
     /// the split view's current frames do (during the collapse/expand

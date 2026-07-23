@@ -871,7 +871,8 @@ class BaseTerminalController: NSWindowController,
             return
         }
 
-        window.title = lastComputedTitle
+        // Phanttom: suppresses the transient "👻" placeholder title.
+        window.title = phanttomDisplayTitle(lastComputedTitle)
     }
 
     func pwdDidChange(to: URL?) {

@@ -26,6 +26,13 @@ extension Ghostty {
                 progressReportTimer?.invalidate()
                 progressReportTimer = nil
 
+                // Phanttom: indeterminate reports carry no percentage and no
+                // expectation of periodic updates (agents emit one at task
+                // start and clear at task end), so they persist until
+                // explicitly cleared. The staleness timeout below only guards
+                // determinate reports, which do expect an update stream.
+                if progressReport?.state == .indeterminate { return }
+
                 // If we have a new progress report, start a timer to remove it after 15 seconds
                 if progressReport != nil {
                     progressReportTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: false) { [weak self] _ in

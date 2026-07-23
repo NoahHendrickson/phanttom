@@ -38,6 +38,15 @@ open -n macos/build/Debug/Ghostty.app                       # launch the debug a
 - Capture build exit codes directly (`cmd > log 2>&1; echo $?`) — piping
   through `grep`/`tail` masks failures.
 
+## Releasing
+
+Distribution + auto-updates (GitHub Releases feed, Sparkle EdDSA keys, the
+`phanttom-release.yml` workflow, sidebar update pill) are documented in
+[PHANTTOM-RELEASING.md](PHANTTOM-RELEASING.md). The update feed and the
+`SUPublicEDKey` in `Ghostty-Info.plist` are the fork's own — never point
+either back at Ghostty's servers/keys or users will be "updated" to stock
+Ghostty.
+
 ## Where Phanttom's code lives
 
 All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
@@ -140,13 +149,19 @@ background split keeps its identity — and stored sticky on the window
 - plain title (shell integration reclaiming the tab) → back to `terminal`,
   and clears the auto-name
 
-**Status** (trailing indicator):
+**Status** (leading slot on agent cards, trailing slot on terminal rows):
 - `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
-  report (agents in non-focused splits count)
+  report (agents in non-focused splits count). Indeterminate reports (state 3,
+  what the hooks emit) are exempt from upstream's 15s staleness timeout in
+  `SurfaceView_AppKit.swift`, so the rain runs for the whole task and stops
+  only on an explicit clear (Stop/Notification hooks) or surface close.
 - `done` (blue `#2C86F4`) — work finished while the tab was unselected
 - `attention` (yellow `#F4BC2C`) — bell rang while unselected (judged against
   the bell window's own tab group)
 - selecting a tab clears done/attention
+- otherwise-idle tabs show their branch's GitHub PR state: green `#3FB950`
+  open, purple `#A371F7` merged (`PRStatusCache`, gh-CLI-backed, 60s
+  revalidate; silently absent without gh/auth/PR)
 - status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
 **Name priority**: manual rename (upstream's
@@ -192,8 +207,9 @@ Two storage planes, deliberately different:
   main config gets a one-time optional include
   (`config-file = ?phanttom.conf`). Never write the user's own config beyond
   that line.
-- **Sidebar appearance** (style/color/opacity/glass/blur) is app-side only:
-  UserDefaults (`Phanttom*` keys), applied instantly via SwiftUI.
+- **Sidebar appearance** (style/color/opacity/glass/blur/working-indicator
+  color) is app-side only: UserDefaults (`Phanttom*` keys), applied instantly
+  via SwiftUI.
 
 `Ghostty.App.config` is `@Published`; SwiftUI observes it for theme
 reactivity. For the *actual rendered* terminal background, prefer the

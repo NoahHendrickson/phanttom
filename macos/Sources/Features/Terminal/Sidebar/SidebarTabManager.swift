@@ -33,6 +33,7 @@ final class SidebarTabManager: ObservableObject {
         let autoTitle: String?
         let directory: String?
         let gitBranch: String?
+        let prState: PRStatusCache.PRState?
         let kind: TabKind
         let status: TabStatus
         let isSelected: Bool
@@ -86,6 +87,25 @@ final class SidebarTabManager: ObservableObject {
 
     private var refreshScheduled = false
 
+    /// True while our own window's row is being held out of a fresh list so
+    /// its insertion can animate on-screen (see the staged publish in
+    /// refresh). Every publish keeps filtering the row until the delayed
+    /// release, because the release must not race the sync refreshes that
+    /// ride window presentation — those can run before the first frame.
+    private var unfoldPending = false
+
+    /// Schedule the animated unfold of the held-back own row, a couple of
+    /// frames after the window's first on-screen frame so the user actually
+    /// sees it grow in. No-op unless a row is held.
+    private func releaseUnfoldIfNeeded() {
+        guard unfoldPending else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+            guard let self, self.unfoldPending else { return }
+            self.unfoldPending = false
+            self.refresh()
+        }
+    }
+
     init(window: NSWindow) {
         self.window = window
 
@@ -100,10 +120,37 @@ final class SidebarTabManager: ObservableObject {
             DispatchQueue.main.async { self?.scheduleRefresh() }
         })
 
-        // Key/close events fire app-wide for every window; only windows in
-        // this manager's group can change what this sidebar shows.
+        // didBecomeKey refreshes synchronously, in the notification's own
+        // runloop turn. A brand-new tab's window becomes key in the same
+        // turn its first frame is committed, and the manager's initial
+        // refresh ran back before the window joined its tab group (upstream
+        // adds it after windowDidLoad) — so deferring even one turn ships
+        // that first frame with a sidebar showing only the new tab, a
+        // visible whole-list flash. By key time the group is settled, so
+        // refreshing in place is safe and lands in the same frame.
+        notificationObservers.append(center.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self, let affected = notification.object as? NSWindow,
+                      self.isInGroup(affected) else { return }
+                self.refresh()
+                // Our own window's first key moment is also its first
+                // on-screen frame — the cue that a held-back row (see the
+                // staged publish in refresh) can now unfold where the user
+                // will actually see it.
+                if affected === self.window { self.releaseUnfoldIfNeeded() }
+            }
+        })
+
+        // Resign-key/close events fire app-wide for every window; only
+        // windows in this manager's group can change what this sidebar
+        // shows. These must NOT refresh synchronously: at willClose
+        // delivery the closing window is still in the tab group, so the
+        // shrunken membership only exists a turn later.
         let filtered: [Notification.Name] = [
-            NSWindow.didBecomeKeyNotification,
             NSWindow.didResignKeyNotification,
             NSWindow.willCloseNotification,
         ]
@@ -233,13 +280,20 @@ final class SidebarTabManager: ObservableObject {
                 isSelected: isSelected
             )
 
+            let gitBranch = pwd.flatMap { GitBranchCache.shared.branch(at: $0) }
+            var prState: PRStatusCache.PRState?
+            if let pwd, let gitBranch {
+                prState = PRStatusCache.shared.state(at: pwd, branch: gitBranch)
+            }
+
             newTabs.append(TabItem(
                 id: id,
                 title: w.title,
                 customTitle: controller?.titleOverride,
                 autoTitle: state?.autoTitle,
                 directory: pwd,
-                gitBranch: pwd.flatMap { GitBranchCache.shared.branch(at: $0) },
+                gitBranch: gitBranch,
+                prState: prState,
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
@@ -247,7 +301,88 @@ final class SidebarTabManager: ObservableObject {
             ))
         }
 
-        if newTabs != tabs { tabs = newTabs }
+        if newTabs != tabs {
+            // Animate removals, in-place changes, and SINGLE-row inserts —
+            // a closing tab collapses (rows slide up into the gap) and a
+            // newly created tab unfolds downward. Bulk inserts stay instant:
+            // a fresh sidebar populating its whole list at once would read
+            // as a full re-render, not "one tab was added".
+            //
+            // The new-tab case needs a staged publish to look right: a new
+            // tab is a new WINDOW with a brand-new (empty) sidebar, so from
+            // this manager's view the whole list is a bulk insert. When that
+            // fresh list is our own window joining an existing group, first
+            // publish the pre-existing rows instantly (matching what the
+            // previous window's sidebar showed, so the window swap is
+            // seamless), then re-refresh next turn — which becomes the
+            // animated single insert of our own row.
+            let oldIDs = Set(tabs.map(\.id))
+            let insertedIDs = newTabs.map(\.id).filter { !oldIDs.contains($0) }
+            let ownID = ObjectIdentifier(window)
+
+            // A fresh sidebar catching up to an existing group: pre-existing
+            // rows arrive as inserts against a list that's empty or holds
+            // only our own row — the manager's very first refresh can run
+            // before the window joins its group, so the own row may already
+            // be published (and thus not part of the insert). With a single
+            // foreign insert this shape is ambiguous: it also matches an
+            // established lone tab watching a brand-new tab arrive. Position
+            // breaks the tie — a new tab always joins AFTER its parent, so a
+            // pre-existing row materializes above our own row, a genuinely
+            // new tab below.
+            let isCatchingUp: Bool = {
+                guard tabs.allSatisfy({ $0.id == ownID }),
+                      let ownIndex = newTabs.firstIndex(where: { $0.id == ownID })
+                else { return false }
+                let foreign = newTabs.enumerated().filter {
+                    $0.element.id != ownID && !oldIDs.contains($0.element.id)
+                }
+                if foreign.count > 1 { return true }
+                guard let only = foreign.first else { return false }
+                return only.offset < ownIndex
+            }()
+
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                tabs = newTabs
+            } else if unfoldPending {
+                // Our own row is staged for an animated unfold; keep holding
+                // it back so an interleaved refresh (didBecomeKey runs one
+                // synchronously during presentation) can't publish it early
+                // and off-screen.
+                let held = newTabs.filter { $0.id != ownID }
+                if held != tabs { tabs = held }
+            } else if isCatchingUp {
+                unfoldPending = true
+                tabs = newTabs.filter { $0.id != ownID }
+                // Released a beat after the window's first on-screen frame,
+                // not on a fixed delay from here: presentation is itself
+                // deferred (TerminalController.newTab), so a timer from this
+                // point can elapse while the window is still off-screen and
+                // the unfold would play unseen. didBecomeKey is the
+                // on-screen cue; the timer below is only a fallback for
+                // windows that never front (a restored background window
+                // keeps its full list correct even if never clicked).
+                if window.isKeyWindow {
+                    releaseUnfoldIfNeeded()
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(2)) { [weak self] in
+                        guard let self, self.unfoldPending else { return }
+                        self.unfoldPending = false
+                        self.refresh()
+                    }
+                }
+            } else if insertedIDs.count == 1, !tabs.isEmpty {
+                withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                    tabs = newTabs
+                }
+            } else if !insertedIDs.isEmpty {
+                tabs = newTabs
+            } else {
+                withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                    tabs = newTabs
+                }
+            }
+        }
 
         let selectedSurface = (selected.windowController as? BaseTerminalController)?.focusedSurface
         let liveBackground = selectedSurface?.backgroundColor

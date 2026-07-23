@@ -1,13 +1,18 @@
 import SwiftUI
 
-/// The vertical tab sidebar, implementing the first Phanttom design pass:
-/// compact rows for plain terminal tabs, two-line cards for agent tabs
-/// (Claude/Codex) with directory + git branch, and trailing status
-/// indicators (animated pixel sparkle while working, blue "done" and yellow
-/// "attention" squares).
+/// The vertical tab sidebar: compact rows for plain terminal tabs, two-line
+/// cards for agent tabs (Claude/Codex). Agent cards lead with the status
+/// indicator (animated pixel rain while working, glowing "done"/"attention"
+/// dots), put the close button inline on the title row, and anchor the agent
+/// icon at the bottom-right beside the directory + git branch line. Terminal
+/// rows keep their trailing status/close slot.
 struct SidebarView: View {
     @ObservedObject var ghostty: Ghostty.App
     @ObservedObject var tabManager: SidebarTabManager
+    /// The app-wide Sparkle update state, so "update available" is one click
+    /// away in the sidebar footer (Cursor-style) rather than only in the
+    /// titlebar accessory.
+    @ObservedObject var updateModel: UpdateViewModel
     @ObservedObject private var settings = PhanttomSettings.shared
 
     let onNewTab: () -> Void
@@ -44,50 +49,120 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                LazyVStack(spacing: 10) {
+                // Plain VStack, not LazyVStack: removal transitions are
+                // unreliable inside lazy containers on macOS 13, and a tab
+                // list is small enough that laziness buys nothing.
+                VStack(spacing: 10) {
                     ForEach(tabManager.tabs) { tab in
                         SidebarTabRow(
                             tab: tab,
                             foreground: foreground,
+                            fontSize: settings.sidebarFontSize,
                             onSelect: { tabManager.select(tab) },
                             onClose: { tabManager.close(tab) },
                             onRename: { tabManager.rename(tab, to: $0) }
                         )
+                        .transition(.phanttomTabRow)
                     }
+
+                    // Full-width row-style button trailing the last tab; it
+                    // rides the same layout animation, so it slides as tabs
+                    // come and go.
+                    NewTabRow(
+                        foreground: foreground,
+                        fontSize: settings.sidebarFontSize,
+                        action: onNewTab
+                    )
                 }
                 .padding(8)
+                // Whether a tab change animates is decided at the publish
+                // site (SidebarTabManager.refresh): removals and single-row
+                // inserts animate; bulk population and Reduce Motion stay
+                // instant.
             }
 
-            Rectangle()
-                .fill(foreground.opacity(0.08))
-                .frame(height: 1)
+            // UpdatePill renders nothing when idle; the outer `if` also drops
+            // the divider and padding so the footer doesn't grow an empty gap.
+            if !updateModel.state.isIdle {
+                Rectangle()
+                    .fill(foreground.opacity(0.08))
+                    .frame(height: 1)
 
-            Button(action: onNewTab) {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("New tab")
-                        .font(.system(size: 11))
+                HStack {
+                    UpdatePill(model: updateModel)
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(foreground)
-                .contentShape(Rectangle())
+                .padding(.horizontal, 19)
+                .padding(.vertical, 17)
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 19)
-            .padding(.vertical, 17)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
     }
 }
 
+/// The "New tab" row at the end of the tab list: same metrics and hover
+/// treatment as a terminal tab row, so it reads as "the next tab slot".
+private struct NewTabRow: View {
+    let foreground: Color
+    let fontSize: Double
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    private var iconSize: CGFloat { CGFloat(fontSize) + 2 }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: "plus")
+                    .font(.system(size: max(6, fontSize - 2), weight: .medium))
+                    .frame(width: iconSize, height: iconSize)
+                Text("New tab")
+                    .font(.system(size: fontSize))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(foreground.opacity(isHovering ? 1 : 0.7))
+            .padding(.vertical, 8)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(foreground.opacity(isHovering ? 0.04 : 0))
+        )
+        .onHover { isHovering = $0 }
+        .backport.pointerStyle(.link)
+        .help("New Tab (⌘T)")
+    }
+}
+
+extension AnyTransition {
+    /// Transition for sidebar tab rows: a fade with a slight top-anchored
+    /// compression, so a closing tab reads as collapsing in place and a new
+    /// tab as unfolding downward; the layout slide of the neighboring rows
+    /// does the rest of the storytelling. Whether a given change animates at
+    /// all is decided at the publish site (SidebarTabManager.refresh):
+    /// removals and single-row inserts do, bulk population doesn't.
+    static let phanttomTabRow: AnyTransition = .opacity
+        .combined(with: .scale(scale: 0.92, anchor: .top))
+}
+
 struct SidebarTabRow: View {
     let tab: SidebarTabManager.TabItem
     let foreground: Color
+    let fontSize: Double
     let onSelect: () -> Void
     let onClose: () -> Void
     let onRename: (String?) -> Void
+
+    /// Secondary text and icons scale with the title so rows stay balanced.
+    private var subtitleSize: Double { max(8, fontSize - 1) }
+    private var iconSize: CGFloat { CGFloat(fontSize) + 2 }
+    private var iconGlyphSize: Double { max(6, fontSize - 3) }
 
     @State private var isHovering = false
     @State private var isHoveringClose = false
@@ -113,8 +188,7 @@ struct SidebarTabRow: View {
             Group {
                 switch tab.kind {
                 case .terminal: terminalRow
-                case .claude: agentRow(icon: "PhanttomClaude")
-                case .codex: agentRow(icon: "PhanttomCodex")
+                case .claude, .codex: agentRow
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -130,11 +204,21 @@ struct SidebarTabRow: View {
             .gesture(TapGesture(count: 2).onEnded(startRename))
             .simultaneousGesture(TapGesture().onEnded(onSelect))
 
-            trailing
-                .padding(.trailing, 8)
+            Group {
+                switch tab.kind {
+                case .terminal: trailing
+                case .claude: agentTrailing(icon: "PhanttomClaude")
+                case .codex: agentTrailing(icon: "PhanttomCodex")
+                }
+            }
+            .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
+        // The idle trailing slot is Color.clear, which is not hit-testable —
+        // without an explicit shape, hover dies over the far-right strip of
+        // a non-hovered row (exactly where the X will appear).
+        .contentShape(Rectangle())
         .onHover { hovering in
             isHovering = hovering
             if !hovering { isHoveringClose = false }
@@ -174,7 +258,7 @@ struct SidebarTabRow: View {
     private var titleEditor: some View {
         TextField("", text: $draft)
             .textFieldStyle(.plain)
-            .font(.system(size: 11))
+            .font(.system(size: fontSize))
             .foregroundStyle(foreground)
             .focused($editFocused)
             .onSubmit(commitRename)
@@ -191,97 +275,149 @@ struct SidebarTabRow: View {
         HStack(spacing: 4) {
             RoundedRectangle(cornerRadius: 2)
                 .fill(foreground.opacity(0.12))
-                .frame(width: 13, height: 13)
+                .frame(width: iconSize, height: iconSize)
                 .overlay(
                     Image(systemName: "apple.terminal.fill")
-                        .font(.system(size: 8))
+                        .font(.system(size: iconGlyphSize))
                         .foregroundStyle(foreground)
                 )
             if isEditing {
                 titleEditor
             } else {
                 Text(tab.customTitle ?? tab.abbreviatedDirectory ?? (tab.title.isEmpty ? "Terminal" : tab.title))
-                    .font(.system(size: 11))
+                    .font(.system(size: fontSize))
                     .foregroundStyle(foreground)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
-        .frame(height: 13)
+        .frame(height: iconSize)
     }
 
-    /// Two-line 45pt card: agent icon + title, then directory + branch.
-    private func agentRow(icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Image(icon)
-                    .resizable()
-                    .frame(width: 13, height: 13)
+    /// Two-line agent card: leading status slot, then title over
+    /// directory + branch. The close button and agent icon live in the
+    /// trailing column (`agentTrailing`), outside the select/rename gestures.
+    private var agentRow: some View {
+        HStack(spacing: 8) {
+            // Fixed-width slot so titles stay put as status comes and goes.
+            statusIndicator
+                .frame(width: 15, height: 18)
+            VStack(alignment: .leading, spacing: 2) {
                 if isEditing {
                     titleEditor
                 } else {
                     Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
-                        .font(.system(size: 11))
+                        .font(.system(size: fontSize))
                         .foregroundStyle(foreground)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
-            }
-            HStack(spacing: 8) {
-                if let dir = tab.directoryName {
-                    Text(dir)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                HStack(spacing: 8) {
+                    if let dir = tab.directoryName {
+                        Text(dir)
+                            .foregroundStyle(foreground.opacity(0.65))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    if let branch = tab.gitBranch {
+                        HStack(spacing: 3) {
+                            // GitHub's Octicon git-branch glyph (MIT), as a
+                            // template asset so it tints with the row text.
+                            Image("PhanttomGitBranch")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: subtitleSize, height: subtitleSize)
+                            Text(branch)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        .foregroundStyle(foreground.opacity(0.8))
+                    }
                 }
-                if let branch = tab.gitBranch {
-                    Text(branch)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+                .font(.system(size: subtitleSize))
             }
-            .font(.system(size: 10))
-            .foregroundStyle(foreground.opacity(0.65))
         }
     }
 
-    /// Trailing edge: hover close button wins, then status indicator.
-    /// Fixed 18×18 slot so idle/status/X never shift row height or label width.
+    /// Status indicator: leading slot on agent cards, trailing slot on
+    /// terminal rows. Agent activity wins; an otherwise-idle tab shows its
+    /// branch's GitHub PR state (green = open, purple = merged), and an
+    /// empty (but reserved) slot when there's nothing to say.
+    @ViewBuilder private var statusIndicator: some View {
+        switch tab.status {
+        case .idle:
+            switch tab.prState {
+            case .open:
+                statusDot(Color(red: 0x3F / 255, green: 0xB9 / 255, blue: 0x50 / 255))
+            case .merged:
+                statusDot(Color(red: 0xA3 / 255, green: 0x71 / 255, blue: 0xF7 / 255))
+            case nil:
+                Color.clear
+            }
+        case .working:
+            PixelSparkleView()
+        case .done:
+            statusDot(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
+        case .attention:
+            statusDot(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
+        }
+    }
+
+    private func statusDot(_ color: Color) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 8, height: 8)
+            .shadow(color: color.opacity(0.5), radius: 2)
+    }
+
+    /// Trailing column on agent cards: hover close button aligned with the
+    /// title line, agent icon aligned with the subtitle line.
+    private func agentTrailing(icon: String) -> some View {
+        VStack(spacing: 2) {
+            Group {
+                if isHovering {
+                    closeButton(glyphSize: 8, slot: iconSize)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: iconSize, height: iconSize)
+            Image(icon)
+                .resizable()
+                .frame(width: iconSize, height: iconSize)
+        }
+    }
+
+    /// Trailing edge of terminal rows: hover close button wins, then status
+    /// indicator. Fixed 18×18 slot so idle/status/X never shift row height
+    /// or label width.
     @ViewBuilder private var trailing: some View {
         Group {
             if isHovering {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(foreground.opacity(isHoveringClose ? 0.95 : 0.55))
-                        .frame(width: 16, height: 16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(foreground.opacity(isHoveringClose ? 0.14 : 0))
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Close Tab")
-                .onHover { isHoveringClose = $0 }
-                .backport.pointerStyle(.link)
+                closeButton(glyphSize: 8, slot: 16)
             } else {
-                switch tab.status {
-                case .idle:
-                    Color.clear
-                case .working:
-                    PixelSparkleView()
-                case .done:
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
-                        .frame(width: 8, height: 8)
-                case .attention:
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
-                        .frame(width: 8, height: 8)
-                }
+                statusIndicator
             }
         }
         .frame(width: 18, height: 18)
+    }
+
+    private func closeButton(glyphSize: Double, slot: CGFloat) -> some View {
+        Button(action: onClose) {
+            Image(systemName: "xmark")
+                .font(.system(size: glyphSize, weight: .bold))
+                .foregroundStyle(foreground.opacity(isHoveringClose ? 0.95 : 0.55))
+                .frame(width: slot, height: slot)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(foreground.opacity(isHoveringClose ? 0.14 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Close Tab")
+        .onHover { isHoveringClose = $0 }
+        .backport.pointerStyle(.link)
     }
 }
 
@@ -291,8 +427,8 @@ struct SidebarTabRow: View {
 /// Ported from the design's canvas reference ("Bare rain, 4 col").
 struct PixelSparkleView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var settings = PhanttomSettings.shared
 
-    private static let color = Color(red: 0x7B / 255, green: 0x5E / 255, blue: 0xFF / 255)
     private static let rows = 5
     private static let cols = 4
     private static let pitch: CGFloat = 3.8
@@ -305,22 +441,26 @@ struct PixelSparkleView: View {
     }
 
     var body: some View {
-        Group {
+        let color = settings.sidebarWorkingColor
+        return Group {
             if reduceMotion {
-                Canvas { canvas, _ in Self.draw(t: 0.6, into: &canvas) }
+                Canvas { canvas, _ in Self.draw(t: 0.6, color: color, into: &canvas) }
             } else {
                 TimelineView(.animation) { context in
                     Canvas { canvas, _ in
-                        Self.draw(t: context.date.timeIntervalSinceReferenceDate, into: &canvas)
+                        Self.draw(
+                            t: context.date.timeIntervalSinceReferenceDate,
+                            color: color,
+                            into: &canvas)
                     }
                 }
             }
         }
-        .frame(width: 18, height: 18)
+        .frame(width: 15, height: 18)
         .accessibilityLabel("Working")
     }
 
-    private static func draw(t: Double, into canvas: inout GraphicsContext) {
+    private static func draw(t: Double, color: Color, into canvas: inout GraphicsContext) {
         for i in 0..<cols {
             let speed = 2.5 + frac(Double(i) * 5.7) * 2.5
             let phase = frac(Double(i) * 9.1) * 7
@@ -331,7 +471,7 @@ struct PixelSparkleView: View {
                 let alpha = dy >= 0 ? exp(-dy * 0.8) : exp(dy * 8)
                 guard alpha >= 0.02 else { continue }
                 let rect = CGRect(
-                    x: (CGFloat(i) + 0.5) * pitch,
+                    x: CGFloat(i) * pitch,
                     y: CGFloat(j) * pitch,
                     width: cell,
                     height: cell
