@@ -84,10 +84,6 @@ final class SidebarTabManager: ObservableObject {
     private var subscribedWindowIDs: Set<ObjectIdentifier> = []
     private var subscribedSurfaceIDs: Set<ObjectIdentifier> = []
 
-    /// Git branch per pwd with a short TTL, so refreshes don't walk the
-    /// filesystem on every event (checkouts still show up within seconds).
-    private var branchCache: [String: (branch: String?, at: CFTimeInterval)] = [:]
-
     private var refreshScheduled = false
 
     init(window: NSWindow) {
@@ -243,7 +239,7 @@ final class SidebarTabManager: ObservableObject {
                 customTitle: controller?.titleOverride,
                 autoTitle: state?.autoTitle,
                 directory: pwd,
-                gitBranch: pwd.flatMap { self.cachedGitBranch(at: $0) },
+                gitBranch: pwd.flatMap { GitBranchCache.shared.branch(at: $0) },
                 kind: state?.kind ?? .terminal,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
@@ -313,56 +309,4 @@ final class SidebarTabManager: ObservableObject {
         return window.tabbedWindows?.contains { $0 === w } ?? false
     }
 
-    // MARK: - Git branch
-
-    private func cachedGitBranch(at pwd: String) -> String? {
-        let now = CACurrentMediaTime()
-        if let entry = branchCache[pwd], now - entry.at < 5 { return entry.branch }
-        // Keep the cache from accumulating dead pwds.
-        if branchCache.count > 32 {
-            branchCache = branchCache.filter { now - $0.value.at < 60 }
-        }
-        let branch = Self.gitBranch(at: pwd)
-        branchCache[pwd] = (branch, now)
-        return branch
-    }
-
-    /// Read the git branch from .git/HEAD, walking up from the directory.
-    /// Supports worktrees, where `.git` is a file pointing at the real
-    /// git dir.
-    private static func gitBranch(at pwd: String) -> String? {
-        var dir = pwd
-        while dir != "/", !dir.isEmpty {
-            let gitPath = (dir as NSString).appendingPathComponent(".git")
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDir) {
-                let headPath: String
-                if isDir.boolValue {
-                    headPath = (gitPath as NSString).appendingPathComponent("HEAD")
-                } else if let contents = try? String(contentsOfFile: gitPath, encoding: .utf8),
-                          let gitdirLine = contents
-                            .split(separator: "\n")
-                            .first(where: { $0.hasPrefix("gitdir: ") }) {
-                    let gitdir = String(gitdirLine.dropFirst("gitdir: ".count))
-                        .trimmingCharacters(in: .whitespaces)
-                    let resolved = (gitdir as NSString).isAbsolutePath
-                        ? gitdir
-                        : (dir as NSString).appendingPathComponent(gitdir)
-                    headPath = (resolved as NSString).appendingPathComponent("HEAD")
-                } else {
-                    return nil
-                }
-                guard let head = try? String(contentsOfFile: headPath, encoding: .utf8)
-                else { return nil }
-                let prefix = "ref: refs/heads/"
-                if head.hasPrefix(prefix) {
-                    return head.dropFirst(prefix.count)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                return nil // detached HEAD
-            }
-            dir = (dir as NSString).deletingLastPathComponent
-        }
-        return nil
-    }
 }

@@ -103,34 +103,40 @@ struct SidebarTabRow: View {
     }
 
     var body: some View {
-        Group {
-            switch tab.kind {
-            case .terminal: terminalRow
-            case .claude: agentRow(icon: "PhanttomClaude")
-            case .codex: agentRow(icon: "PhanttomCodex")
+        // Select/rename gestures live on the label only — wrapping the close
+        // button too would make X clicks also select (front) the tab, and
+        // guarding on the X's hover state is fragile (onHover doesn't re-fire
+        // when a row's frame shifts under a stationary cursor). Padding lives
+        // on the children so the label's contentShape still covers the row
+        // edge (not just the text).
+        HStack(spacing: 0) {
+            Group {
+                switch tab.kind {
+                case .terminal: terminalRow
+                case .claude: agentRow(icon: "PhanttomClaude")
+                case .codex: agentRow(icon: "PhanttomCodex")
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 8)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .contentShape(Rectangle())
+            // Double-tap as .gesture plus single-tap as .simultaneousGesture:
+            // chained onTapGesture modifiers would delay the single tap by the
+            // double-click disambiguation window (~300ms), which reads as tab-
+            // switching lag. This way selection fires on the first click
+            // immediately and a second click still starts a rename (Finder-style).
+            .gesture(TapGesture(count: 2).onEnded(startRename))
+            .simultaneousGesture(TapGesture().onEnded(onSelect))
+
+            trailing
+                .padding(.trailing, 8)
         }
-        .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
-        .contentShape(Rectangle())
-        // Double-tap as .gesture plus single-tap as .simultaneousGesture:
-        // chained onTapGesture modifiers would delay the single tap by the
-        // double-click disambiguation window (~300ms), which reads as tab-
-        // switching lag. This way selection fires on the first click
-        // immediately and a second click still starts a rename (Finder-style).
-        .gesture(TapGesture(count: 2).onEnded(startRename))
-        // simultaneousGesture also fires for clicks on the child close
-        // button; skip selection there so closing a tab doesn't front it.
-        .simultaneousGesture(TapGesture().onEnded {
-            if !isHoveringClose { onSelect() }
-        })
         .onHover { hovering in
             isHovering = hovering
-            // The close button is removed with the row hover, and its own
-            // .onHover(false) isn't guaranteed to fire first (fast exits,
-            // rows shifting under a stationary cursor after a tab closes).
-            // A stale true would silently swallow the next select click.
             if !hovering { isHoveringClose = false }
         }
         .contextMenu {
@@ -200,78 +206,82 @@ struct SidebarTabRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Spacer(minLength: 0)
-            trailing
         }
         .frame(height: 13)
     }
 
     /// Two-line 45pt card: agent icon + title, then directory + branch.
     private func agentRow(icon: String) -> some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(icon)
-                        .resizable()
-                        .frame(width: 13, height: 13)
-                    if isEditing {
-                        titleEditor
-                    } else {
-                        Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
-                            .font(.system(size: 11))
-                            .foregroundStyle(foreground)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(icon)
+                    .resizable()
+                    .frame(width: 13, height: 13)
+                if isEditing {
+                    titleEditor
+                } else {
+                    Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(foreground)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
-                HStack(spacing: 8) {
-                    if let dir = tab.directoryName {
-                        Text(dir)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    if let branch = tab.gitBranch {
-                        Text(branch)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
-                .font(.system(size: 10))
-                .foregroundStyle(foreground.opacity(0.65))
             }
-            Spacer(minLength: 0)
-            trailing
+            HStack(spacing: 8) {
+                if let dir = tab.directoryName {
+                    Text(dir)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let branch = tab.gitBranch {
+                    Text(branch)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(foreground.opacity(0.65))
         }
     }
 
     /// Trailing edge: hover close button wins, then status indicator.
+    /// Fixed 18×18 slot so idle/status/X never shift row height or label width.
     @ViewBuilder private var trailing: some View {
-        if isHovering {
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(foreground.opacity(0.65))
-            }
-            .buttonStyle(.plain)
-            .onHover { isHoveringClose = $0 }
-            .onDisappear { isHoveringClose = false }
-            .help("Close Tab")
-        } else {
-            switch tab.status {
-            case .idle:
-                EmptyView()
-            case .working:
-                PixelSparkleView()
-            case .done:
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
-                    .frame(width: 8, height: 8)
-            case .attention:
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
-                    .frame(width: 8, height: 8)
+        Group {
+            if isHovering {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(foreground.opacity(isHoveringClose ? 0.95 : 0.55))
+                        .frame(width: 16, height: 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(foreground.opacity(isHoveringClose ? 0.14 : 0))
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close Tab")
+                .onHover { isHoveringClose = $0 }
+                .backport.pointerStyle(.link)
+            } else {
+                switch tab.status {
+                case .idle:
+                    Color.clear
+                case .working:
+                    PixelSparkleView()
+                case .done:
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
+                        .frame(width: 8, height: 8)
+                case .attention:
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
+                        .frame(width: 8, height: 8)
+                }
             }
         }
+        .frame(width: 18, height: 18)
     }
 }
 

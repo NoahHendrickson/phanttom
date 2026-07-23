@@ -67,9 +67,14 @@ extension TerminalWindow {
             : (preferredBackgroundColor ?? .windowBackgroundColor).cgColor
 
         // Hairline continuing the sidebar's divider through the titlebar.
-        // Anchored above the LEFT zone: zone() inserts below-first, so left
-        // sits above right, and the left zone's frame spans the divider
-        // column — anything below it there is covered.
+        // Stacked topmost (above the left zone, which sits above the right
+        // zone). Geometry (phanttomTitlebarZoneSetWidth) leaves the divider
+        // column free of BOTH zones, so this translucent hairline composites
+        // directly over the window background — exactly what the split
+        // view's divider composites over (opaque terminal color, or the
+        // glass blur when the window is transparent). Backing it with
+        // either zone's color tints the titlebar segment differently from
+        // the segment below it.
         let divider: PhanttomTitlebarDividerView
         if let existing = titlebarView.subviews
             .compactMap({ $0 as? PhanttomTitlebarDividerView }).first {
@@ -82,7 +87,7 @@ extension TerminalWindow {
         }
         divider.layer?.backgroundColor =
             ((contentView as? SidebarSplitView)?.dividerColor
-                ?? .white.withAlphaComponent(0.12)).cgColor
+                ?? NSColor(white: 0.35, alpha: 0.4)).cgColor
 
         phanttomTitlebarZoneSetWidth(width ?? phanttomSidebarWidth)
     }
@@ -94,9 +99,15 @@ extension TerminalWindow {
             .firstDescendant(withClassName: "NSTitlebarView") else { return }
         let bounds = titlebarView.bounds
 
+        // Mirror the split view's geometry exactly: sidebar pane
+        // [0, width - 1), divider column [width - 1, width), terminal from
+        // width. The divider column gets NEITHER zone behind it, so the
+        // hairline composites over the bare window background exactly like
+        // the split view's own divider one pixel below.
+        let dividerX = max(width - 1, 0)
         if let left = titlebarView.subviews
             .compactMap({ $0 as? PhanttomTitlebarLeftZoneView }).first {
-            left.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+            left.frame = NSRect(x: 0, y: 0, width: dividerX, height: bounds.height)
             left.isHidden = width <= 0
         }
         if let right = titlebarView.subviews
@@ -107,8 +118,7 @@ extension TerminalWindow {
         }
         if let divider = titlebarView.subviews
             .compactMap({ $0 as? PhanttomTitlebarDividerView }).first {
-            // The split view's divider column is [width - 1, width).
-            divider.frame = NSRect(x: width - 1, y: 0, width: 1, height: bounds.height)
+            divider.frame = NSRect(x: dividerX, y: 0, width: 1, height: bounds.height)
             divider.isHidden = width <= 0
         }
     }

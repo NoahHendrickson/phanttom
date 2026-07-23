@@ -180,10 +180,15 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         )
     }
 
-    /// A light separator between the sidebar and the terminal (hidden with
-    /// the divider while collapsed). Matches the sidebar's hairline styling.
+    /// A separator between the sidebar and the terminal (hidden with the
+    /// divider while collapsed). A semi-opaque mid gray rather than
+    /// translucent white: over dark backgrounds it reads as the same subtle
+    /// light hairline (≈ the old white 12%), but over a bright or colorful
+    /// backdrop — the desktop showing through window glass — it anchors to
+    /// a muted dark line instead of vanishing into the blur. Keep in sync
+    /// with the titlebar zone's fallback (PhanttomTitlebarZone).
     override var dividerColor: NSColor {
-        .white.withAlphaComponent(0.12)
+        NSColor(white: 0.35, alpha: 0.4)
     }
 
     // MARK: - NSSplitViewDelegate
