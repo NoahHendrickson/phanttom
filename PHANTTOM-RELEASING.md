@@ -61,7 +61,22 @@ sidebar/titlebar and the app relaunches updated.
 To test the pipeline **without** shipping to users, use *Run workflow*
 (workflow_dispatch) on the Phanttom Release action: it publishes a
 `tip-<build>` **prerelease**, which `releases/latest` ignores, so the update
-feed is untouched.
+feed is untouched. The optional **xcframework-target** input builds
+GhosttyKit (and the app) for the runner's architecture only (`native`),
+which is faster for pipeline testing; the zip is then named after the arch
+(e.g. `phanttom-macos-arm64.zip`) instead of `…-universal.zip`. Tag
+releases always build universal.
+
+CI caches the Zig and Xcode build artifacts between runs (see the comments
+in the workflow): a warm run takes ~8 min vs ~20 min cold. Caches are
+branch-scoped, so the first run after a workflow change lands on `phanttom`
+is cold once; tag builds restore the default branch's caches.
+
+One quirk to know when re-running pipeline tests: a `tip-<build>` number is
+derived from the commit count, so dispatching twice from the same commit
+tries to recreate the same tag — delete the previous prerelease first, or
+push a commit in between (GitHub has been seen to 403 a re-created release
+tag name even after deletion).
 
 Version plumbing: Sparkle compares `CFBundleVersion`, which CI stamps with
 `git rev-list --count HEAD` — strictly increasing as long as history moves

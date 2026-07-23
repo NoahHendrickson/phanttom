@@ -22,12 +22,22 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      xcframework-target:
+        description:
+          "GhosttyKit architectures (native = current runner arch only;
+          faster, for pipeline testing — the zip is named after the arch)"
+        type: choice
+        options: ["universal", "native"]
+        default: "universal"
 
 permissions:
   contents: write
 
+# ZIP_NAME is not defined here: it depends on the resolved build profile
+# (universal vs native) and is exported to GITHUB_ENV by the "Resolve build
+# profile" step below.
 env:
-  ZIP_NAME: phanttom-macos-universal.zip
   SPARKLE_VERSION: "2.9.0"
 
 jobs:
@@ -39,7 +49,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Full history: the Sparkle build number is `git rev-list --count`.
+          # blob:none keeps the fetch fast — commit history without old file
+          # contents (rev-list only needs commits).
           fetch-depth: 0
+          filter: blob:none
 
       - name: Select Xcode
         run: |
@@ -48,10 +61,82 @@ jobs:
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
 
+      # Resolve the build profile ONCE: every downstream consumer (zig build,
+      # xcodebuild arch flags, cache keys, artifact name) reads these outputs
+      # instead of re-deriving the mode. Tag pushes are always universal; the
+      # `inputs` context is only consulted on workflow_dispatch (it is not
+      # populated for push events, so we never reference it there).
+      - name: Resolve build profile
+        id: profile
+        env:
+          INPUT_TARGET: ${{ github.event.inputs.xcframework-target }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            TARGET="${INPUT_TARGET:-universal}"
+          else
+            TARGET="universal"
+          fi
+          if [[ "$TARGET" == "native" ]]; then
+            # Single-arch build: the app must match the xcframework, and the
+            # artifact name must say what's inside it.
+            APP_ARCHS="$(uname -m)"
+            ZIP_NAME="phanttom-macos-$(uname -m).zip"
+          else
+            APP_ARCHS=""
+            ZIP_NAME="phanttom-macos-universal.zip"
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "app-archs=$APP_ARCHS" >> "$GITHUB_OUTPUT"
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          echo "profile: target=$TARGET app-archs=${APP_ARCHS:-universal} zip=$ZIP_NAME"
+
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      # Zig's cache validates by content hash, so it survives fresh checkouts:
+      # restoring the previous run's .zig-cache makes the ReleaseFast
+      # GhosttyKit build incremental (only changed files recompile).
+      # setup-zig already caches the *global* cache (fetched packages); this
+      # is the project-local cache where compilation artifacts live.
+      #
+      # Key design (deliberate, don't "simplify"):
+      #   - The key ends in the commit SHA so every run saves a fresh cache
+      #     (actions/cache never overwrites an existing key); restore-keys
+      #     pick the most recent prefix match. Yes, that accrues ~0.9 GiB per
+      #     run until GitHub's LRU eviction kicks in at the 10 GiB quota —
+      #     but eviction removes the *least recently used* entries, i.e. old
+      #     SHA-keyed blobs nothing restores anymore, while the newest entry
+      #     (the one restore-keys actually hit) stays warm. Dropping the SHA
+      #     would freeze the cache at its first save and let it go stale.
+      #   - Both target flavors share one namespace on purpose: Zig entries
+      #     are individually content-addressed (target is part of each
+      #     manifest hash), and a universal cache is a strict superset of a
+      #     native one, so cross-flavor restore is safe and useful.
+      - name: Cache Zig build artifacts
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache
+          key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig', 'build.zig.zon') }}-${{ github.sha }}
+          restore-keys: |
+            zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig', 'build.zig.zon') }}-
+            zig-cache-${{ runner.os }}-${{ runner.arch }}-
+
+      # Xcode intermediates (OBJROOT) only — products (SYMROOT) are excluded
+      # so the stamped/renamed app bundle never leaks into the cache. Swift
+      # incremental state is mtime-sensitive, so cross-run reuse is partial,
+      # but module/PCH artifacts still help. Unlike Zig's, Xcode's build
+      # state is not rigorously content-addressed, so the key is namespaced
+      # by build flavor: a universal OBJROOT is never restored into a native
+      # (ONLY_ACTIVE_ARCH) build or vice versa.
+      - name: Cache Xcode intermediates
+        uses: actions/cache@v4
+        with:
+          path: macos/build-intermediates
+          key: xcode-objroot-${{ runner.os }}-${{ runner.arch }}-${{ steps.profile.outputs.target }}-${{ github.sha }}
+          restore-keys: |
+            xcode-objroot-${{ runner.os }}-${{ runner.arch }}-${{ steps.profile.outputs.target }}-
 
       - name: Compute version
         id: version
@@ -80,20 +165,37 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: git tag -d "$GITHUB_REF_NAME"
 
-      # Build the Zig core + universal GhosttyKit.xcframework. Same recipe as
-      # upstream release CI, minus Nix (GitHub's macOS image has everything).
+      # Build the Zig core + GhosttyKit.xcframework. Same recipe as upstream
+      # release CI, minus Nix (GitHub's macOS image has everything). Tag
+      # releases are always universal; manual dispatch may pick native for a
+      # faster pipeline test.
       - name: Build GhosttyKit
-        run: zig build -Doptimize=ReleaseFast -Demit-macos-app=false
+        env:
+          XCFRAMEWORK_TARGET: ${{ steps.profile.outputs.target }}
+        run: |
+          zig build -Doptimize=ReleaseFast -Demit-macos-app=false \
+            "-Dxcframework-target=${XCFRAMEWORK_TARGET}"
 
       # ReleaseLocal is upstream's "optimized build without Apple signing
       # certificates" configuration: ad-hoc signed (CODE_SIGN_IDENTITY=-).
       # Run from the repo root (never cwd into macos/ -- see PHANTTOM.md).
+      # A native GhosttyKit has no x86_64 slice, so the app must match it
+      # (profile's app-archs output) — ReleaseLocal otherwise builds
+      # universal and fails to link.
       - name: Build Phanttom.app
+        env:
+          APP_ARCHS: ${{ steps.profile.outputs.app-archs }}
         run: |
+          ARCH_ARGS=()
+          if [[ -n "$APP_ARCHS" ]]; then
+            ARCH_ARGS=("ARCHS=${APP_ARCHS}" "ONLY_ACTIVE_ARCH=YES")
+          fi
           xcodebuild -project macos/Ghostty.xcodeproj \
             -target Ghostty \
             -configuration ReleaseLocal \
             "SYMROOT=${PWD}/macos/build" \
+            "OBJROOT=${PWD}/macos/build-intermediates" \
+            "${ARCH_ARGS[@]}" \
             build
           test -d "macos/build/ReleaseLocal/Ghostty.app"
 
@@ -201,12 +303,20 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          XCFRAMEWORK_TARGET: ${{ steps.profile.outputs.target }}
         run: |
+          # Quoted heredoc (backticks are markdown, not command substitution);
+          # the zip name is substituted afterwards.
           cat > release-notes.md <<'NOTES'
-          Download `phanttom-macos-universal.zip`, unzip, and drag **Phanttom.app** to `/Applications`.
+          Download `__ZIP_NAME__`, unzip, and drag **Phanttom.app** to `/Applications`.
 
           **First launch:** the app is not notarized by Apple, so macOS will block it once. Open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine /Applications/Phanttom.app`). This is a one-time step — the app updates itself automatically after that.
           NOTES
+          sed -i '' "s/__ZIP_NAME__/${ZIP_NAME}/" release-notes.md
+          if [[ "$XCFRAMEWORK_TARGET" == "native" ]]; then
+            printf '\n_Pipeline test build: %s only, not a universal binary._\n' \
+              "$(uname -m)" >> release-notes.md
+          fi
 
           ARGS=(--title "Phanttom $VERSION" --notes-file release-notes.md)
           if [[ "$PRERELEASE" == "true" ]]; then
