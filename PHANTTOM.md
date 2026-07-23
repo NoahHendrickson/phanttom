@@ -40,6 +40,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 |---|---|
 | Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
 | Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
+| Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` |
 | `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
 | Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
 | Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |
@@ -55,9 +56,9 @@ Touches to upstream files are deliberately tiny and greppable — search
   `windowDidLoad` (implementation lives in
   `Sidebar/TerminalController+PhanttomSidebar.swift`), a notification post in
   `relabelTabs`, and two stored properties (extensions can't add storage).
-- `TerminalWindow.swift`: `sidebarActive` (tab bar suppression), the
-  `phanttom*` stored state (auto title, agent kind, done/attention/working
-  status, reset re-arm), and one `phanttomSyncAppearanceDidRun()` call at the
+- `TerminalWindow.swift`: `sidebarActive` (tab bar suppression), one
+  `phanttomTabState` property (the `PhanttomTabState` model: agent kind,
+  status, auto-name), and one `phanttomSyncAppearanceDidRun()` call at the
   end of `syncAppearance`.
 - `TerminalViewContainer.swift`: the `terminalViewContainer` accessor also
   looks through `SidebarSplitView` (upstream casts `contentView` directly —
@@ -79,8 +80,8 @@ Ghostty macOS tabs are **native window tabs**: every tab is its own `NSWindow`
 model. Each window's `contentView` is a `SidebarSplitView` =
 `[SwiftUI sidebar | TerminalViewContainer]`; each window has its own
 `SidebarTabManager` instance, all observing the shared tab group, so
-cross-window state must live **on the window** (see the `phanttom*` properties
-on `TerminalWindow`), never in a manager instance.
+cross-window state must live **on the window** (see
+`TerminalWindow.phanttomTabState`), never in a manager instance.
 
 `SidebarTabManager` is fully event-driven (no polling):
 - membership changes ride upstream's `relabelTabs` (fires on new tab, close,
@@ -113,7 +114,7 @@ terminal's configured blur owns the window.
 ## Tab semantics (the behavioral contract)
 
 **Kind** (`terminal` | `claude` | `codex`) is detected from the surface title
-and stored sticky on the window (`phanttomAgentKind`):
+and stored sticky on the window (`phanttomTabState`):
 - title starts with the hook marker `❯` + U+2063 (invisible separator) →
   `claude`, stored sticky (only our hook emits the marker)
 - title contains "claude"/"codex" → that kind
@@ -129,12 +130,12 @@ and stored sticky on the window (`phanttomAgentKind`):
 - `attention` (yellow `#F4BC2C`) — bell rang while unselected (judged against
   the bell window's own tab group)
 - selecting a tab clears done/attention
-- status lives on `TerminalWindow` (`phanttomStatus*`), never in a manager
+- status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
 **Name priority**: manual rename (upstream's
 `BaseTerminalController.titleOverride` — shared with the titlebar, command
 palette, and window restoration, so custom names survive restart) → prompt
-auto-name (`phanttomAutoTitle`) → title with leading decoration glyphs
+auto-name (`phanttomTabState.autoTitle`) → title with leading decoration glyphs
 stripped. Auto-name comes from a marker title (`❯` + U+2063) and locks to the
 **first** prompt of a session; it re-arms when the shell reclaims the title
 or via context-menu **Reset Name** (which remembers the consumed title so the

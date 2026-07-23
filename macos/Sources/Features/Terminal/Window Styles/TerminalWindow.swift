@@ -251,33 +251,11 @@ class TerminalWindow: NSWindow {
         }
     }
 
-    /// Phanttom: an automatic tab name derived from the user's last agent
-    /// prompt (set via a marker title emitted by the Claude Code
-    /// UserPromptSubmit hook). Beaten by the user's rename (upstream's
-    /// `titleOverride`); cleared when the shell reclaims the title.
-    var phanttomAutoTitle: String? = nil
-
-    /// Phanttom: the last detected agent kind for this window, kept sticky
-    /// while decorated/marked titles come through so hook-set titles don't
-    /// flip the row back to a plain terminal.
-    var phanttomAgentKind: SidebarTabManager.TabKind? = nil
-
-    /// Phanttom: work finished while this tab was unselected; cleared on
-    /// selection. Status lives on the window (not in a manager) so every
-    /// sidebar in the group agrees and the state dies with the window.
-    var phanttomStatusDone: Bool = false
-
-    /// Phanttom: bell rang while this tab was unselected; cleared on
-    /// selection.
-    var phanttomStatusAttention: Bool = false
-
-    /// Phanttom: whether this window's surfaces reported progress at the
-    /// last sidebar refresh — detects the working → done transition.
-    var phanttomWasWorking: Bool = false
-
-    /// Phanttom: the exact title consumed by Reset Name, so the next refresh
-    /// doesn't immediately re-capture it as the auto-name.
-    var phanttomLastResetTitle: String? = nil
+    /// Phanttom: this tab's identity (agent kind, prompt-derived auto-name)
+    /// and activity status. Lives on the window — not in a sidebar manager —
+    /// because every window in the tab group has its own manager and they
+    /// must all agree; the state dies with the window.
+    let phanttomTabState = PhanttomTabState()
 
     /// Phanttom: when true, the native tab bar accessory is hidden as it is
     /// added because the sidebar provides the tab UI. Hiding the accessory

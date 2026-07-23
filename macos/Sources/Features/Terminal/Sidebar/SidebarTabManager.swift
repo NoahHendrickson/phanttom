@@ -21,25 +21,10 @@ extension Notification.Name {
 /// so instance state would desync between sidebars (see PHANTTOM.md).
 @MainActor
 final class SidebarTabManager: ObservableObject {
-    /// What is running in the tab, detected from the surface title. Drives
-    /// which row style and icon the sidebar shows.
-    enum TabKind: Equatable {
-        case terminal
-        case claude
-        case codex
-    }
-
-    /// Activity state shown on the trailing edge of the tab row.
-    enum TabStatus: Equatable {
-        /// Nothing to report.
-        case idle
-        /// The tab's program reported progress (OSC 9;4) — animated sparkle.
-        case working
-        /// Work finished while the tab was unselected — blue square.
-        case done
-        /// Bell rang while the tab was unselected — yellow square.
-        case attention
-    }
+    /// The per-window model (kind, status, auto-name) is `PhanttomTabState`,
+    /// stored on `TerminalWindow`; these are the sidebar-facing names.
+    typealias TabKind = PhanttomTabState.Kind
+    typealias TabStatus = PhanttomTabState.Status
 
     struct TabItem: Identifiable, Equatable {
         let id: ObjectIdentifier
@@ -157,7 +142,7 @@ final class SidebarTabManager: ObservableObject {
                 if hasBell,
                    let bellTerminal = bellWindow as? TerminalWindow,
                    bellWindow !== (bellWindow.tabGroup?.selectedWindow ?? bellWindow) {
-                    bellTerminal.phanttomStatusAttention = true
+                    bellTerminal.phanttomTabState.noteBell()
                 }
                 guard self.isInGroup(bellWindow) else { return }
                 self.scheduleRefresh()
@@ -186,11 +171,8 @@ final class SidebarTabManager: ObservableObject {
         let trimmed = name?.trimmingCharacters(in: .whitespaces)
         controller.titleOverride = (trimmed?.isEmpty ?? true) ? nil : trimmed
         if controller.titleOverride == nil, let window = tab.window as? TerminalWindow {
-            // Clearing also re-arms first-prompt auto-naming. Remember the
-            // current title so a still-current marker title isn't
-            // immediately re-captured on the next refresh.
-            window.phanttomAutoTitle = nil
-            window.phanttomLastResetTitle = window.title
+            // Clearing also re-arms first-prompt auto-naming.
+            window.phanttomTabState.rearmAutoTitle(consuming: window.title)
         }
         NotificationCenter.default.post(name: .phanttomSidebarTabsDidChange, object: tab.window)
     }
@@ -239,44 +221,27 @@ final class SidebarTabManager: ObservableObject {
             let surface = controller?.focusedSurface
             let pwd = surface?.pwd ?? w.representedURL?.path
             let isSelected = w === selected
-            let terminalWindow = w as? TerminalWindow
 
             // Working = any surface in the window reports progress; agents
             // can run in a non-focused split.
             let isWorking = controller?.surfaceTree
                 .contains { $0.progressReport != nil } ?? false
 
-            if let terminalWindow {
-                // Working just ended on an unselected tab → done. The state
-                // lives on the window, so whichever manager refreshes first
-                // records the transition and the rest agree.
-                if !isWorking, terminalWindow.phanttomWasWorking, !isSelected {
-                    terminalWindow.phanttomStatusDone = true
-                }
-                terminalWindow.phanttomWasWorking = isWorking
-                // Selection clears both indicators.
-                if isSelected {
-                    terminalWindow.phanttomStatusDone = false
-                    terminalWindow.phanttomStatusAttention = false
-                }
-            }
-
-            let status: TabStatus = isWorking ? .working
-                : (terminalWindow?.phanttomStatusDone ?? false) ? .done
-                : (terminalWindow?.phanttomStatusAttention ?? false) ? .attention
-                : .idle
-
-            let kind = Self.processTitle(w.title, window: terminalWindow, isWorking: isWorking)
+            // Step the window's tab state, then read it into the snapshot.
+            // The state lives on the window, so whichever manager refreshes
+            // first records a transition and the rest agree.
+            let state = (w as? TerminalWindow)?.phanttomTabState
+            state?.update(title: w.title, isWorking: isWorking, isSelected: isSelected)
 
             newTabs.append(TabItem(
                 id: id,
                 title: w.title,
                 customTitle: controller?.titleOverride,
-                autoTitle: terminalWindow?.phanttomAutoTitle,
+                autoTitle: state?.autoTitle,
                 directory: pwd,
                 gitBranch: pwd.flatMap { self.cachedGitBranch(at: $0) },
-                kind: kind,
-                status: status,
+                kind: state?.kind ?? .terminal,
+                status: state?.status ?? .idle,
                 isSelected: isSelected,
                 window: w
             ))
@@ -342,71 +307,6 @@ final class SidebarTabManager: ObservableObject {
         guard let window else { return false }
         if w === window { return true }
         return window.tabbedWindows?.contains { $0 === w } ?? false
-    }
-
-    // MARK: - Detection helpers
-
-    /// The Claude Code hook marks auto-name titles with "❯" followed by
-    /// U+2063 (INVISIBLE SEPARATOR) — collision-proof against shells whose
-    /// title templates lead with a bare "❯" prompt char (starship, pure...).
-    static let autoNameMarker = "❯\u{2063}"
-
-    /// Interpret a title update: detect the agent kind (sticky across
-    /// decorated titles), and capture marker titles from the Claude Code
-    /// UserPromptSubmit hook as the tab's auto-name. A plain title (shell
-    /// integration reclaiming it) resets both.
-    private static func processTitle(
-        _ title: String,
-        window: TerminalWindow?,
-        isWorking: Bool = false
-    ) -> TabKind {
-        // Our hook's marker: store the prompt-derived auto name — but only
-        // the session's FIRST prompt names the tab. It re-arms when the
-        // shell reclaims the title (session over) or via Reset Name.
-        if title.hasPrefix(autoNameMarker) {
-            let auto = title.dropFirst(autoNameMarker.count)
-                .trimmingCharacters(in: .whitespaces)
-            if !auto.isEmpty,
-               window?.phanttomAutoTitle == nil,
-               title != window?.phanttomLastResetTitle {
-                window?.phanttomAutoTitle = auto
-            }
-            // Only our Claude hook emits the marker; make the kind sticky.
-            if window?.phanttomAgentKind == nil {
-                window?.phanttomAgentKind = .claude
-            }
-            return window?.phanttomAgentKind ?? .claude
-        }
-
-        let t = title.lowercased()
-        if t.contains("claude") {
-            window?.phanttomAgentKind = .claude
-            return .claude
-        }
-        if t.contains("codex") {
-            window?.phanttomAgentKind = .codex
-            return .codex
-        }
-
-        // Decorated titles (leading symbol glyph, e.g. Claude Code's "✳ …")
-        // keep the previous agent kind; a plain title means the shell took
-        // the tab back, so the agent session and its auto-name are over.
-        if let first = title.unicodeScalars.first,
-           !CharacterSet.alphanumerics.contains(first),
-           let sticky = window?.phanttomAgentKind {
-            return sticky
-        }
-        // A plain title normally means the shell reclaimed the tab — but the
-        // window title only mirrors the FOCUSED split, so while work is
-        // still in progress (agent running in another split) keep the agent
-        // identity instead of resetting mid-session.
-        if isWorking, let sticky = window?.phanttomAgentKind {
-            return sticky
-        }
-        window?.phanttomAgentKind = nil
-        window?.phanttomAutoTitle = nil
-        window?.phanttomLastResetTitle = nil
-        return .terminal
     }
 
     // MARK: - Git branch
