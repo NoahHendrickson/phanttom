@@ -65,6 +65,17 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// 0.1 ... 1.0 — how solid the sidebar's color layer is.
+    @Published var sidebarOpacity: Double {
+        didSet { persist() }
+    }
+
+    /// Behind-window glass material under the color layer (Finder-sidebar
+    /// style blur, independent of the terminal's window-level blur).
+    @Published var sidebarGlass: Bool {
+        didSet { persist() }
+    }
+
     // MARK: - Persistence
 
     private enum Keys {
@@ -74,6 +85,8 @@ final class PhanttomSettings: ObservableObject {
         static let backgroundBlur = "PhanttomBackgroundBlur"
         static let sidebarStyle = "PhanttomSidebarStyle"
         static let sidebarColor = "PhanttomSidebarColor"
+        static let sidebarOpacity = "PhanttomSidebarOpacity"
+        static let sidebarGlass = "PhanttomSidebarGlass"
     }
 
     private var loaded = false
@@ -86,6 +99,8 @@ final class PhanttomSettings: ObservableObject {
         backgroundBlur = defaults.object(forKey: Keys.backgroundBlur) as? Double ?? 0
         sidebarStyle = SidebarStyle(rawValue: defaults.string(forKey: Keys.sidebarStyle) ?? "") ?? .matchTerminal
         sidebarColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarColor)) ?? Color(red: 0.09, green: 0.09, blue: 0.11)
+        sidebarOpacity = defaults.object(forKey: Keys.sidebarOpacity) as? Double ?? 1.0
+        sidebarGlass = defaults.bool(forKey: Keys.sidebarGlass)
         loaded = true
     }
 
@@ -98,6 +113,8 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(backgroundBlur, forKey: Keys.backgroundBlur)
         defaults.set(sidebarStyle.rawValue, forKey: Keys.sidebarStyle)
         defaults.set(Self.hex(from: sidebarColor), forKey: Keys.sidebarColor)
+        defaults.set(sidebarOpacity, forKey: Keys.sidebarOpacity)
+        defaults.set(sidebarGlass, forKey: Keys.sidebarGlass)
     }
 
     // MARK: - Applying terminal settings

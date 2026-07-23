@@ -9,10 +9,9 @@ struct SidebarView: View {
 
     let onNewTab: () -> Void
 
-    /// The sidebar background per settings: system, custom, or derived from
-    /// the terminal theme (nudged so the split still reads, translucency
-    /// matching the terminal's opacity).
-    private var background: Color {
+    /// The sidebar's base color per style: system, custom, or derived from
+    /// the terminal theme (nudged so the split still reads).
+    private var baseColor: Color {
         switch settings.sidebarStyle {
         case .system:
             return Color(nsColor: .windowBackgroundColor)
@@ -21,8 +20,21 @@ struct SidebarView: View {
         case .matchTerminal:
             let base = OSColor(ghostty.config.backgroundColor)
             let nudged = base.isLightColor ? base.darken(by: 0.06) : base.darken(by: 0.25)
-            return Color(nsColor: nudged).opacity(ghostty.config.backgroundOpacity)
+            return Color(nsColor: nudged)
         }
+    }
+
+    /// Layered background: optional behind-window glass material with the
+    /// base color over it at the configured opacity. Glass + low opacity =
+    /// frosted sidebar; no glass + full opacity = flat color.
+    @ViewBuilder private var background: some View {
+        ZStack {
+            if settings.sidebarGlass {
+                SidebarGlassBackground()
+            }
+            baseColor.opacity(settings.sidebarOpacity)
+        }
+        .ignoresSafeArea()
     }
 
     var body: some View {
@@ -53,6 +65,22 @@ struct SidebarView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
     }
+}
+
+/// Behind-window blur for the sidebar (Finder-sidebar style). Independent of
+/// the terminal's window-level `background-blur` — this blurs whatever is
+/// behind the window in the sidebar's region only.
+private struct SidebarGlassBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.autoresizingMask = [.width, .height]
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
 struct SidebarTabRow: View {
