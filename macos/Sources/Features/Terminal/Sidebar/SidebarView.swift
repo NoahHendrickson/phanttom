@@ -21,7 +21,9 @@ struct SidebarView: View {
         case .custom:
             return settings.sidebarColor
         case .matchTerminal:
-            let base = OSColor(ghostty.config.backgroundColor)
+            // Prefer the selected surface's live background — the app-level
+            // config getter can lag or miss overrides (e.g. phanttom.conf).
+            let base = OSColor(tabManager.terminalBackground ?? ghostty.config.backgroundColor)
             let nudged = base.isLightColor ? base.darken(by: 0.06) : base.darken(by: 0.25)
             return Color(nsColor: nudged)
         }

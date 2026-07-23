@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SwiftUI
 
 extension Notification.Name {
     /// Posted whenever tab group membership may have changed (new tab, close,
@@ -84,6 +85,12 @@ final class SidebarTabManager: ObservableObject {
     }
 
     @Published private(set) var tabs: [TabItem] = []
+
+    /// The live background color of the selected tab's surface — the source
+    /// of truth for the sidebar's Match Terminal mode. Unlike the app-level
+    /// config getter, this tracks theme, overrides, and runtime color
+    /// changes exactly as rendered.
+    @Published private(set) var terminalBackground: Color?
 
     private weak var window: NSWindow?
     private var notificationObservers: [NSObjectProtocol] = []
@@ -227,6 +234,10 @@ final class SidebarTabManager: ObservableObject {
 
         if newTabs != tabs { tabs = newTabs }
 
+        let selectedSurface = (selected.windowController as? BaseTerminalController)?.focusedSurface
+        let liveBackground = selectedSurface?.backgroundColor
+        if liveBackground != terminalBackground { terminalBackground = liveBackground }
+
         // Re-register KVO for title/pwd changes on the current membership.
         windowObservations = tabWindows.flatMap { w in
             [
@@ -239,16 +250,24 @@ final class SidebarTabManager: ObservableObject {
             ]
         }
 
-        // Re-subscribe to each surface's progress reports.
-        surfaceCancellables = tabWindows.compactMap { w in
+        // Re-subscribe to each surface's progress reports and background.
+        surfaceCancellables = tabWindows.flatMap { w -> [AnyCancellable] in
             guard let controller = w.windowController as? BaseTerminalController,
-                  let surface = controller.focusedSurface else { return nil }
-            return surface.$progressReport
-                .dropFirst()
-                .removeDuplicates { $0 == nil && $1 == nil }
-                .sink { [weak self] _ in
-                    DispatchQueue.main.async { self?.refresh() }
-                }
+                  let surface = controller.focusedSurface else { return [] }
+            return [
+                surface.$progressReport
+                    .dropFirst()
+                    .removeDuplicates { $0 == nil && $1 == nil }
+                    .sink { [weak self] _ in
+                        DispatchQueue.main.async { self?.refresh() }
+                    },
+                surface.$backgroundColor
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { [weak self] _ in
+                        DispatchQueue.main.async { self?.refresh() }
+                    },
+            ]
         }
     }
 
