@@ -321,21 +321,14 @@ struct SidebarTabRow: View {
                     }
                     if let branch = tab.gitBranch {
                         HStack(spacing: 3) {
-                            // Linked worktrees get a tree glyph; otherwise
-                            // GitHub's Octicon git-branch (MIT) as a template
-                            // asset so it tints with the row text.
-                            Group {
-                                if tab.isWorktree {
-                                    Image(systemName: "tree")
-                                        .resizable()
-                                        .scaledToFit()
-                                } else {
-                                    Image("PhanttomGitBranch")
-                                        .resizable()
-                                        .scaledToFit()
-                                }
-                            }
-                            .frame(width: subtitleSize, height: subtitleSize)
+                            // GitHub's Octicon git-branch glyph (MIT), as a
+                            // template asset so it tints with the row text.
+                            // Worktree tabs also use this for now
+                            // (`tab.isWorktree` is plumbed for a custom icon later).
+                            Image("PhanttomGitBranch")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: subtitleSize, height: subtitleSize)
                             Text(branch)
                                 .lineLimit(1)
                                 .truncationMode(.tail)

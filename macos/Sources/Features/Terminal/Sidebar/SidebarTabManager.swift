@@ -33,8 +33,9 @@ final class SidebarTabManager: ObservableObject {
         let autoTitle: String?
         let directory: String?
         let gitBranch: String?
-        /// True when `directory` is a linked git worktree (sidebar shows a
-        /// tree icon beside the branch instead of the branch glyph).
+        /// True when `directory` is a linked git worktree. Plumbed for a
+        /// custom worktree icon later; the sidebar still uses the branch
+        /// glyph for now.
         let isWorktree: Bool
         let prState: PRStatusCache.PRState?
         let kind: TabKind
