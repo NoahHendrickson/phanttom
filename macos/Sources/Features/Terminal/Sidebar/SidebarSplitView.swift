@@ -7,7 +7,7 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
     private static let widthDefaultsKey = "PhanttomSidebarWidth"
     private static let minWidth: CGFloat = 160
     private static let maxWidth: CGFloat = 360
-    private static let defaultWidth: CGFloat = 220
+    private static let defaultWidth: CGFloat = 271
 
     private let sidebar: NSView
     private let terminalContainer: TerminalViewContainer

@@ -11,25 +11,57 @@ extension Notification.Name {
 /// Observes the tab group of a window and publishes tab metadata for the
 /// sidebar. Event-driven: membership changes arrive via
 /// `.phanttomSidebarTabsDidChange` (piggybacking on `relabelTabs`), title and
-/// pwd changes via KVO on each tab window, and selection changes via key-window
-/// notifications. No polling.
+/// pwd changes via KVO on each tab window, progress reports via Combine on
+/// each surface, and selection changes via key-window notifications. No
+/// polling.
 @MainActor
 final class SidebarTabManager: ObservableObject {
+    /// What is running in the tab, detected from the surface title. Drives
+    /// which row style and icon the sidebar shows.
+    enum TabKind: Equatable {
+        case terminal
+        case claude
+        case codex
+    }
+
+    /// Activity state shown on the trailing edge of the tab row.
+    enum TabStatus: Equatable {
+        /// Nothing to report.
+        case idle
+        /// The tab's program reported progress (OSC 9;4) — animated sparkle.
+        case working
+        /// Work finished while the tab was unselected — blue square.
+        case done
+        /// Bell rang while the tab was unselected — yellow square.
+        case attention
+    }
+
     struct TabItem: Identifiable, Equatable {
         let id: ObjectIdentifier
         let title: String
         let directory: String?
+        let gitBranch: String?
+        let kind: TabKind
+        let status: TabStatus
         let isSelected: Bool
         let window: NSWindow
 
-        /// The last path component of the pwd, for compact display.
+        /// The last path component of the pwd, "/name" style per the design.
         var directoryName: String? {
-            directory.map { ($0 as NSString).lastPathComponent }
+            directory.map { "/" + ($0 as NSString).lastPathComponent }
+        }
+
+        /// Full pwd with ~ abbreviation, for compact terminal rows.
+        var abbreviatedDirectory: String? {
+            directory.map { ($0 as NSString).abbreviatingWithTildeInPath }
         }
 
         static func == (lhs: TabItem, rhs: TabItem) -> Bool {
             lhs.id == rhs.id && lhs.title == rhs.title
                 && lhs.directory == rhs.directory
+                && lhs.gitBranch == rhs.gitBranch
+                && lhs.kind == rhs.kind
+                && lhs.status == rhs.status
                 && lhs.isSelected == rhs.isSelected
         }
     }
@@ -39,6 +71,15 @@ final class SidebarTabManager: ObservableObject {
     private weak var window: NSWindow?
     private var notificationObservers: [NSObjectProtocol] = []
     private var windowObservations: [NSKeyValueObservation] = []
+    private var surfaceCancellables: [AnyCancellable] = []
+
+    /// Windows whose bell rang while unselected — cleared on selection.
+    private var attentionWindows: Set<ObjectIdentifier> = []
+    /// Windows whose progress finished while unselected — cleared on selection.
+    private var doneWindows: Set<ObjectIdentifier> = []
+    /// Windows that were reporting progress at last refresh, so we can detect
+    /// the working → finished transition.
+    private var workingWindows: Set<ObjectIdentifier> = []
 
     init(window: NSWindow) {
         self.window = window
@@ -61,6 +102,25 @@ final class SidebarTabManager: ObservableObject {
                 DispatchQueue.main.async { self?.refresh() }
             })
         }
+
+        // Bell while unselected marks attention.
+        notificationObservers.append(center.addObserver(
+            forName: .terminalWindowBellDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let controller = notification.object as? BaseTerminalController,
+                  let bellWindow = controller.window else { return }
+            let hasBell = notification.userInfo?[
+                Notification.Name.terminalWindowHasBellKey] as? Bool ?? false
+            Task { @MainActor in
+                if hasBell, bellWindow !== self.window?.tabGroup?.selectedWindow {
+                    self.attentionWindows.insert(ObjectIdentifier(bellWindow))
+                }
+                self.refresh()
+            }
+        })
 
         refresh()
     }
@@ -97,15 +157,47 @@ final class SidebarTabManager: ObservableObject {
         let tabWindows = window.tabbedWindows ?? [window]
         let selected = window.tabGroup?.selectedWindow ?? window
 
-        let newTabs = tabWindows.map { w in
-            TabItem(
-                id: ObjectIdentifier(w),
+        var newTabs: [TabItem] = []
+        var nowWorking: Set<ObjectIdentifier> = []
+
+        for w in tabWindows {
+            let id = ObjectIdentifier(w)
+            let controller = w.windowController as? BaseTerminalController
+            let surface = controller?.focusedSurface
+            let pwd = surface?.pwd ?? w.representedURL?.path
+            let isSelected = w === selected
+
+            let isWorking = surface?.progressReport != nil
+            if isWorking { nowWorking.insert(id) }
+
+            // Working just ended on an unselected tab → done.
+            if !isWorking, workingWindows.contains(id), !isSelected {
+                doneWindows.insert(id)
+            }
+            // Selection clears both indicators.
+            if isSelected {
+                doneWindows.remove(id)
+                attentionWindows.remove(id)
+            }
+
+            let status: TabStatus = isWorking ? .working
+                : doneWindows.contains(id) ? .done
+                : attentionWindows.contains(id) ? .attention
+                : .idle
+
+            newTabs.append(TabItem(
+                id: id,
                 title: w.title,
-                directory: w.representedURL?.path,
-                isSelected: w === selected,
+                directory: pwd,
+                gitBranch: pwd.flatMap { Self.gitBranch(at: $0) },
+                kind: Self.kind(forTitle: w.title),
+                status: status,
+                isSelected: isSelected,
                 window: w
-            )
+            ))
         }
+        workingWindows = nowWorking
+
         if newTabs != tabs { tabs = newTabs }
 
         // Re-register KVO for title/pwd changes on the current membership.
@@ -119,5 +211,46 @@ final class SidebarTabManager: ObservableObject {
                 },
             ]
         }
+
+        // Re-subscribe to each surface's progress reports.
+        surfaceCancellables = tabWindows.compactMap { w in
+            guard let controller = w.windowController as? BaseTerminalController,
+                  let surface = controller.focusedSurface else { return nil }
+            return surface.$progressReport
+                .dropFirst()
+                .removeDuplicates { $0 == nil && $1 == nil }
+                .sink { [weak self] _ in
+                    DispatchQueue.main.async { self?.refresh() }
+                }
+        }
+    }
+
+    // MARK: - Detection helpers
+
+    /// Detect what's running from the window/surface title. Cheap heuristic;
+    /// a hooks-driven IPC can refine this later.
+    private static func kind(forTitle title: String) -> TabKind {
+        let t = title.lowercased()
+        if t.contains("claude") { return .claude }
+        if t.contains("codex") { return .codex }
+        return .terminal
+    }
+
+    /// Read the git branch from .git/HEAD, walking up from the directory.
+    private static func gitBranch(at pwd: String) -> String? {
+        var dir = pwd
+        while dir != "/", !dir.isEmpty {
+            let headPath = (dir as NSString).appendingPathComponent(".git/HEAD")
+            if let contents = try? String(contentsOfFile: headPath, encoding: .utf8) {
+                let prefix = "ref: refs/heads/"
+                if contents.hasPrefix(prefix) {
+                    return contents.dropFirst(prefix.count)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                return nil // detached HEAD
+            }
+            dir = (dir as NSString).deletingLastPathComponent
+        }
+        return nil
     }
 }
