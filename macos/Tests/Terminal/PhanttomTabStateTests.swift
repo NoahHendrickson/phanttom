@@ -98,6 +98,76 @@ struct PhanttomTabStateTests {
         #expect(state.autoTitle == "add dark mode")
     }
 
+    // MARK: - Model reporting
+
+    @Test func markerModelSuffixSetsModelAndStaysSticky() {
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.autoTitle == "fix login bug")
+        #expect(state.model == "Fable 5")
+
+        // An empty model field (first turn of a fresh session, transcript
+        // not yet written) keeps the last known model.
+        state.update(
+            titles: ["\(marker) another prompt\u{2063}"],
+            isWorking: false, isSelected: true)
+        #expect(state.model == "Fable 5")
+
+        // A model switch mid-session (e.g. /model) updates the label even
+        // though the auto-name stays locked to the first prompt.
+        state.update(
+            titles: ["\(marker) another prompt\u{2063}claude-opus-4-8"],
+            isWorking: false, isSelected: true)
+        #expect(state.autoTitle == "fix login bug")
+        #expect(state.model == "Opus 4.8")
+    }
+
+    @Test func modelOnlyMarkerSetsModelWithoutNamingTab() {
+        // The statusline sideband emits "❯" + U+2063 + U+2063 + model at
+        // session start, before any prompt exists: model and kind must be
+        // captured, the (empty) prompt field must not become an auto-name.
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker)\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .claude)
+        #expect(state.model == "Fable 5")
+        #expect(state.autoTitle == nil)
+
+        // The first real prompt still names the tab afterwards.
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.autoTitle == "fix login bug")
+    }
+
+    @Test func markerWithoutModelSuffixLeavesModelNil() {
+        let state = PhanttomTabState()
+        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isSelected: true)
+        #expect(state.model == nil)
+    }
+
+    @Test func shellReclaimClearsModel() {
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        state.update(titles: ["zsh"], isWorking: false, isSelected: true)
+        #expect(state.kind == .terminal)
+        #expect(state.model == nil)
+    }
+
+    @Test func modelDisplayNames() {
+        #expect(PhanttomTabState.modelDisplayName("claude-fable-5") == "Fable 5")
+        #expect(PhanttomTabState.modelDisplayName("claude-opus-4-8") == "Opus 4.8")
+        #expect(PhanttomTabState.modelDisplayName("claude-haiku-4-5-20251001") == "Haiku 4.5")
+        #expect(PhanttomTabState.modelDisplayName("claude-3-5-sonnet-20241022") == "Sonnet 3.5")
+        // No recognizable family word: show the id rather than hiding.
+        #expect(PhanttomTabState.modelDisplayName("claude") == "claude")
+    }
+
     // MARK: - Status transitions
 
     @Test func workingEndsUnselectedBecomesDone() {

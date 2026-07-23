@@ -4,8 +4,9 @@ import SwiftUI
 /// cards for agent tabs (Claude/Codex). Agent cards lead with the status
 /// indicator (animated pixel rain while working, glowing "done"/"attention"
 /// dots), put the close button inline on the title row, and anchor the agent
-/// icon at the bottom-right beside the directory + git branch line. Terminal
-/// rows keep their trailing status/close slot.
+/// icon + model name at the bottom-right beside the git branch line (the
+/// project group header already names the directory). Terminal rows keep
+/// their trailing status/close slot.
 struct SidebarView: View {
     @ObservedObject var ghostty: Ghostty.App
     @ObservedObject var tabManager: SidebarTabManager
@@ -223,7 +224,6 @@ struct SidebarTabRow: View {
     /// Secondary text and icons scale with the title so rows stay balanced.
     private var subtitleSize: Double { max(8, fontSize - 1) }
     private var iconSize: CGFloat { CGFloat(fontSize) + 2 }
-    private var iconGlyphSize: Double { max(6, fontSize - 3) }
 
     @State private var isHovering = false
     @State private var isHoveringClose = false
@@ -331,17 +331,13 @@ struct SidebarTabRow: View {
             }
     }
 
-    /// Compact 29pt row: terminal chip + abbreviated path.
+    /// Compact 29pt row: leading status slot (same position and metrics as
+    /// the agent cards, so the idle/status dots line up down the whole
+    /// list) + abbreviated path.
     private var terminalRow: some View {
-        HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(foreground.opacity(0.12))
-                .frame(width: iconSize, height: iconSize)
-                .overlay(
-                    Image(systemName: "apple.terminal.fill")
-                        .font(.system(size: iconGlyphSize))
-                        .foregroundStyle(foreground)
-                )
+        HStack(spacing: 8) {
+            statusIndicator
+                .frame(width: 15, height: iconSize)
             if isEditing {
                 titleEditor
             } else {
@@ -373,46 +369,35 @@ struct SidebarTabRow: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
-                HStack(spacing: 8) {
-                    if let dir = tab.directoryName {
-                        Text(dir)
-                            .foregroundStyle(foreground.opacity(0.65))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    if let branch = tab.git?.branch {
-                        HStack(spacing: 3) {
-                            branchGlyph(isWorktree: tab.git?.isWorktree == true)
-                            Text(branch)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
-                        .foregroundStyle(foreground.opacity(0.8))
-                    }
+                // Branch when there is one (worktree branches show like any
+                // other — the branch name is the identity that matters, and
+                // it is the agent's real checkout either way); outside a
+                // repo, the directory leaf with a folder glyph so the line
+                // is never empty. Full pwd stays in the row's help tooltip.
+                if let branch = tab.git?.branch {
+                    subtitleLabel(icon: "PhanttomGitBranch", text: branch)
+                } else if let leaf = tab.directoryLeaf {
+                    subtitleLabel(icon: "PhanttomFolder", text: leaf)
                 }
-                .font(.system(size: subtitleSize))
             }
         }
     }
 
-    /// The glyph before the branch name: GitHub's Octicon git-branch (MIT,
-    /// a template asset so it tints with the row text) for a normal
-    /// checkout, the arrowed SF Symbol for a linked worktree. One sizing
-    /// contract for both, so a row doesn't shift when a tab's pwd moves
-    /// between a worktree and a plain checkout.
-    @ViewBuilder private func branchGlyph(isWorktree: Bool) -> some View {
-        if isWorktree {
-            Image(systemName: "arrow.triangle.branch")
+    /// One entry on the agent card's subtitle line: template glyph + text,
+    /// same metrics for the branch and the no-repo directory fallback so
+    /// the line doesn't shift when a directory becomes a checkout.
+    private func subtitleLabel(icon: String, text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(icon)
                 .resizable()
                 .scaledToFit()
                 .frame(width: subtitleSize, height: subtitleSize)
-                .help("Linked worktree")
-        } else {
-            Image("PhanttomGitBranch")
-                .resizable()
-                .scaledToFit()
-                .frame(width: subtitleSize, height: subtitleSize)
+            Text(text)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
+        .foregroundStyle(foreground.opacity(0.8))
+        .font(.system(size: subtitleSize))
     }
 
     /// Status indicator: leading slot on agent cards, trailing slot on
@@ -450,9 +435,12 @@ struct SidebarTabRow: View {
     }
 
     /// Trailing column on agent cards: hover close button aligned with the
-    /// title line, agent icon aligned with the subtitle line.
+    /// title line, model label aligned with the subtitle line. With a known
+    /// model the label is the bare brand mark + model name (per the design);
+    /// until the hook has reported one (or for agents that never do, like
+    /// Codex) it stays the chip-style agent icon alone.
     private func agentTrailing(icon: String) -> some View {
-        VStack(spacing: 2) {
+        VStack(alignment: .trailing, spacing: 2) {
             Group {
                 if isHovering {
                     closeButton(glyphSize: 8, slot: iconSize)
@@ -461,21 +449,36 @@ struct SidebarTabRow: View {
                 }
             }
             .frame(width: iconSize, height: iconSize)
-            Image(icon)
-                .resizable()
-                .frame(width: iconSize, height: iconSize)
+            if let model = tab.model {
+                HStack(spacing: 3) {
+                    Image("PhanttomClaudeMark")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: CGFloat(subtitleSize) - 2,
+                               height: CGFloat(subtitleSize) - 2)
+                    Text(model)
+                        .font(.system(size: subtitleSize))
+                        .foregroundStyle(foreground.opacity(0.65))
+                        .lineLimit(1)
+                }
+                .frame(height: iconSize)
+            } else {
+                Image(icon)
+                    .resizable()
+                    .frame(width: iconSize, height: iconSize)
+            }
         }
     }
 
-    /// Trailing edge of terminal rows: hover close button wins, then status
-    /// indicator. Fixed 18×18 slot so idle/status/X never shift row height
-    /// or label width.
+    /// Trailing edge of terminal rows: just the hover close button (status
+    /// lives in the leading slot, mirroring agent cards). Fixed 18×18 slot
+    /// so the X appearing never shifts row height or label width.
     @ViewBuilder private var trailing: some View {
         Group {
             if isHovering {
                 closeButton(glyphSize: 8, slot: 16)
             } else {
-                statusIndicator
+                Color.clear
             }
         }
         .frame(width: 18, height: 18)

@@ -40,6 +40,10 @@ final class SidebarTabManager: ObservableObject {
         let git: GitBranchCache.Resolved?
         let prState: PRStatusCache.PRState?
         let kind: TabKind
+        /// Display name of the agent session's model ("Fable 5"), reported
+        /// through the marker-title protocol. nil until the hook has seen
+        /// an assistant turn (or for non-Claude tabs).
+        let model: String?
         let status: TabStatus
         let isSelected: Bool
         let window: NSWindow
@@ -53,17 +57,35 @@ final class SidebarTabManager: ObservableObject {
             if let autoTitle, !autoTitle.isEmpty { return autoTitle }
             guard kind != .terminal else { return title }
             var s = Substring(title)
+            // A marker title carries the model id after a second U+2063 —
+            // and a model-only marker (statusline sideband) has an empty
+            // prompt field. Cut the model off before the glyph strip so it
+            // can never masquerade as a name.
+            if s.hasPrefix(PhanttomTabState.autoNameMarker) {
+                s = s.dropFirst(PhanttomTabState.autoNameMarker.count)
+                if let cut = s.firstIndex(of: "\u{2063}") {
+                    s = s[..<cut]
+                }
+            }
             while let first = s.unicodeScalars.first,
                   !CharacterSet.alphanumerics.contains(first) {
                 s = s.dropFirst()
             }
             let cleaned = s.trimmingCharacters(in: .whitespaces)
-            return cleaned.isEmpty ? title : cleaned
+            // Nothing nameable left (e.g. a model-only marker before the
+            // first prompt): name the agent rather than echoing raw title.
+            if cleaned.isEmpty {
+                return kind == .claude ? "Claude" : title
+            }
+            return cleaned
         }
 
-        /// The last path component of the pwd, "/name" style per the design.
-        var directoryName: String? {
-            directory.map { "/" + ($0 as NSString).lastPathComponent }
+        /// The pwd's display leaf for the agent card subtitle when the
+        /// directory has no git branch: last path component, home as "~".
+        var directoryLeaf: String? {
+            directory.map {
+                (($0 as NSString).abbreviatingWithTildeInPath as NSString).lastPathComponent
+            }
         }
 
         /// Full pwd with ~ abbreviation, for compact terminal rows.
@@ -313,6 +335,7 @@ final class SidebarTabManager: ObservableObject {
                 git: gitMeta,
                 prState: prState,
                 kind: state?.kind ?? .terminal,
+                model: state?.model,
                 status: state?.status ?? .idle,
                 isSelected: isSelected,
                 window: w

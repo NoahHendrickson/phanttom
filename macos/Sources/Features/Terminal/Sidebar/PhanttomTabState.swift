@@ -74,6 +74,13 @@ final class PhanttomTabState {
     /// `titleOverride`); cleared when the shell reclaims the title.
     private(set) var autoTitle: String?
 
+    /// Display name of the model the tab's agent session is using
+    /// ("Fable 5"), derived from the model id the Claude Code hook appends
+    /// to the marker title. Sticky like the agent kind — the marker only
+    /// rides UserPromptSubmit, so between prompts the last value stands —
+    /// and cleared when the shell reclaims the tab.
+    private(set) var model: String?
+
     /// The last detected agent kind, kept sticky while decorated/marked
     /// titles come through so hook-set titles don't flip the row back to a
     /// plain terminal. Nil = plain terminal.
@@ -168,8 +175,16 @@ final class PhanttomTabState {
         // the session's FIRST prompt names the tab. It re-arms when the
         // shell reclaims the title (session over) or via Reset Name.
         if let markerTitle {
-            let auto = markerTitle.dropFirst(Self.autoNameMarker.count)
-                .trimmingCharacters(in: .whitespaces)
+            // Marker payload: "<prompt>", optionally followed by another
+            // U+2063 and the session's model id (empty until the transcript
+            // has an assistant turn — keep the last known model then).
+            let fields = markerTitle.dropFirst(Self.autoNameMarker.count)
+                .split(separator: "\u{2063}", omittingEmptySubsequences: false)
+            let auto = (fields.first ?? "").trimmingCharacters(in: .whitespaces)
+            if fields.count > 1 {
+                let id = fields[1].trimmingCharacters(in: .whitespaces)
+                if !id.isEmpty { model = Self.modelDisplayName(id) }
+            }
             if !auto.isEmpty, autoTitle == nil, markerTitle != lastResetTitle {
                 autoTitle = auto
             }
@@ -193,6 +208,24 @@ final class PhanttomTabState {
         // reclaimed the tab, so the agent session and its auto-name are over.
         agentKind = nil
         autoTitle = nil
+        model = nil
         lastResetTitle = nil
+    }
+
+    /// "claude-fable-5" → "Fable 5", "claude-opus-4-8" → "Opus 4.8",
+    /// "claude-haiku-4-5-20251001" → "Haiku 4.5": family word capitalized,
+    /// numeric tokens joined with dots, 8-digit date stamps dropped. Works
+    /// for old ids with the family last ("claude-3-5-sonnet-…") too. An id
+    /// with no recognizable family shows as-is rather than hiding.
+    static func modelDisplayName(_ id: String) -> String {
+        let tokens = id.split(separator: "-")
+        guard let family = tokens.first(where: {
+            $0.allSatisfy(\.isLetter) && $0.lowercased() != "claude"
+        }) else { return id }
+        let version = tokens
+            .filter { $0.allSatisfy(\.isNumber) && $0.count < 8 }
+            .joined(separator: ".")
+        let name = family.prefix(1).uppercased() + family.dropFirst()
+        return version.isEmpty ? name : "\(name) \(version)"
     }
 }
