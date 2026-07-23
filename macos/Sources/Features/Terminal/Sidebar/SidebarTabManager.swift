@@ -100,10 +100,32 @@ final class SidebarTabManager: ObservableObject {
             DispatchQueue.main.async { self?.scheduleRefresh() }
         })
 
-        // Key/close events fire app-wide for every window; only windows in
-        // this manager's group can change what this sidebar shows.
+        // didBecomeKey refreshes synchronously, in the notification's own
+        // runloop turn. A brand-new tab's window becomes key in the same
+        // turn its first frame is committed, and the manager's initial
+        // refresh ran back before the window joined its tab group (upstream
+        // adds it after windowDidLoad) — so deferring even one turn ships
+        // that first frame with a sidebar showing only the new tab, a
+        // visible whole-list flash. By key time the group is settled, so
+        // refreshing in place is safe and lands in the same frame.
+        notificationObservers.append(center.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self, let affected = notification.object as? NSWindow,
+                      self.isInGroup(affected) else { return }
+                self.refresh()
+            }
+        })
+
+        // Resign-key/close events fire app-wide for every window; only
+        // windows in this manager's group can change what this sidebar
+        // shows. These must NOT refresh synchronously: at willClose
+        // delivery the closing window is still in the tab group, so the
+        // shrunken membership only exists a turn later.
         let filtered: [Notification.Name] = [
-            NSWindow.didBecomeKeyNotification,
             NSWindow.didResignKeyNotification,
             NSWindow.willCloseNotification,
         ]
@@ -247,7 +269,23 @@ final class SidebarTabManager: ObservableObject {
             ))
         }
 
-        if newTabs != tabs { tabs = newTabs }
+        if newTabs != tabs {
+            // Animate removals and in-place changes so a closing tab
+            // collapses and the rows below slide up into the gap. Never
+            // animate insertions: a new tab opens a new window with a
+            // brand-new sidebar whose list populates all at once, so
+            // animating inserts unfolds the entire list — it reads as a
+            // full re-render, not "one tab was added".
+            let oldIDs = Set(tabs.map(\.id))
+            let inserted = newTabs.contains { !oldIDs.contains($0.id) }
+            if inserted || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                tabs = newTabs
+            } else {
+                withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                    tabs = newTabs
+                }
+            }
+        }
 
         let selectedSurface = (selected.windowController as? BaseTerminalController)?.focusedSurface
         let liveBackground = selectedSurface?.backgroundColor

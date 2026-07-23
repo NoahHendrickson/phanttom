@@ -44,18 +44,26 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                LazyVStack(spacing: 10) {
+                // Plain VStack, not LazyVStack: removal transitions are
+                // unreliable inside lazy containers on macOS 13, and a tab
+                // list is small enough that laziness buys nothing.
+                VStack(spacing: 10) {
                     ForEach(tabManager.tabs) { tab in
                         SidebarTabRow(
                             tab: tab,
                             foreground: foreground,
+                            fontSize: settings.sidebarFontSize,
                             onSelect: { tabManager.select(tab) },
                             onClose: { tabManager.close(tab) },
                             onRename: { tabManager.rename(tab, to: $0) }
                         )
+                        .transition(.phanttomTabRow)
                     }
                 }
                 .padding(8)
+                // Whether a tab change animates is decided at the publish
+                // site (SidebarTabManager.refresh): removals animate,
+                // insertions and Reduce Motion stay instant.
             }
 
             Rectangle()
@@ -65,9 +73,9 @@ struct SidebarView: View {
             Button(action: onNewTab) {
                 HStack(spacing: 6) {
                     Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: settings.sidebarFontSize, weight: .medium))
                     Text("New tab")
-                        .font(.system(size: 11))
+                        .font(.system(size: settings.sidebarFontSize))
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(foreground)
@@ -82,12 +90,30 @@ struct SidebarView: View {
     }
 }
 
+extension AnyTransition {
+    /// Removal-only transition for sidebar tab rows: a closing tab fades
+    /// with a slight top-anchored compression so it reads as collapsing in
+    /// place, and the layout slide of the neighboring rows does the rest of
+    /// the storytelling. Insertion is identity — new rows just appear (see
+    /// SidebarTabManager.refresh for why inserts must not animate).
+    static let phanttomTabRow: AnyTransition = .asymmetric(
+        insertion: .identity,
+        removal: .opacity.combined(with: .scale(scale: 0.92, anchor: .top))
+    )
+}
+
 struct SidebarTabRow: View {
     let tab: SidebarTabManager.TabItem
     let foreground: Color
+    let fontSize: Double
     let onSelect: () -> Void
     let onClose: () -> Void
     let onRename: (String?) -> Void
+
+    /// Secondary text and icons scale with the title so rows stay balanced.
+    private var subtitleSize: Double { max(8, fontSize - 1) }
+    private var iconSize: CGFloat { CGFloat(fontSize) + 2 }
+    private var iconGlyphSize: Double { max(6, fontSize - 3) }
 
     @State private var isHovering = false
     @State private var isHoveringClose = false
@@ -135,6 +161,10 @@ struct SidebarTabRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
+        // The idle trailing slot is Color.clear, which is not hit-testable —
+        // without an explicit shape, hover dies over the far-right strip of
+        // a non-hovered row (exactly where the X will appear).
+        .contentShape(Rectangle())
         .onHover { hovering in
             isHovering = hovering
             if !hovering { isHoveringClose = false }
@@ -174,7 +204,7 @@ struct SidebarTabRow: View {
     private var titleEditor: some View {
         TextField("", text: $draft)
             .textFieldStyle(.plain)
-            .font(.system(size: 11))
+            .font(.system(size: fontSize))
             .foregroundStyle(foreground)
             .focused($editFocused)
             .onSubmit(commitRename)
@@ -191,23 +221,23 @@ struct SidebarTabRow: View {
         HStack(spacing: 4) {
             RoundedRectangle(cornerRadius: 2)
                 .fill(foreground.opacity(0.12))
-                .frame(width: 13, height: 13)
+                .frame(width: iconSize, height: iconSize)
                 .overlay(
                     Image(systemName: "apple.terminal.fill")
-                        .font(.system(size: 8))
+                        .font(.system(size: iconGlyphSize))
                         .foregroundStyle(foreground)
                 )
             if isEditing {
                 titleEditor
             } else {
                 Text(tab.customTitle ?? tab.abbreviatedDirectory ?? (tab.title.isEmpty ? "Terminal" : tab.title))
-                    .font(.system(size: 11))
+                    .font(.system(size: fontSize))
                     .foregroundStyle(foreground)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
-        .frame(height: 13)
+        .frame(height: iconSize)
     }
 
     /// Two-line 45pt card: agent icon + title, then directory + branch.
@@ -216,12 +246,12 @@ struct SidebarTabRow: View {
             HStack(spacing: 4) {
                 Image(icon)
                     .resizable()
-                    .frame(width: 13, height: 13)
+                    .frame(width: iconSize, height: iconSize)
                 if isEditing {
                     titleEditor
                 } else {
                     Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
-                        .font(.system(size: 11))
+                        .font(.system(size: fontSize))
                         .foregroundStyle(foreground)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -239,7 +269,7 @@ struct SidebarTabRow: View {
                         .truncationMode(.tail)
                 }
             }
-            .font(.system(size: 10))
+            .font(.system(size: subtitleSize))
             .foregroundStyle(foreground.opacity(0.65))
         }
     }
