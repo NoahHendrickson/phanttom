@@ -70,6 +70,16 @@ final class SidebarTabManager: ObservableObject {
         var abbreviatedDirectory: String? {
             directory.map { ($0 as NSString).abbreviatingWithTildeInPath }
         }
+
+        /// True when this tab's pwd lives in the checkout that built the
+        /// currently running Ghostty.app. Derived from `directory` only —
+        /// never collapsed `projectRoot` — so a worktree and its parent
+        /// don't both light up. Presentation cue; not stored on the
+        /// snapshot (same shape as `directoryName`).
+        var isRunningAppSource: Bool {
+            guard let directory else { return false }
+            return RunningAppSource.matchesCurrent(directory: directory)
+        }
     }
 
     @Published private(set) var tabs: [TabItem] = []

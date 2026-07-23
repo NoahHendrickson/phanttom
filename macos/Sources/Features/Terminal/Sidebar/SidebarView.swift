@@ -351,6 +351,9 @@ struct SidebarTabRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            if tab.isRunningAppSource {
+                runningAppSourceGlyph(size: iconGlyphSize)
+            }
         }
         .frame(height: iconSize)
     }
@@ -389,10 +392,24 @@ struct SidebarTabRow: View {
                         }
                         .foregroundStyle(foreground.opacity(0.8))
                     }
+                    if tab.isRunningAppSource {
+                        runningAppSourceGlyph(size: subtitleSize)
+                    }
                 }
                 .font(.system(size: subtitleSize))
             }
         }
+    }
+
+    /// Small cue that this tab's checkout built the running Ghostty.app.
+    /// Path-gated in `RunningAppSource` so installed Release builds never
+    /// show it.
+    private func runningAppSourceGlyph(size: Double) -> some View {
+        Image(systemName: "app.fill")
+            .font(.system(size: size))
+            .foregroundStyle(foreground.opacity(0.55))
+            .help("Running app built from this checkout")
+            .accessibilityLabel("Running app source")
     }
 
     /// The glyph before the branch name: GitHub's Octicon git-branch (MIT,
