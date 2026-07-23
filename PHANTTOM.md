@@ -71,7 +71,12 @@ Touches to upstream files are deliberately tiny and greppable — search
   "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
-  the window falls back to plain upstream behavior.
+  the window falls back to plain upstream behavior. This is decided once per
+  window at creation (`phanttomInstallSidebar` in `windowDidLoad`): a live
+  config reload that switches to/from `tabs` affects only windows opened
+  after the reload — existing windows keep whatever they were built with.
+  Known limitation; reacting live would mean tearing down and rebuilding the
+  window's content view, which isn't worth the risk.
 
 The Xcode project uses filesystem-synchronized groups: **new files under
 `macos/Sources/` are picked up automatically** — no pbxproj editing.

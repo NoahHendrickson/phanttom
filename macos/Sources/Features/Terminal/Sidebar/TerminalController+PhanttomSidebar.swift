@@ -13,6 +13,10 @@ extension TerminalController {
     /// `macos-titlebar-style = tabs` relocates the tab bar accessory into the
     /// titlebar, and hiding that accessory leaves neither tabs nor a title —
     /// in which case the caller falls back to upstream's plain container.
+    ///
+    /// Runs once per window (windowDidLoad): a live config reload that
+    /// switches titlebar style only affects windows created afterwards.
+    /// Accepted limitation — see PHANTTOM.md.
     func phanttomInstallSidebar(
         in window: NSWindow,
         terminal container: TerminalViewContainer,

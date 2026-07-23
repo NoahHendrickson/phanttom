@@ -125,7 +125,14 @@ struct SidebarTabRow: View {
         .simultaneousGesture(TapGesture().onEnded {
             if !isHoveringClose { onSelect() }
         })
-        .onHover { isHovering = $0 }
+        .onHover { hovering in
+            isHovering = hovering
+            // The close button is removed with the row hover, and its own
+            // .onHover(false) isn't guaranteed to fire first (fast exits,
+            // rows shifting under a stationary cursor after a tab closes).
+            // A stale true would silently swallow the next select click.
+            if !hovering { isHoveringClose = false }
+        }
         .contextMenu {
             Button("Rename Tab…", action: startRename)
             if tab.customTitle != nil || tab.autoTitle != nil {
@@ -247,6 +254,7 @@ struct SidebarTabRow: View {
             }
             .buttonStyle(.plain)
             .onHover { isHoveringClose = $0 }
+            .onDisappear { isHoveringClose = false }
             .help("Close Tab")
         } else {
             switch tab.status {
