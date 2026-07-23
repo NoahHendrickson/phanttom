@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import SwiftUI
 
 /// Installs and maintains Phanttom's Claude Code hooks in the user's
 /// `~/.claude/settings.json`, so agent tabs get pixel rain, first-prompt
