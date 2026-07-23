@@ -288,7 +288,16 @@ final class SidebarTabManager: ObservableObject {
                 isSelected: isSelected
             )
 
-            let gitMeta = pwd.map { GitBranchCache.shared.metadata(at: $0) }
+            // Definitive resolves update the window's sticky metadata;
+            // unknown gaps (resolve in flight, cache entry pruned) keep the
+            // last known value so group identity never flaps through an
+            // interim state. Windows without tab state (non-TerminalWindow)
+            // just read the cache directly.
+            let freshMeta = pwd.flatMap { GitBranchCache.shared.metadata(at: $0) }
+            if let freshMeta, let state {
+                state.lastGitMetadata = freshMeta
+            }
+            let gitMeta = state?.lastGitMetadata ?? freshMeta
             let gitBranch = gitMeta?.branch
             let projectRoot = gitMeta?.projectRoot
             var prState: PRStatusCache.PRState?

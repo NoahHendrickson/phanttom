@@ -35,7 +35,12 @@ final class GitBranchCache {
     /// entry; callers pick the fields they need from the snapshot.
     /// Schedules a background (re)resolve when the value is stale and none
     /// is already running.
-    func metadata(at pwd: String) -> Resolved {
+    ///
+    /// Returns nil while the pwd has never finished a resolve (including
+    /// after a prune evicted it) — "unknown" is distinct from "resolved:
+    /// not a git pwd", so callers can hold their last known value instead
+    /// of regrouping rows through a wrong interim state.
+    func metadata(at pwd: String) -> Resolved? {
         let now = ContinuousClock.now
         let fresh = lastResolvedAt[pwd].map { now - $0 < revalidateInterval } ?? false
         if !fresh, !inFlight.contains(pwd) {
@@ -46,7 +51,7 @@ final class GitBranchCache {
                 await self?.finishResolve(pwd: pwd, value: value)
             }
         }
-        return resolved[pwd] ?? Resolved()
+        return resolved[pwd]
     }
 
     private func finishResolve(pwd: String, value: Resolved) {

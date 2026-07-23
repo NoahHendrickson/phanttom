@@ -58,6 +58,15 @@ final class PhanttomTabState {
     /// never stage its own row away no matter where a new sibling lands.
     let createdAt = ContinuousClock.now
 
+    /// The last git metadata (branch + project root) that finished a
+    /// definitive resolve for this window. Sticky: while the cache has no
+    /// answer for the current pwd — first resolve still in flight, or the
+    /// entry was pruned — the sidebar keeps using this instead of
+    /// regrouping the row through a wrong interim group (pwd-keyed, or
+    /// none) and snapping it back a frame later. Updated only from
+    /// resolved cache values, never cleared on unknown.
+    var lastGitMetadata: GitBranchCache.Resolved?
+
     /// An automatic tab name derived from the user's first agent prompt of
     /// the session (set via a marker title emitted by the Claude Code
     /// UserPromptSubmit hook). Beaten by the user's rename (upstream's

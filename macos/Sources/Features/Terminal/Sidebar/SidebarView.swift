@@ -51,29 +51,23 @@ struct SidebarView: View {
             .ignoresSafeArea()
     }
 
-    /// The grouping policy lives in `SidebarTabGroup` (its own file); the
-    /// view only decides flat vs grouped and renders.
-    private var tabGroups: [SidebarTabGroup] {
-        SidebarTabGroup.groups(from: tabManager.tabs)
-    }
-
-    /// Grouping is presentation-only; headers need at least one project
-    /// group (an all-unknown-pwd list has nothing to label).
-    private var showsGroups: Bool {
-        settings.sidebarGroupByProject && tabGroups.contains {
+    var body: some View {
+        // Partition once per body evaluation (the policy lives in
+        // SidebarTabGroup; the view only decides flat vs grouped and
+        // renders). Grouping is presentation-only; headers need at least
+        // one project group — an all-unknown-pwd list has nothing to label.
+        let groups = SidebarTabGroup.groups(from: tabManager.tabs)
+        let grouped = settings.sidebarGroupByProject && groups.contains {
             if case .project = $0 { return true } else { return false }
         }
-    }
-
-    var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 // Plain VStack, not LazyVStack: removal transitions are
                 // unreliable inside lazy containers on macOS 13, and a tab
                 // list is small enough that laziness buys nothing.
                 VStack(spacing: 10) {
-                    if showsGroups {
-                        ForEach(tabGroups) { group in
+                    if grouped {
+                        ForEach(groups) { group in
                             switch group {
                             case .project(let id, let title, let groupTabs):
                                 ProjectHeader(

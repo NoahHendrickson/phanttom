@@ -171,7 +171,10 @@ divider):
 rows are grouped under a header per project — the repo toplevel of the tab's
 pwd, with linked worktrees resolved to their parent repo (`GitBranchCache`
 resolves branch + project root in one walk), else the pwd itself for non-git
-directories (the home directory renders as "~"). Headers carry a disclosure
+directories (the home directory renders as "~"). Resolved metadata is sticky
+per window (`PhanttomTabState.lastGitMetadata`): while the cache has no
+answer for a pwd — resolve in flight, or the entry pruned — rows keep their
+last known group instead of flapping through an interim one. Headers carry a disclosure
 chevron (click the header to collapse/expand; state is process-global in
 `ProjectCollapseStore` because every window hosts its own sidebar, and
 persisted in UserDefaults) and a trailing "+" that opens a new tab in that
