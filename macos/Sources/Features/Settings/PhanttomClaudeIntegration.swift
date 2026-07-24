@@ -11,7 +11,7 @@ import GhosttyKit
 enum PhanttomClaudeIntegration {
     /// Bump on any change to `hookScript` text or `desiredHooks` /
     /// `desiredStatusLine`. Drives the Settings "Update available" state.
-    static let payloadVersion = 3
+    static let payloadVersion = 4
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
@@ -23,6 +23,8 @@ enum PhanttomClaudeIntegration {
     /// runtime statusline chaining and for back-compat.
     static let originalStatusLineObjectKey = "phanttomOriginalStatusLineObject"
     static let setupPromptedKey = "PhanttomClaudeSetupPrompted"
+    /// PR #15 consent key. Cleared on one-shot migration to `setupPromptedKey`.
+    static let legacyConsentKey = "PhanttomClaudeHooks"
 
     // MARK: - Status
 
@@ -31,6 +33,20 @@ enum PhanttomClaudeIntegration {
         case installedCurrent
         case installedOutdated(installedVersion: Int)
         case legacyInline
+    }
+
+    /// Whether a one-shot PR #15 `enabled` consent should trigger install.
+    /// Matches the post-prompt repair path: upgrade outdated/legacy only —
+    /// never reinstall after an explicit Remove (`.notInstalled`).
+    nonisolated static func shouldRepairAfterLegacyEnabled(
+        status: IntegrationStatus
+    ) -> Bool {
+        switch status {
+        case .installedOutdated, .legacyInline:
+            return true
+        case .notInstalled, .installedCurrent:
+            return false
+        }
     }
 
     enum ActionError: Error, Equatable {
@@ -46,6 +62,8 @@ enum PhanttomClaudeIntegration {
         ("SessionStart", nil, dispatch("session-start")),
         ("PostToolUse", "EnterWorktree|ExitWorktree", dispatch("post-tool-use")),
         ("Stop", nil, dispatch("stop")),
+        // Re-arm rain if Stop cleared before background_tasks were registered.
+        ("SubagentStart", nil, dispatch("subagent-start")),
         ("Notification", nil, dispatch("notification")),
     ]
 
@@ -124,6 +142,25 @@ enum PhanttomClaudeIntegration {
               $s =~ s/([^A-Za-z0-9\\-_.~\\/])/sprintf("%%%02X", ord($1))/ge;
               $s =~ s/%2F/\\//gi;
               print $s;
+            ' 2>/dev/null
+          fi
+        }
+
+        # Count in-flight Claude background_tasks (subagents, background shells).
+        # Missing / unparseable / non-array → 0 so pre-2.1.145 Claude Code keeps
+        # the old "always clear on Stop" behavior.
+        json_background_tasks_len() {
+          if command -v jq >/dev/null 2>&1; then
+            jq "(.background_tasks // []) | length" 2>/dev/null
+          else
+            /usr/bin/perl -MJSON::PP -0777 -e '
+              my $raw = do { local $/; <STDIN> };
+              my $j = eval { decode_json($raw) };
+              exit 0 unless $j && ref($j) eq "HASH";
+              my $bt = $j->{background_tasks};
+              if (!defined $bt) { print 0; exit 0; }
+              if (ref($bt) eq "ARRAY") { print scalar(@$bt); exit 0; }
+              print 0;
             ' 2>/dev/null
           fi
         }
@@ -236,7 +273,20 @@ enum PhanttomClaudeIntegration {
             printf "%s" "$j" | emit_osc7
             ;;
           stop)
-            emit_osc74 0
+            # Keep (or re-arm) rain while Claude reports in-flight
+            # background_tasks; clear only when the session is truly idle.
+            # SubagentStop is intentionally not hooked — clearing there can
+            # flash rain off right before the parent wakes.
+            j=$(cat)
+            n=$(printf "%s" "$j" | json_background_tasks_len)
+            if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+              emit_osc74 3
+            else
+              emit_osc74 0
+            fi
+            ;;
+          subagent-start)
+            emit_osc74 3
             ;;
           notification)
             t=$(resolve_tty)
