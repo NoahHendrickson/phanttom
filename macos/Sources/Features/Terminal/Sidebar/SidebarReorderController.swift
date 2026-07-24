@@ -107,6 +107,19 @@ final class SidebarReorderController: ObservableObject {
     /// Pending teardown of the post-drop glide.
     private var settleWork: DispatchWorkItem?
 
+    deinit {
+        // The controller is normally torn down by clear(), but a window
+        // closing mid-drag can drop it on the floor. The repeating timer is
+        // retained by the run loop and the monitors by AppKit, so without
+        // this they outlive the controller for the life of the process —
+        // harmless thanks to `[weak self]`, but a genuine leak.
+        autoScrollTimer?.invalidate()
+        settleWork?.cancel()
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        if let mouseUpMonitor { NSEvent.removeMonitor(mouseUpMonitor) }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+    }
+
     var isDragging: Bool { session != nil }
 
     /// True from the moment a drag actually starts until one runloop turn
@@ -293,10 +306,15 @@ final class SidebarReorderController: ObservableObject {
     /// offset away. Both the reorder and the compensating offset go in one
     /// animation-free transaction so no frame can show the row anywhere but
     /// where it was dropped.
-    func finish(_ apply: (Commit) -> Void) {
+    /// `apply` reports whether it actually reordered. It can decline: the
+    /// anchor is resolved from the slot list frozen at drag start, so the row
+    /// being dropped against may have closed while the mouse was down. Taking
+    /// its word — rather than assuming a commit succeeded — is what stops the
+    /// row gliding confidently into a slot the model never adopted and then
+    /// snapping back on the next refresh.
+    func finish(_ apply: (Commit) -> Bool) {
         guard let session else { clear(); return }
         let commit = pendingCommit()
-        let residual = settleResidual(session, moved: commit != nil)
 
         // The drag proper is over: monitors and auto-scroll go now, so a
         // stray mouse-up or Escape during the glide can't tear it down.
@@ -305,8 +323,10 @@ final class SidebarReorderController: ObservableObject {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            if let commit { apply(commit) }
-            self.session?.offset = residual
+            let moved = commit.map(apply) ?? false
+            // Computed after the fact: a declined commit means the row glides
+            // back to where it started instead of to a slot nothing moved to.
+            self.session?.offset = settleResidual(session, moved: moved)
             self.session?.isSettling = true
         }
 
@@ -361,7 +381,12 @@ final class SidebarReorderController: ObservableObject {
     /// Abandon the drag with no reorder — Escape, a lost mouse-up, the window
     /// resigning key, or the dragged row disappearing mid-drag.
     func cancel() {
-        guard session != nil else { return }
+        // Not during the glide. The left-mouse-up monitor defers a cancel
+        // onto the next turn, and removeGuards() can't unschedule a block
+        // that is already queued — so on every successful drop this arrives
+        // *after* finish() has set the settle up, and would tear it down a
+        // frame later. Same guard as cancelIfDraggedIsMissing.
+        guard let session, !session.isSettling else { return }
         clear()
     }
 

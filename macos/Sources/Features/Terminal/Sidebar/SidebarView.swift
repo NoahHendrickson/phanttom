@@ -332,7 +332,12 @@ struct SidebarView: View {
         tabManager.select(tab)
     }
 
-    private func applyTabReorder(_ commit: SidebarReorderController.Commit) {
+    /// Returns whether the reorder was applied. The anchor comes from the
+    /// slot list frozen at drag start, so it can name a tab that has since
+    /// closed — reporting that honestly lets the drop glide home instead of
+    /// into a slot the list never took.
+    @discardableResult
+    private func applyTabReorder(_ commit: SidebarReorderController.Commit) -> Bool {
         guard case .tab(let sourceNumber) = commit.dragged,
               case .tab(let anchorNumber) = commit.anchor,
               let source = tabManager.tabs.first(where: {
@@ -341,7 +346,7 @@ struct SidebarView: View {
               let anchor = tabManager.tabs.first(where: {
                   $0.window.windowNumber == anchorNumber
               })
-        else { return }
+        else { return false }
         // No animation: the rows already parted to show this exact
         // arrangement while dragging, so the commit only has to swap the
         // real order in underneath. Animating here is what used to read as
@@ -356,15 +361,21 @@ struct SidebarView: View {
             tabManager.reorder(
                 source, relativeTo: anchor, edge: commit.edge, animated: false)
         }
+        return true
     }
 
+    /// Returns whether the reorder was applied — see `applyTabReorder`. A
+    /// group's last tab can close mid-drag, taking the anchor with it.
+    @discardableResult
     private func applyGroupReorder(
         _ commit: SidebarReorderController.Commit,
         visibleIDs: [String]
-    ) {
+    ) -> Bool {
         guard case .group(let sourceID) = commit.dragged,
-              case .group(let anchorID) = commit.anchor
-        else { return }
+              case .group(let anchorID) = commit.anchor,
+              visibleIDs.contains(sourceID),
+              visibleIDs.contains(anchorID)
+        else { return false }
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -374,108 +385,7 @@ struct SidebarView: View {
                 edge: commit.edge,
                 visibleIDs: visibleIDs)
         }
-    }
-}
-
-/// Per-row reorder chrome: publishes the row's extent for the boundary math,
-/// and draws it displaced while a drag is in flight.
-///
-/// This is the only part of the sidebar that observes the controller. Its
-/// body re-evaluating is cheap — `content` is already built, so a drag frame
-/// just re-applies an offset rather than rebuilding the row.
-private struct SidebarReorderSlot: ViewModifier {
-    let id: SidebarReorderGeometry.SlotID
-    let group: String?
-    @ObservedObject var controller: SidebarReorderController
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func body(content: Content) -> some View {
-        let isDragged = controller.isDragging(id)
-        let displacement = controller.displacement(for: id)
-        let animation = controller.animation(for: id, reduceMotion: reduceMotion)
-        return content
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: SidebarSlotsKey.self,
-                        value: [SidebarReorderGeometry.Slot(
-                            id: id,
-                            group: group,
-                            frame: proxy.frame(in: .named(SidebarReorderSpace.name)))])
-                }
-            )
-            .offset(y: displacement)
-            // The dragged row must track the cursor 1:1 — animating it would
-            // put it behind the pointer. Only the rows parting around it
-            // animate.
-            .animation(
-                isDragged || reduceMotion ? nil : SidebarDragReorder.gapAnimation,
-                value: displacement)
-            .zIndex(isDragged ? 1 : 0)
-    }
-}
-
-/// What a row needs to run a reorder drag. Bundled so rows take one
-/// parameter instead of four.
-struct SidebarReorderHandle {
-    let id: SidebarReorderGeometry.SlotID
-    let controller: SidebarReorderController
-    let constrainToProject: Bool
-    let onCommit: (SidebarReorderController.Commit) -> Void
-    /// Single-step move for the row's menu — the reorder path that doesn't
-    /// need a mouse.
-    let canStep: (_ up: Bool) -> Bool
-    let step: (_ up: Bool) -> Void
-}
-
-extension View {
-    /// Attach the reorder drag. Must be applied *inside* the row, where
-    /// `isEnabled` can see whether an inline rename is in progress.
-    func sidebarReorderDrag(
-        _ handle: SidebarReorderHandle,
-        isEnabled: Bool = true
-    ) -> some View {
-        modifier(SidebarReorderDrag(handle: handle, isEnabled: isEnabled))
-    }
-}
-
-private struct SidebarReorderDrag: ViewModifier {
-    let handle: SidebarReorderHandle
-    let isEnabled: Bool
-
-    @State private var active = false
-
-    func body(content: Content) -> some View {
-        content.simultaneousGesture(
-            // Simultaneous, not exclusive: an exclusive gesture would let the
-            // row's descendant double-tap claim the mouse sequence and the
-            // drag would never start — the same reason the select/rename taps
-            // are simultaneous.
-            DragGesture(
-                minimumDistance: 4,
-                coordinateSpace: .named(SidebarReorderSpace.name)
-            )
-            .onChanged { value in
-                if !active {
-                    active = handle.controller.begin(
-                        handle.id,
-                        constrainToProject: handle.constrainToProject)
-                    guard active else { return }
-                }
-                handle.controller.update(
-                    cursorY: value.location.y,
-                    offset: value.translation.height)
-            }
-            .onEnded { _ in
-                guard active else { return }
-                active = false
-                handle.controller.finish(handle.onCommit)
-            },
-            // `.subviews` disables the drag on this row while leaving
-            // descendants live, so drag-to-select inside the rename field
-            // still works. A conditional `if` around the modifier would
-            // change structural identity mid-edit and can drop @FocusState.
-            including: isEnabled ? .all : .subviews)
+        return true
     }
 }
 

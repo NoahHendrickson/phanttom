@@ -152,8 +152,12 @@ final class SidebarTabManager: ObservableObject {
             forName: .phanttomSidebarReorderDidFinish,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                let animated = notification.userInfo?[
+                    SidebarTabManager.reorderAnimatedKey] as? Bool ?? true
+                self?.refresh(reorderAnimated: animated)
+            }
         })
 
         // didBecomeKey refreshes synchronously, in the notification's own
@@ -275,12 +279,12 @@ final class SidebarTabManager: ObservableObject {
 
     static var isReordering: Bool { reorderDepth > 0 }
 
-    /// Whether the single post-reorder refresh should animate. False for a
-    /// drag, where the rows already parted to show the final arrangement;
-    /// true for menu/keyboard moves, where the list has to show what changed.
-    /// Read by `refresh` during the finish notification, by which point the
-    /// depth is already back to 0 — so `isReordering` can't carry this.
-    private static var reorderWantsAnimation = true
+    /// Carries whether the post-reorder refresh should animate. On the
+    /// notification rather than in a static: a flag set around the post and
+    /// reset immediately after is only correct for synchronous observers, and
+    /// any future listener that deferred its work would silently read the
+    /// wrong mode.
+    static let reorderAnimatedKey = "phanttomReorderAnimated"
 
     /// Runs `body` with reorder-driven key-change refreshes suppressed, then
     /// tells every sidebar to refresh once. `defer`-balanced so an early
@@ -293,10 +297,10 @@ final class SidebarTabManager: ObservableObject {
         defer {
             reorderDepth -= 1
             if reorderDepth == 0 {
-                reorderWantsAnimation = animated
                 NotificationCenter.default.post(
-                    name: .phanttomSidebarReorderDidFinish, object: nil)
-                reorderWantsAnimation = true
+                    name: .phanttomSidebarReorderDidFinish,
+                    object: nil,
+                    userInfo: [reorderAnimatedKey: animated])
             }
         }
         body()
@@ -401,7 +405,10 @@ final class SidebarTabManager: ObservableObject {
         }
     }
 
-    func refresh() {
+    /// `reorderAnimated` is false only on the refresh that closes out a
+    /// sidebar drag, where the rows already parted to show the final
+    /// arrangement and animating again would re-animate a correct list.
+    func refresh(reorderAnimated: Bool = true) {
         guard let window else { return }
 
         // Note: native tab bar hiding lives in TerminalWindow.sidebarActive
@@ -582,7 +589,7 @@ final class SidebarTabManager: ObservableObject {
                 // used to read as the row floating before it settled. A
                 // reorder from anywhere else (the keyboard move-tab command)
                 // still gets the snappy settle.
-                if Self.reorderWantsAnimation {
+                if reorderAnimated {
                     withAnimation(SidebarDragReorder.settleAnimation) {
                         tabs = newTabs
                     }
