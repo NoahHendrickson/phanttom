@@ -208,7 +208,13 @@ seeds a new tab into that project the same way the group's "+" does. A bottom-of
 "New tab" row always opens in home (`~`), independent of the focused project.
 Grouping is presentation-only in `SidebarView`: native tab order, animations,
 and all cross-window state are untouched. Tabs whose pwd isn't known yet form
-a trailing header-less bucket.
+a trailing header-less bucket. Sidebar drag-and-drop reorders tabs by mutating
+the native tab group (`removeWindow` + `addTabbedWindowSafely`, same contract
+as keyboard move-tab and the group "+"); when grouping is on, tab drops stay
+inside the same project (or the pending bucket). Project-group header drag
+reorders a persisted display sequence in `ProjectGroupOrderStore`
+(`PhanttomProjectGroupOrder`) — it does not rewrite `tabbedWindows`.
+
 **Name priority**: manual rename (upstream's
 `BaseTerminalController.titleOverride` — shared with the titlebar, command
 palette, and window restoration, so custom names survive restart) → prompt

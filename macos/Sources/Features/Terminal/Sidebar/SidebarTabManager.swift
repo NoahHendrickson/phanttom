@@ -247,6 +247,49 @@ final class SidebarTabManager: ObservableObject {
         }
     }
 
+    /// Reorder `tab` to the index of `target` in the native tab group.
+    /// Moving down places it after the target's pre-move neighbors so a drop
+    /// onto the last row can become last; moving up inserts before `target`.
+    /// Same `removeWindow` + `addTabbedWindowSafely` contract as keyboard
+    /// move-tab and the group "+" insert path — sidebar refresh follows via
+    /// `relabelTabs` → `.phanttomSidebarTabsDidChange`.
+    func reorder(_ tab: TabItem, relativeTo target: TabItem) {
+        guard tab.id != target.id else { return }
+        let moved = tab.window
+        let anchor = target.window
+        guard let tabGroup = moved.tabGroup,
+              tabGroup === anchor.tabGroup,
+              tabGroup.windows.contains(moved),
+              tabGroup.windows.contains(anchor)
+        else { return }
+
+        let windows = tabGroup.windows
+        guard let from = windows.firstIndex(where: { $0 === moved }),
+              let to = windows.firstIndex(where: { $0 === anchor })
+        else { return }
+
+        let ordered: NSWindow.OrderingMode = from < to ? .above : .below
+
+        // Match TerminalController.onMoveTab's Tahoe titlebar-tab workaround:
+        // synchronous re-add glitches the native tab strip on macOS 26+.
+        if #available(macOS 26, *) {
+            if moved is TitlebarTabsTahoeTerminalWindow {
+                tabGroup.removeWindow(moved)
+                anchor.addTabbedWindowSafely(moved, ordered: ordered)
+                DispatchQueue.main.async {
+                    moved.makeKey()
+                }
+                return
+            }
+        }
+
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        tabGroup.removeWindow(moved)
+        anchor.addTabbedWindowSafely(moved, ordered: ordered)
+        NSAnimationContext.endGrouping()
+    }
+
     // MARK: - Refresh
 
     /// Coalesce event bursts (key change + title KVO + progress in the same

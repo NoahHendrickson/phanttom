@@ -25,22 +25,32 @@ enum SidebarTabGroup: Identifiable {
 
     /// Partition tabs by project — the repo toplevel of the tab's pwd
     /// (worktrees resolve to their parent repo), else the pwd itself for
-    /// non-git directories — in first-appearance order so grouping never
-    /// shuffles more than it must. The home directory titles as "~".
-    static func groups(from tabs: [SidebarTabManager.TabItem]) -> [SidebarTabGroup] {
-        var order: [String] = []
+    /// non-git directories. Within each group, tab order follows the input
+    /// (native `tabbedWindows` order). Group order prefers
+    /// `preferringOrder` (persisted drag order), then first-appearance for
+    /// roots not yet recorded. The home directory titles as "~".
+    /// Callers pass order explicitly so this stays a pure grouping API
+    /// (no singleton / MainActor coupling).
+    static func groups(
+        from tabs: [SidebarTabManager.TabItem],
+        preferringOrder: [String]
+    ) -> [SidebarTabGroup] {
+        var appearance: [String] = []
         var byRoot: [String: [SidebarTabManager.TabItem]] = [:]
         var pending: [SidebarTabManager.TabItem] = []
         for tab in tabs {
             if let root = tab.git?.projectRoot ?? tab.directory {
-                if byRoot[root] == nil { order.append(root) }
+                if byRoot[root] == nil { appearance.append(root) }
                 byRoot[root, default: []].append(tab)
             } else {
                 pending.append(tab)
             }
         }
+        let orderedRoots = ProjectGroupOrderStore.merge(
+            order: preferringOrder,
+            appearing: appearance)
         let home = NSHomeDirectory()
-        var groups = order.map { root in
+        var groups = orderedRoots.map { root in
             SidebarTabGroup.project(
                 id: root,
                 title: root == home ? "~" : (root as NSString).lastPathComponent,
@@ -51,6 +61,12 @@ enum SidebarTabGroup: Identifiable {
             groups.append(.pending(tabs: pending))
         }
         return groups
+    }
+
+    /// Project-group key for same-group tab drag constraints: repo root
+    /// when known, else pwd. nil only for the header-less pending bucket.
+    static func projectKey(for tab: SidebarTabManager.TabItem) -> String? {
+        tab.git?.projectRoot ?? tab.directory
     }
 }
 
