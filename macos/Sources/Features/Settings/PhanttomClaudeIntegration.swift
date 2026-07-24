@@ -749,13 +749,14 @@ enum PhanttomClaudeIntegration {
         do {
             settings = try readSettings(at: paths.settings)
         } catch {
-            // settings.json won't parse, so we can't safely rewrite it — but a
-            // Remove must never leave our own artifacts behind. Clean up the
-            // script/state (and any legacy statusline script) first, THEN
-            // surface the corruption to the user.
-            try? fm.removeItem(at: paths.script)
-            try? fm.removeItem(at: paths.state)
-            removeLegacyStatuslineScript(paths: paths)
+            // settings.json won't parse, so we can't strip our hook entries
+            // from it. Deleting the script anyway would leave those entries
+            // pointing at a missing phanttom-hook.sh: the moment the user
+            // hand-fixes their JSON, every hooked event starts failing with
+            // "no such file" and Settings can offer no obvious repair. Leaving
+            // both in place keeps settings.json and the filesystem consistent,
+            // makes this a true no-op (as `errorMessage` already claims), and
+            // leaves Remove working normally once the JSON is valid again.
             throw ActionError.settingsCorrupt
         }
         try backupSettings(at: paths.settings)

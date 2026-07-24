@@ -448,6 +448,36 @@ struct PhanttomClaudeIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: paths.script.path))
     }
 
+    @Test func uninstallOnCorruptSettingsChangesNothing() throws {
+        // settings.json can't be parsed, so our hook entries can't be stripped
+        // from it. Removing the script anyway would leave those entries
+        // pointing at a missing phanttom-hook.sh the moment the user fixes
+        // their JSON by hand — so Remove must be a true no-op here.
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(
+            baseDir: URL(fileURLWithPath: dir))
+
+        try PhanttomClaudeIntegration.writeSettings([:], to: paths.settings)
+        _ = PhanttomClaudeIntegration.performInstall(paths: paths)
+        #expect(FileManager.default.fileExists(atPath: paths.script.path))
+
+        let corrupt = "{ not json"
+        try corrupt.write(to: paths.settings, atomically: true, encoding: .utf8)
+
+        let result = PhanttomClaudeIntegration.performUninstall(paths: paths)
+        #expect(result.error == .settingsCorrupt)
+        // Both sides untouched: the hooks still reference a script that exists.
+        #expect(try String(contentsOf: paths.settings, encoding: .utf8) == corrupt)
+        #expect(FileManager.default.fileExists(atPath: paths.script.path))
+        #expect(FileManager.default.fileExists(atPath: paths.state.path))
+
+        // And Remove works normally once the JSON parses again.
+        try PhanttomClaudeIntegration.writeSettings([:], to: paths.settings)
+        #expect(PhanttomClaudeIntegration.performUninstall(paths: paths).error == nil)
+        #expect(!FileManager.default.fileExists(atPath: paths.script.path))
+    }
+
     @Test func uninstallRestoresStatuslineAndRemovesFiles() throws {
         let dir = try makeTempClaudeDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
