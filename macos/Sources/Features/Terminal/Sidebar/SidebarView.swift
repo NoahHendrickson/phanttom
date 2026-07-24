@@ -217,10 +217,6 @@ struct SidebarView: View {
                         }
                     })
             )
-            .modifier(SidebarReorderSlot(
-                id: .group(id: id),
-                group: nil,
-                controller: reorder))
             .transition(.phanttomTabRow)
             if !collapseStore.isCollapsed(id) {
                 VStack(spacing: 4) {
@@ -230,6 +226,18 @@ struct SidebarView: View {
                 }
             }
         }
+        // The group's slot is the whole block, not just its header. Dragging
+        // a project moves the header and its tabs together, and the gap that
+        // opens for it is the height of everything being moved — a header
+        // sliding out from over its own stationary tabs reads as broken.
+        // Collapsed, the block is just the header, so the slot shrinks with
+        // it for free. The tab rows keep their own slots nested inside for
+        // tab drags; a group drag filters those out, so their offsets stay
+        // zero and they simply travel with the block.
+        .modifier(SidebarReorderSlot(
+            id: .group(id: id),
+            group: nil,
+            controller: reorder))
     }
 
     /// One tab row — shared between the flat and the grouped layout so the

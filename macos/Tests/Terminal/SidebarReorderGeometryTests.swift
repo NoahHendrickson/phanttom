@@ -163,21 +163,47 @@ struct SidebarReorderGeometryTests {
         #expect(eligible[0].id == .group(id: "a"))
     }
 
-    @Test func collapsedGroupContributesOnlyItsHeader() {
-        // A collapsed project publishes no tab slots, so a group drag sees a
-        // clean header-only list and its boundaries stay contiguous.
+    /// A group's slot spans its whole block — header plus tabs — so dragging
+    /// a project carries its tabs with it. Blocks therefore vary wildly in
+    /// height: a collapsed project is a bare 16pt header, an expanded one
+    /// with three tabs is well over 100pt.
+    @Test func groupSlotsSpanWholeBlocksOfVaryingHeight() {
+        // Expanded (16 header + 8 + three 32pt rows on a 36pt pitch = 132),
+        // then collapsed, then expanded with one tab. 20pt between blocks.
         let slots = [
             Slot(id: .group(id: "a"), group: nil,
-                 frame: CGRect(x: 0, y: 0, width: 200, height: 16)),
+                 frame: CGRect(x: 0, y: 0, width: 200, height: 132)),
             Slot(id: .group(id: "b"), group: nil,
-                 frame: CGRect(x: 0, y: 36, width: 200, height: 16)),
+                 frame: CGRect(x: 0, y: 152, width: 200, height: 16)),
             Slot(id: .group(id: "c"), group: nil,
-                 frame: CGRect(x: 0, y: 72, width: 200, height: 16)),
+                 frame: CGRect(x: 0, y: 188, width: 200, height: 56)),
         ]
         let eligible = Geometry.eligible(
             for: .group(id: "b"), in: slots, constrainToProject: true)
         #expect(eligible.count == 3)
-        #expect(Geometry.boundaries(of: eligible).count == 4)
+
+        // Boundaries bisect the 20pt gutters between blocks, not the rows
+        // inside them.
+        let bounds = Geometry.boundaries(of: eligible)
+        #expect(bounds.count == 4)
+        #expect(bounds[1] == 142)
+        #expect(bounds[2] == 178)
+
+        // A cursor anywhere inside the tall first block still targets a
+        // boundary outside it — never a position among its tabs.
+        #expect(Geometry.insertion(cursorY: 60, boundaries: bounds, current: nil) == 0)
+    }
+
+    /// Everything a dragged block passes shifts by *that block's* height, so
+    /// moving a fat project opens a fat gap and moving a collapsed one opens
+    /// a thin gap.
+    @Test func blocksDisplaceByTheDraggedBlocksOwnHeight() {
+        let fat = Geometry.displacement(
+            index: 1, source: 0, insertion: 3, draggedHeight: 132, gap: 20)
+        let thin = Geometry.displacement(
+            index: 1, source: 0, insertion: 3, draggedHeight: 16, gap: 20)
+        #expect(fat == -152)
+        #expect(thin == -36)
     }
 
     // MARK: - No-ops
