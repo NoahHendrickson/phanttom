@@ -1,0 +1,38 @@
+---
+description: Safe Debug Ghostty relaunch — never kill prod, never inherit NO_COLOR
+alwaysApply: true
+---
+
+# Phanttom relaunch — Debug only, clean env
+
+When rebuilding/relaunching a local Debug Ghostty/Phanttom build:
+
+## Quit target
+
+- **Only** quit `com.mitchellh.ghostty.debug` (the Debug build from `macos/build/Debug/Ghostty.app`).
+- **Never** quit `com.mitchellh.ghostty` — that is the user's production Phanttom/Ghostty (e.g. `~/Applications/Phanttom.app`).
+- **Never** `pkill -x ghostty`, `killall ghostty`, or any broad process kill that matches all Ghostty binaries. Prod and Debug share the process name `ghostty`.
+
+## Launch environment (colors)
+
+Cursor agent shells often set `NO_COLOR=1`, `FORCE_COLOR=0`, and `TERM=dumb`. Bare `open …/Ghostty.app` from that shell **inherits those into the Debug app**, and Claude Code / other TUIs render without color.
+
+- **Always** relaunch via `macos/relaunch-debug.sh` (preferred), **or** the same `env -i … TERM=xterm-256color COLORTERM=truecolor /usr/bin/open …` pattern inside that script.
+- **Never** plain `open macos/build/Debug/Ghostty.app` from an agent/CI shell.
+
+```sh
+# ✅ OK — Debug only, clean env
+macos/relaunch-debug.sh
+
+# ✅ OK — quit Debug only (script does this too)
+osascript -e 'tell application id "com.mitchellh.ghostty.debug" to quit'
+
+# ❌ NEVER — kills prod
+osascript -e 'tell application id "com.mitchellh.ghostty" to quit'
+pkill -x ghostty
+
+# ❌ NEVER — strips TUI colors when run from Cursor agent shells
+open macos/build/Debug/Ghostty.app
+```
+
+If Debug is not running, still use `macos/relaunch-debug.sh` (or the clean-env `open`). Leave any other Ghostty/Phanttom instance alone unless the user explicitly asks to quit it.

@@ -9,6 +9,12 @@
   - Build: `macos/build.nu [--scheme Ghostty] [--configuration Debug] [--action build]`
   - Output: `macos/build/<configuration>/Ghostty.app` (e.g. `macos/build/Debug/Ghostty.app`)
 - Run unit tests directly with `macos/build.nu --action test`
+- When relaunching a Debug build: use **`macos/relaunch-debug.sh`**.
+  It quits only `com.mitchellh.ghostty.debug` and opens the app with a
+  clean env (`TERM=xterm-256color`, no `NO_COLOR`). Never quit
+  `com.mitchellh.ghostty` (prod Phanttom), never `pkill`/`killall`
+  `ghostty`, and never bare `open …/Ghostty.app` from Cursor/CI — those
+  shells set `NO_COLOR=1`/`TERM=dumb`, which strips Claude Code TUI colors.
 
 ## AppleScript
 

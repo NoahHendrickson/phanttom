@@ -28,8 +28,13 @@ covers everything Phanttom adds and the sharp edges we've already hit.
 zig build                          # full build incl. macOS app (needs Xcode + Metal toolchain + iOS SDK)
 zig build -Demit-macos-app=false -Demit-xcframework=false   # Zig core only, no Xcode needed
 zig build test-lib-vt              # fast core tests
-open -n macos/build/Debug/Ghostty.app                       # launch the debug app
+macos/relaunch-debug.sh                                     # launch Debug (clean env; see note)
 ```
+
+Always use `macos/relaunch-debug.sh` instead of bare `open …/Ghostty.app`
+from Cursor/CI shells — those inherit `NO_COLOR=1` / `TERM=dumb` into the
+app and strip Claude Code TUI colors. The script also quits only the Debug
+bundle id, never prod.
 
 - Zig **0.16.0** minimum (macOS 26.4+ SDK breaks Zig 0.15.x linking —
   ziglang/zig#31658 — which is why we track upstream main, not the v1.3.x tags).
@@ -58,10 +63,10 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`) |
 | Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
 | `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
-| Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
+| Titlebar sync hook (end of `syncAppearance`) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
 | Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |
-| Settings model (UserDefaults + config fragment) | `Features/Settings/PhanttomSettings.swift` |
-| Settings UI | `Features/Settings/SettingsView.swift` (replaces upstream's "Coming Soon" placeholder) |
+| Settings model (UserDefaults + locked chrome fragment) | `Features/Settings/PhanttomSettings.swift` |
+| Settings UI | `Features/Settings/PhanttomSettingsView.swift` |
 | Settings window host | `Features/Settings/SettingsWindowController.swift` |
 | Claude Code hook installer (consent, launch re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
 | Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
@@ -85,8 +90,9 @@ Touches to upstream files are deliberately tiny and greppable — search
   without this, config changes and macOS 26 glass never reach the container).
 - `AppDelegate.swift`: one `setupPhanttomMenus()` call (implementation in
   `AppDelegate+Phanttom.swift`; inserts "Phanttom Settings…" ⌘⇧, and
-  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched), and one
-  `PhanttomClaudeIntegration.shared.setupOnLaunch()` call right after it
+  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched),
+  `PhanttomSettings.shared.setupOnLaunch(ghostty:)` (writes locked chrome
+  into `phanttom.conf`), and `PhanttomClaudeIntegration.shared.setupOnLaunch()`
   (Claude Code hook install/re-sync; see the hooks protocol section).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
@@ -127,17 +133,18 @@ mechanism is `TerminalWindow.sidebarActive`: the tab bar arrives as a titlebar
 accessory view controller, and we hide the accessory as it's added
 (`isHidden = true`, `fullScreenMinHeight = 0`).
 
-### Sidebar glass
+### Locked chrome (Figma)
 
-Real see-through glass, not a material overlay: when Glass is on, the window
-goes non-opaque (rides upstream's transparency branch in
-`TerminalWindow.syncAppearance`) and the blur is a genuine compositor radius
-via `CGSSetWindowBackgroundBlurRadius` (same undocumented API upstream uses
-for terminal blur; declared via `@_silgen_name` in `PhanttomWindowGlass.swift`).
-The terminal surface paints its own opaque background, so only the sidebar's
-translucent pixels reveal what's behind. Blur slider = radius 0–40. Caveat:
-the radius is per-window, so if the _terminal_ also uses transparency, the
-terminal's configured blur owns the window.
+Sidebar and terminal pane colors are opinionated and not user-configurable:
+
+- Sidebar / titlebar left: `#161917`
+- Terminal / titlebar right: `#101211` (always written into `phanttom.conf`
+  as `background` / opacity `1` / blur `0`)
+- Divider: `#2D2E2E`
+- Selected row: `white @ 4%`, corner radius 12; hover: `white @ 4%`, radius 8
+
+Escape hatch: remove the `config-file = ?phanttom.conf` include from the
+user's Ghostty config. Phanttom Settings no longer exposes chrome controls.
 
 ## Tab semantics (the behavioral contract)
 
@@ -156,18 +163,20 @@ background split keeps its identity — and stored sticky on the window
 
 **Status** (leading slot on both agent cards and terminal rows):
 
-- `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
-  report (agents in non-focused splits count). Indeterminate reports (state 3,
-  what the hooks emit) are exempt from upstream's 15s staleness timeout in
-  `SurfaceView_AppKit.swift`, so the rain runs for the whole task and stops
-  only on an explicit clear (Stop/Notification hooks) or surface close.
-- `done` (blue `#2C86F4`) — work finished while the tab was unselected
-- `attention` (yellow `#F4BC2C`) — bell rang while unselected (judged against
-  the bell window's own tab group)
+- `working` (pixel rain in `#24FE8A`) — any surface in the window has an
+  OSC 9;4 progress report (agents in non-focused splits count). Indeterminate
+  reports (state 3, what the hooks emit) are exempt from upstream's 15s
+  staleness timeout in `SurfaceView_AppKit.swift`, so the rain runs for the
+  whole task and stops only on an explicit clear (Stop/Notification hooks)
+  or surface close.
+- `done` (blue `#3A89D8`, no glow) — work finished while the tab was unselected
+- `attention` (yellow `#F5CC64`, no glow) — bell rang while unselected
+  (judged against the bell window's own tab group)
 - selecting a tab clears done/attention
-- otherwise-idle tabs show their branch's GitHub PR state: green `#3FB950`
-  open, purple `#A371F7` merged (`PRStatusCache`, gh-CLI-backed, 60s
-  revalidate; silently absent without gh/auth/PR)
+- otherwise-idle tabs show their branch's GitHub PR state via
+  `PhanttomGitPullRequestOpen` / `PhanttomGitPullRequestMerged` icons
+  (`PRStatusCache`, gh-CLI-backed, 60s revalidate; silently absent without
+  gh/auth/PR); idle with no PR is a `white @ 30%` 8pt circle
 - status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
 **Project grouping** (settings toggle "Group tabs by project", default on;
@@ -183,16 +192,18 @@ answer for a pwd — resolve in flight, or the entry pruned — rows keep their
 last known group instead of flapping through an interim one. Headers carry a
 folder glyph — open when the group is expanded, closed when collapsed
 (`PhanttomFolderOpen`/`PhanttomFolder` template assets, from the Figma
-design), swapping to the disclosure chevron while hovered (click the header
-to collapse/expand; state is process-global in `ProjectCollapseStore`
-because every window hosts its own sidebar, and persisted in UserDefaults)
-and a trailing "+" that opens a new tab in that
-project's directory (explicit `SurfaceConfiguration.workingDirectory`, the
-window-restoration path). The bottom "New tab" row is project-neutral: it
-always opens in the home directory. Grouping is presentation-only in
-`SidebarView`: native tab order, animations, and all cross-window state are
-untouched. Tabs whose pwd isn't known yet form a trailing header-less
-bucket.
+design; click the header to collapse/expand; state is process-global in
+`ProjectCollapseStore` because every window hosts its own sidebar, and
+persisted in UserDefaults). Expanded headers carry a trailing "+"
+(`PhanttomPlus`) that opens a new tab in that project's directory (explicit
+`SurfaceConfiguration.workingDirectory`, the window-restoration path). The
+home group (`~`) also shows a folder-plus menu (`PhanttomFolderPlus`, from
+Figma) left of "+" listing top-level folders in `~/Developer` — choosing one
+seeds a new tab into that project the same way the group's "+" does. A bottom-of-list
+"New tab" row always opens in home (`~`), independent of the focused project.
+Grouping is presentation-only in `SidebarView`: native tab order, animations,
+and all cross-window state are untouched. Tabs whose pwd isn't known yet form
+a trailing header-less bucket.
 
 **Name priority**: manual rename (upstream's
 `BaseTerminalController.titleOverride` — shared with the titlebar, command
@@ -317,22 +328,16 @@ Tabs can be scripted via AppleScript: `tell application id
 
 ## Settings architecture
 
-Two storage planes, deliberately different:
+Chrome is locked; only a few preferences remain:
 
-- **Terminal appearance** (background color/opacity/blur) flows through
-  Ghostty's real config system: `PhanttomSettings` writes a managed fragment
-  `~/.config/ghostty/phanttom.conf` and triggers `reloadConfig()`. The user's
-  main config gets a one-time optional include
-  (`config-file = ?phanttom.conf`). Never write the user's own config beyond
-  that line.
-- **Sidebar appearance** (style/color/opacity/glass/blur/working-indicator
-  color) is app-side only: UserDefaults (`Phanttom*` keys), applied instantly
-  via SwiftUI.
-
-`Ghostty.App.config` is `@Published`; SwiftUI observes it for theme
-reactivity. For the _actual rendered_ terminal background, prefer the
-surface's `$backgroundColor` (see `SidebarTabManager.terminalBackground`) —
-the app-level getter can miss overrides.
+- **Terminal background** is always written into the managed fragment
+  `~/.config/ghostty/phanttom.conf` (`background = #101211`, opacity 1,
+  blur 0) and reloaded via `reloadConfig()`. The user's main config gets a
+  one-time optional include (`config-file = ?phanttom.conf`). Never write
+  the user's own config beyond that line.
+- **Font size override** (optional) also flows through that fragment.
+- **Sidebar grouping** (`sidebarGroupByProject`) is UserDefaults-only and
+  applies instantly through SwiftUI.
 
 ## Gotchas for agents
 
@@ -344,8 +349,9 @@ the app-level getter can miss overrides.
 - One `SidebarTabManager` per window: shared state goes on `TerminalWindow`.
 - The design source of truth is the Figma file ("Untitled",
   `MgM8y8QIVMfT2zNEbbxz1S`): component set "tab" with variants for
-  kind/selection/status. Metrics: rows 255×29 (terminal) / 255×45 (agent),
-  8pt padding, 8pt radius, selected `white 8%`, sidebar width 271.
+  kind/selection/status. Metrics: rows 255 wide, 12/8 padding, selected
+  radius 12 / `white 4%`, hover radius 8, sidebar width 271, sidebar bg
+  `#161917`, terminal bg `#101211`.
 - Rebase policy: rebase `phanttom` onto upstream release tags once one ships
   requiring Zig 0.16+; until then we pin upstream main. Keep upstream-file
   hunks small so rebases stay cheap.

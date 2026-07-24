@@ -46,6 +46,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>ATSApplicationFontsPath</key>
+	<string>Fonts</string>
 	<key>GhosttyBuild</key>
 	<string></string>
 	<key>GhosttyCommit</key>

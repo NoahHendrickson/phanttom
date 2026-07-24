@@ -535,8 +535,8 @@ class TerminalWindow: NSWindow {
             self.backgroundColor = backgroundColor.withAlphaComponent(1)
         }
 
-        // Phanttom: sidebar glass + titlebar zone repaint (no-op when the
-        // sidebar is off); see PhanttomWindowGlass.swift.
+        // Phanttom: titlebar zone repaint (no-op when the sidebar is off);
+        // see PhanttomWindowGlass.swift.
         phanttomSyncAppearanceDidRun(surfaceConfig)
     }
 

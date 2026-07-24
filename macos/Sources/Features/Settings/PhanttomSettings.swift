@@ -1,43 +1,36 @@
 import SwiftUI
 import GhosttyKit
 
-/// Phanttom's user-adjustable appearance settings.
+/// Phanttom's user-adjustable settings plus locked chrome tokens.
 ///
-/// Terminal-rendering settings (background color/opacity/blur) are applied by
-/// writing a managed config fragment (`phanttom.conf`, next to the user's main
-/// Ghostty config) and asking libghostty to reload — the same pipeline as
-/// hand-edited config, so everything live-reloads and stays overridable. The
-/// user's own config file is touched exactly once, to add an optional include
-/// of the fragment.
-///
-/// Sidebar settings never touch libghostty (the sidebar is pure Swift); they
-/// persist in UserDefaults and apply instantly through SwiftUI.
+/// Terminal background is opinionated (Figma `#101211`): always written into
+/// a managed config fragment (`phanttom.conf`) and reloaded via libghostty.
+/// Font-size override remains optional. Sidebar grouping is the only
+/// sidebar preference — appearance is hardcoded in the views.
 @MainActor
 final class PhanttomSettings: ObservableObject {
     static let shared = PhanttomSettings()
 
-    /// Set when the settings window opens; used to trigger config reloads.
+    /// Figma chrome — sidebar left pane / terminal right pane / divider.
+    static let sidebarBackground = Color(red: 0x16 / 255, green: 0x19 / 255, blue: 0x17 / 255)
+    static let terminalBackground = Color(red: 0x10 / 255, green: 0x12 / 255, blue: 0x11 / 255)
+    static let dividerColor = Color(red: 0x2D / 255, green: 0x2E / 255, blue: 0x2E / 255)
+    static let workingIndicatorColor = Color(red: 0x24 / 255, green: 0xFE / 255, blue: 0x8A / 255)
+
+    static var sidebarBackgroundNS: NSColor {
+        NSColor(red: 0x16 / 255, green: 0x19 / 255, blue: 0x17 / 255, alpha: 1)
+    }
+
+    static var terminalBackgroundNS: NSColor {
+        NSColor(red: 0x10 / 255, green: 0x12 / 255, blue: 0x11 / 255, alpha: 1)
+    }
+
+    static var dividerColorNS: NSColor {
+        NSColor(red: 0x2D / 255, green: 0x2E / 255, blue: 0x2E / 255, alpha: 1)
+    }
+
+    /// Set when the app (or settings window) is ready; used to trigger config reloads.
     weak var ghosttyApp: Ghostty.App?
-
-    // MARK: - Terminal background (applied via config fragment)
-
-    @Published var overrideBackground: Bool {
-        didSet { persist(); scheduleApply() }
-    }
-
-    @Published var backgroundColor: Color {
-        didSet { persist(); scheduleApply() }
-    }
-
-    /// 0.1 ... 1.0
-    @Published var backgroundOpacity: Double {
-        didSet { persist(); scheduleApply() }
-    }
-
-    /// Blur radius, 0 = off.
-    @Published var backgroundBlur: Double {
-        didSet { persist(); scheduleApply() }
-    }
 
     // MARK: - Font (applied via config fragment)
 
@@ -50,55 +43,7 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist(); scheduleApply() }
     }
 
-    // MARK: - Sidebar (applied instantly, app-side only)
-
-    enum SidebarStyle: String, CaseIterable, Identifiable {
-        case matchTerminal
-        case system
-        case custom
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .matchTerminal: return "Match Terminal"
-            case .system: return "System"
-            case .custom: return "Custom"
-            }
-        }
-    }
-
-    @Published var sidebarStyle: SidebarStyle {
-        didSet { persist() }
-    }
-
-    @Published var sidebarColor: Color {
-        didSet { persist() }
-    }
-
-    /// 0.1 ... 1.0 — how solid the sidebar's color layer is.
-    @Published var sidebarOpacity: Double {
-        didSet { persist() }
-    }
-
-    /// Behind-window glass material under the color layer (Finder-sidebar
-    /// style blur, independent of the terminal's window-level blur).
-    @Published var sidebarGlass: Bool {
-        didSet { persist() }
-    }
-
-    /// 0.1 ... 1.0 — how strong the glass material reads. AppKit's material
-    /// blur radius isn't publicly tunable, so this blends the frosted layer's
-    /// visibility instead, which is what "less blurry" looks like.
-    @Published var sidebarBlurAmount: Double {
-        didSet { persist() }
-    }
-
-    /// Sidebar row title size in points; secondary text and icons scale from
-    /// it. The design's baseline is 11.
-    @Published var sidebarFontSize: Double {
-        didSet { persist() }
-    }
+    // MARK: - Sidebar (behavioral only)
 
     /// Group sidebar tabs under a header per project (git repo toplevel,
     /// with worktrees folded into their parent repo; non-git tabs group by
@@ -111,85 +56,36 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
-    /// Color of the "working" (thinking) pixel-rain indicator.
-    static let defaultWorkingColor = Color.white
-
-    @Published var sidebarWorkingColor: Color {
-        didSet { persist() }
-    }
-
-    /// The sidebar's base color per style, resolved to AppKit so both the
-    /// SwiftUI sidebar and the window chrome (titlebar zone) derive from the
-    /// same logic. `terminalBackground` feeds the `.matchTerminal` style.
-    func resolvedSidebarColor(terminalBackground: OSColor?) -> OSColor {
-        switch sidebarStyle {
-        case .system:
-            return .windowBackgroundColor
-        case .custom:
-            return OSColor(sidebarColor)
-        case .matchTerminal:
-            let base = terminalBackground ?? .windowBackgroundColor
-            return base.isLightColor ? base.darken(by: 0.06) : base.darken(by: 0.25)
-        }
-    }
-
     // MARK: - Persistence
 
     private enum Keys {
-        static let overrideBackground = "PhanttomOverrideBackground"
-        static let backgroundColor = "PhanttomBackgroundColor"
-        static let backgroundOpacity = "PhanttomBackgroundOpacity"
-        static let backgroundBlur = "PhanttomBackgroundBlur"
         static let overrideFontSize = "PhanttomOverrideFontSize"
         static let fontSize = "PhanttomFontSize"
-        static let sidebarStyle = "PhanttomSidebarStyle"
-        static let sidebarColor = "PhanttomSidebarColor"
-        static let sidebarOpacity = "PhanttomSidebarOpacity"
-        static let sidebarGlass = "PhanttomSidebarGlass"
-        static let sidebarBlurAmount = "PhanttomSidebarBlurAmount"
-        static let sidebarFontSize = "PhanttomSidebarFontSize"
         static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
-        static let sidebarWorkingColor = "PhanttomSidebarWorkingColor"
     }
 
     private var loaded = false
 
     private init() {
         let defaults = UserDefaults.standard
-        overrideBackground = defaults.bool(forKey: Keys.overrideBackground)
-        backgroundColor = Self.color(fromHex: defaults.string(forKey: Keys.backgroundColor)) ?? Color(red: 0.11, green: 0.11, blue: 0.13)
-        backgroundOpacity = defaults.object(forKey: Keys.backgroundOpacity) as? Double ?? 1.0
-        backgroundBlur = defaults.object(forKey: Keys.backgroundBlur) as? Double ?? 0
         overrideFontSize = defaults.bool(forKey: Keys.overrideFontSize)
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 13
-        sidebarStyle = SidebarStyle(rawValue: defaults.string(forKey: Keys.sidebarStyle) ?? "") ?? .matchTerminal
-        sidebarColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarColor)) ?? Color(red: 0.09, green: 0.09, blue: 0.11)
-        sidebarOpacity = defaults.object(forKey: Keys.sidebarOpacity) as? Double ?? 1.0
-        sidebarGlass = defaults.bool(forKey: Keys.sidebarGlass)
-        sidebarBlurAmount = defaults.object(forKey: Keys.sidebarBlurAmount) as? Double ?? 1.0
-        sidebarFontSize = defaults.object(forKey: Keys.sidebarFontSize) as? Double ?? 11
         sidebarGroupByProject = defaults.object(forKey: Keys.sidebarGroupByProject) as? Bool ?? true
-        sidebarWorkingColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarWorkingColor)) ?? Self.defaultWorkingColor
         loaded = true
+    }
+
+    /// Wire the Ghostty app and write the locked chrome fragment on launch.
+    func setupOnLaunch(ghostty: Ghostty.App) {
+        ghosttyApp = ghostty
+        apply()
     }
 
     private func persist() {
         guard loaded else { return }
         let defaults = UserDefaults.standard
-        defaults.set(overrideBackground, forKey: Keys.overrideBackground)
-        defaults.set(Self.hex(from: backgroundColor), forKey: Keys.backgroundColor)
-        defaults.set(backgroundOpacity, forKey: Keys.backgroundOpacity)
-        defaults.set(backgroundBlur, forKey: Keys.backgroundBlur)
         defaults.set(overrideFontSize, forKey: Keys.overrideFontSize)
         defaults.set(fontSize, forKey: Keys.fontSize)
-        defaults.set(sidebarStyle.rawValue, forKey: Keys.sidebarStyle)
-        defaults.set(Self.hex(from: sidebarColor), forKey: Keys.sidebarColor)
-        defaults.set(sidebarOpacity, forKey: Keys.sidebarOpacity)
-        defaults.set(sidebarGlass, forKey: Keys.sidebarGlass)
-        defaults.set(sidebarBlurAmount, forKey: Keys.sidebarBlurAmount)
-        defaults.set(sidebarFontSize, forKey: Keys.sidebarFontSize)
         defaults.set(sidebarGroupByProject, forKey: Keys.sidebarGroupByProject)
-        defaults.set(Self.hex(from: sidebarWorkingColor), forKey: Keys.sidebarWorkingColor)
     }
 
     // MARK: - Applying terminal settings
@@ -233,14 +129,12 @@ final class PhanttomSettings: ObservableObject {
         let configDirectory = URL(fileURLWithPath: mainConfigPath)
             .deletingLastPathComponent()
         var lines = [
-            "# Managed by Phanttom Settings — do not edit; changes are overwritten.",
+            "# Managed by Phanttom — do not edit; changes are overwritten.",
             "# Remove the `config-file = ?phanttom.conf` line from your config to disable.",
+            "background = #101211",
+            "background-opacity = 1",
+            "background-blur = 0",
         ]
-        if overrideBackground {
-            lines.append("background = \(Self.hex(from: backgroundColor))")
-            lines.append("background-opacity = \(String(format: "%.2f", backgroundOpacity))")
-            lines.append("background-blur = \(Int(backgroundBlur))")
-        }
         if overrideFontSize {
             lines.append("font-size = \(String(format: "%g", fontSize))")
         }
