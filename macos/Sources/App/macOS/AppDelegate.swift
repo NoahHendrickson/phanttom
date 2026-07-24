@@ -314,7 +314,12 @@ class AppDelegate: NSObject,
         // Setup our menu
         setupMenuImages()
         setupPhanttomMenus()
-        PhanttomClaudeIntegration.shared.setupOnLaunch()
+
+        // Claude Code integration: honor prior consent / one-time prompt /
+        // re-sync outdated payload (after menus exist so "Open Settings" works).
+        DispatchQueue.main.async { [weak self] in
+            self?.maybePromptClaudeIntegrationSetup()
+        }
 
         // Setup signal handlers
         setupSignals()

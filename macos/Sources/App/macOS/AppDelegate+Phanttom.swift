@@ -46,4 +46,103 @@ extension AppDelegate {
     @IBAction func openPhanttomSettings(_ sender: Any?) {
         SettingsWindowController.shared.show(ghostty: ghostty)
     }
+
+    /// One-time prompt when Claude Code is present but Phanttom's hooks are
+    /// not installed (or only the legacy hand-installed form remains). Also
+    /// honors the PR #15 `PhanttomClaudeHooks` consent key and re-syncs an
+    /// outdated payload on launch.
+    @MainActor
+    func maybePromptClaudeIntegrationSetup() {
+        // Ghostty.app is the XCTest host — never prompt (or install) there.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+
+        let key = PhanttomClaudeIntegration.setupPromptedKey
+        let legacyKey = "PhanttomClaudeHooks"
+
+        // PR #15 used an enable/disable string; map it once and never re-ask.
+        if let legacy = UserDefaults.standard.string(forKey: legacyKey) {
+            UserDefaults.standard.set(true, forKey: key)
+            if legacy == "enabled" {
+                let st = PhanttomClaudeIntegration.currentStatus()
+                if st.error == nil, st.status != .installedCurrent {
+                    _ = PhanttomClaudeIntegration.performInstall()
+                }
+            }
+            return
+        }
+
+        if UserDefaults.standard.bool(forKey: key) {
+            // Already decided — quietly repair outdated / legacy installs.
+            let st = PhanttomClaudeIntegration.currentStatus()
+            switch st.status {
+            case .installedOutdated, .legacyInline:
+                _ = PhanttomClaudeIntegration.performInstall()
+            case .notInstalled, .installedCurrent:
+                break
+            }
+            return
+        }
+
+        let result = PhanttomClaudeIntegration.currentStatus()
+        if result.error == .claudeNotFound {
+            return
+        }
+        if result.error == .settingsCorrupt {
+            // Can't safely offer "Set Up" against an unparseable settings.json
+            // (the install would abort). Stay quiet — without setting the
+            // prompted key — so the prompt reappears once it's valid again.
+            return
+        }
+        switch result.status {
+        case .notInstalled, .legacyInline:
+            break
+        case .installedCurrent:
+            UserDefaults.standard.set(true, forKey: key)
+            return
+        case .installedOutdated:
+            UserDefaults.standard.set(true, forKey: key)
+            _ = PhanttomClaudeIntegration.performInstall()
+            return
+        }
+
+        // Set regardless of choice — one prompt, ever.
+        UserDefaults.standard.set(true, forKey: key)
+
+        let alert = NSAlert()
+        alert.messageText = "Set Up Claude Code Integration?"
+        alert.informativeText =
+            "Phanttom can install hooks so Claude Code tabs get pixel rain, " +
+            "auto-naming, agent directory tracking, and a model label. " +
+            "This writes ~/.claude/settings.json (with a backup)."
+        alert.addButton(withTitle: "Set Up")
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Not Now")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            presentClaudeInstallFailure(PhanttomClaudeIntegration.performInstall())
+        case .alertSecondButtonReturn:
+            SettingsWindowController.shared.show(ghostty: ghostty)
+        default:
+            break
+        }
+    }
+
+    /// Surface an install failure the user explicitly triggered (the first-launch
+    /// "Set Up" button). Silent background repairs stay log-only; a failure the
+    /// user asked for must not be swallowed.
+    @MainActor
+    private func presentClaudeInstallFailure(
+        _ result: PhanttomClaudeIntegration.ActionResult
+    ) {
+        guard result.error != nil else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn’t Set Up Claude Code Integration"
+        alert.informativeText = result.message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
 }

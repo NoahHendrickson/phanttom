@@ -51,20 +51,20 @@ Ghostty.
 
 All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 
-| Area | Files |
-|---|---|
-| Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
-| Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
-| Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`) |
-| Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
-| `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
-| Window glass (transparency + CGS blur radius) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
-| Titlebar zone tracking sidebar width | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift` |
-| Settings model (UserDefaults + config fragment) | `Features/Settings/PhanttomSettings.swift` |
-| Settings UI | `Features/Settings/SettingsView.swift` (replaces upstream's "Coming Soon" placeholder) |
-| Settings window host | `Features/Settings/SettingsWindowController.swift` |
-| Claude Code hook installer (consent, launch re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
-| Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
+| Area                                                                  | Files                                                                                                                    |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Sidebar UI (rows, status, rename, pixel rain)                         | `Features/Terminal/Sidebar/SidebarView.swift`                                                                            |
+| Tab model + event plumbing                                            | `Features/Terminal/Sidebar/SidebarTabManager.swift`                                                                      |
+| Per-tab state machine (kind, status, auto-name)                       | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`)           |
+| Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift`                                                                         |
+| `[sidebar \| terminal]` split, collapse, width persistence            | `Features/Terminal/Sidebar/SidebarSplitView.swift`                                                                       |
+| Window glass (transparency + CGS blur radius)                         | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift`                                                                    |
+| Titlebar zone tracking sidebar width                                  | `Features/Terminal/Sidebar/PhanttomTitlebarZone.swift`                                                                   |
+| Settings model (UserDefaults + config fragment)                       | `Features/Settings/PhanttomSettings.swift`                                                                               |
+| Settings UI                                                           | `Features/Settings/PhanttomSettingsView.swift` (upstream `SettingsView.swift` placeholder untouched)                     |
+| Claude Code hooks installer                                           | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
+| Settings window host                                                  | `Features/Settings/SettingsWindowController.swift`                                                                       |
+| Claude/Codex icons                                                    | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset`                                                |
 
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
@@ -85,9 +85,7 @@ Touches to upstream files are deliberately tiny and greppable — search
   without this, config changes and macOS 26 glass never reach the container).
 - `AppDelegate.swift`: one `setupPhanttomMenus()` call (implementation in
   `AppDelegate+Phanttom.swift`; inserts "Phanttom Settings…" ⌘⇧, and
-  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched), and one
-  `PhanttomClaudeIntegration.shared.setupOnLaunch()` call right after it
-  (Claude Code hook install/re-sync; see the hooks protocol section).
+  "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
   the window falls back to plain upstream behavior. This is decided once per
@@ -154,7 +152,7 @@ background split keeps its identity — and stored sticky on the window
 - plain title (shell integration reclaiming the tab) → back to `terminal`,
   and clears the auto-name
 
-**Status** (leading slot on both agent cards and terminal rows):
+**Status** (leading slot on agent cards, trailing slot on terminal rows):
 
 - `working` (pixel rain) — any surface in the window has an OSC 9;4 progress
   report (agents in non-focused splits count). Indeterminate reports (state 3,
@@ -180,13 +178,10 @@ resolves branch + project root in one walk), else the pwd itself for non-git
 directories (the home directory renders as "~"). Resolved metadata is sticky
 per window (`PhanttomTabState.lastGitMetadata`): while the cache has no
 answer for a pwd — resolve in flight, or the entry pruned — rows keep their
-last known group instead of flapping through an interim one. Headers carry a
-folder glyph — open when the group is expanded, closed when collapsed
-(`PhanttomFolderOpen`/`PhanttomFolder` template assets, from the Figma
-design), swapping to the disclosure chevron while hovered (click the header
-to collapse/expand; state is process-global in `ProjectCollapseStore`
-because every window hosts its own sidebar, and persisted in UserDefaults)
-and a trailing "+" that opens a new tab in that
+last known group instead of flapping through an interim one. Headers carry a disclosure
+chevron (click the header to collapse/expand; state is process-global in
+`ProjectCollapseStore` because every window hosts its own sidebar, and
+persisted in UserDefaults) and a trailing "+" that opens a new tab in that
 project's directory (explicit `SurfaceConfiguration.workingDirectory`, the
 window-restoration path). The bottom "New tab" row is project-neutral: it
 always opens in the home directory. Grouping is presentation-only in
@@ -197,120 +192,89 @@ bucket.
 **Name priority**: manual rename (upstream's
 `BaseTerminalController.titleOverride` — shared with the titlebar, command
 palette, and window restoration, so custom names survive restart) → prompt
-auto-name (`phanttomTabState.autoTitle`) → state-owned title fallback
-(`phanttomTabState.titleFallback`: current marker prompt, or `"Claude"` for a
-model-only marker) → title with leading decoration glyphs stripped. Auto-name
-comes from a marker title (`❯` + U+2063) and locks to the **first** prompt of
-a session; it re-arms when the shell reclaims the title or via context-menu
-**Reset Name** (which remembers the consumed title so the same one isn't
-immediately re-captured). Marker-protocol parsing lives entirely in
-`PhanttomTabState` — the sidebar view model has no U+2063 awareness.
+auto-name (`phanttomTabState.autoTitle`) → title with leading decoration glyphs
+stripped. Auto-name comes from a marker title (`❯` + U+2063) and locks to the
+**first** prompt of a session; it re-arms when the shell reclaims the title
+or via context-menu **Reset Name** (which remembers the consumed title so the
+same one isn't immediately re-captured).
 
 ## Claude Code integration (hooks protocol)
 
-The app installs and maintains these hooks itself — user config is no longer
-hand-maintained. `PhanttomClaudeIntegration` asks once on first launch
-(consent `NSAlert`), then re-syncs `~/.claude/settings.json` silently on
-every launch so protocol fixes ship with app updates; the toggle lives in
-Phanttom Settings → Agents. `hookSpecs` in
-`Features/Settings/PhanttomClaudeIntegration.swift` is the **source of
-truth** for the commands — keep this section in sync with it. Sync
-recognizes Phanttom's entries (current or legacy) by their escape-sequence
-payload signatures (`]9;4;3;0`, `]9;4;0;0`, the `❯`+U+2063 marker bytes,
-`file://localhost`) and replaces them, leaving everything else in the file
-untouched (a rewrite normalizes JSON formatting; original backed up once to
-`settings.json.bak-phanttom`; an unparsable settings file is never
-modified). All hooks write
-escape sequences to the session's terminal device (hook stdout is captured
-by Claude Code, the tty is not). Hooks cannot just open `/dev/tty`: Claude
-Code (observed in 2.1.218) spawns hook processes without a controlling
-terminal, so that open fails with "Device not configured" — and the
-`2>/dev/null; true` guard swallows it, making the failure look like the
-hook never ran. Instead each hook resolves the real device from
-`CLAUDE_PID` (the claude process's PID, exported to hooks — observed in
-2.1.218, not a documented/stable contract), via `ps -o tty= -p
-$CLAUDE_PID`, falling back to `/dev/tty` when that yields nothing, `?`,
-or `??` (no controlling terminal; some `ps` variants report a bare `?`).
-If `ps` itself is unavailable the command substitution is empty and the
-same fallback applies. If a future Claude Code release stops exporting
-`CLAUDE_PID` or changes its meaning, the hooks silently degrade to the
-old `/dev/tty` behavior:
+Installed from **Phanttom Settings → Claude Code** (`Set Up` / `Update` /
+`Remove…`), or via the one-time first-launch prompt when `~/.claude` exists
+but Phanttom's hooks are missing. Implementation:
+`macos/Sources/Features/Settings/PhanttomClaudeIntegration.swift`.
 
-| Event | Emits | Phanttom effect |
-|---|---|---|
-| `UserPromptSubmit` | OSC 9;4 state 3 (indeterminate) | pixel rain starts |
-| `UserPromptSubmit` | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — that's `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`) before the prompt and a second U+2063 before the model id (last non-synthetic assistant turn of the transcript at `.transcript_path`; empty until the session's first response) | first prompt names the tab; raw model id is sticky on `PhanttomTabState` and pretty-printed at the `TabItem` edge via `modelDisplayName` ("Fable 5") |
-| `UserPromptSubmit`, `SessionStart`, `PostToolUse` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (`jq -r '.cwd \| @uri'`, `%2F` restored to `/`) | tab pwd tracks the *agent's* directory, not just the shell's |
-| `Stop` | OSC 9;4 state 0 (clear) | rain stops → Done if unselected |
-| `Notification` | OSC 9;4 clear + BEL | → Attention if unselected |
-| statusline (see below) | OSC 2 title `❯⁣⁣<model-id>` — marker + a second U+2063 with an **empty** prompt field | model label from the session's very first render, and live `/model` switches |
+**Architecture.** One versioned helper script at
+`~/.claude/phanttom-hook.sh` (embedded in the app as `hookScript`; payload
+version is `payloadVersion`). Every hook and the statusline are thin
+dispatch calls — no shell-quoting-inside-JSON:
+
+```sh
+sh "$HOME/.claude/phanttom-hook.sh" prompt-submit
+sh "$HOME/.claude/phanttom-hook.sh" session-start
+sh "$HOME/.claude/phanttom-hook.sh" post-tool-use
+sh "$HOME/.claude/phanttom-hook.sh" stop
+sh "$HOME/.claude/phanttom-hook.sh" notification
+sh "$HOME/.claude/phanttom-hook.sh" statusline
+```
+
+**Files the installer touches** (under `~/.claude/`):
+
+| File                                           | Role                                                                         |
+| ---------------------------------------------- | ---------------------------------------------------------------------------- |
+| `settings.json`                                | Hooks + `statusLine` entries (unknown keys round-trip)                       |
+| `settings.json.bak-phanttom-<yyyyMMdd-HHmmss>` | Timestamped backup before every write (keep ≤5)                              |
+| `phanttom-hook.sh`                             | Versioned payload (`chmod 0755`)                                             |
+| `phanttom-integration.json`                    | `{"version", "originalStatusLine"}` — statusline chains to the saved command |
+
+**Version bump rule.** Any change to the script text or the desired hook /
+statusline spec **must** bump `payloadVersion` — that's what drives
+Settings' "Update available".
+
+All hooks write escape sequences to the session tty (hook stdout is captured
+by Claude Code). Tty resolution is
+`ps -o tty= -p "${CLAUDE_PID:-$PPID}"` with `""|"?"|"??"` → `/dev/tty`
+fallback — plain `/dev/tty` alone is known-broken (hook processes have no
+controlling terminal). `CLAUDE_PID` is undocumented; keep the full fallback
+chain. Ownership detection never treats bare OSC 9;4 / OSC 7 alone as
+Phanttom's (those are generic sequences); legacy inline hooks match via the
+CLAUDE_PID tty-resolve pairing, the title marker, or `statusline-phanttom.sh`.
+JSON parsing prefers `jq` when present, else `/usr/bin/perl` + `JSON::PP`
+(no Homebrew / CLT dependency).
+
+| Event / subcommand                                                                | Emits                                                                                                                                                            | Phanttom effect                                                                     |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `prompt-submit`                                                                   | OSC 9;4 state 3 (indeterminate)                                                                                                                                  | pixel rain starts                                                                   |
+| `prompt-submit`                                                                   | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`)                                                                           | first prompt names the tab; model from last non-synthetic assistant transcript turn |
+| `prompt-submit`, `session-start`, `post-tool-use` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (URI-encoded, `%2F` restored to `/`)                                                                                               | tab pwd tracks the _agent's_ directory, not just the shell's                        |
+| `stop`                                                                            | OSC 9;4 state 0 (clear)                                                                                                                                          | rain stops → Done if unselected                                                     |
+| `notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                              | → Attention if unselected                                                           |
+| `statusline`                                                                      | model-only marker `❯⁣⁣<model-id>` on change (cache file under `$TMPDIR`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
 
 The U+2063 INVISIBLE SEPARATOR makes the marker collision-proof: a bare "❯"
 is the default prompt char of starship/pure/p10k and must NOT trigger
-auto-naming (it's treated as a decorated title instead).
-
-**Why the statusline is involved:** hook stdin JSON carries **no model
-field** on any event (verified empirically against a live session — the
-docs' optional `SessionStart.model` does not appear in practice), so the
-`UserPromptSubmit` hook can only read the model from the transcript's last
-assistant turn — which doesn't exist until the first response. The
-statusline command, however, receives `model.id`/`model.display_name` on
-every render, starting before the first prompt. So
-`~/.claude/statusline-phanttom.sh` (referenced from `statusLine.command` in
-settings) relays the JSON to the user's real statusline script unchanged
-and sidebands the model as a model-only marker title — emitted only when
-the model _changes_ (cached per claude process in `$TMPDIR`), so the title
-channel isn't stomped on every render. App-side, a model-only marker sets
-kind/model and `titleFallback = "Claude"` but never the auto-name, so a
-model id can't masquerade as a tab name.
+auto-naming (it's treated as a decorated title instead). Hook stdin JSON has
+**no model field** on any event — the statusline is the only pre-first-response
+model source, which is why the statusline wrapper exists.
 
 The OSC 7 cwd report rides the terminal's normal pwd channel (the same one
 shell integration uses at each prompt), so no app-side plumbing is needed:
-when an agent session enters a linked worktree, the tab's pwd, branch,
-project group (worktrees group under their parent repo via `projectRoot`),
-and PR dot all follow the agent's checkout — the branch label simply shows
-the worktree's branch with the standard glyph (`Resolved.isWorktree` is
-still resolved on `TabItem.git`, but no longer changes the icon). When the
-session ends, the next shell prompt re-reports
+when an agent session enters a linked worktree, the tab's pwd, directory
+label, branch, project group (worktrees group under their parent repo via
+`projectRoot`), and PR dot all follow the agent's checkout, and the row
+swaps the branch glyph for `arrow.triangle.branch` (`Resolved.isWorktree`
+on `TabItem.git`). When the session ends, the next shell prompt re-reports
 the real pwd and the tab heals itself. The two writers can't fight because
 the shell's OSC 7 is emitted by its prompt hooks, and the prompt doesn't
 render while the CLI owns the foreground — it redraws (and re-reports) only
 after the CLI exits. If the CLI ever stops being the sole foreground
 process for the session's lifetime, that assumption breaks.
 
-The exact cwd hook command (identical for all three cwd events; kept here so
-its quoting/escaping is auditable — the canonical builder is
-`PhanttomClaudeIntegration.hookSpecs`, the installed copy lives in user
-config):
-
-```sh
-sh -c 'd=$(jq -r ".cwd // empty | @uri" 2>/dev/null | sed "s|%2F|/|g"); t=$(ps -o tty= -p "${CLAUDE_PID:-0}" 2>/dev/null | tr -d " "); case "$t" in ""|"?"|"??") t=/dev/tty;; *) t=/dev/$t;; esac; [ -n "$d" ] && printf "\033]7;file://localhost%s\033\\\\" "$d" > "$t" 2>/dev/null; true'
-```
-
-The other hooks share the same `ps`-based tty resolution; rain start/clear
-and bell differ only in their printf payloads, while the title hook also
-reads the hook's stdin JSON once (for `.prompt`) and tails the transcript
-file (for the model id). If claude
-itself has no tty (`ps` reports `?`/`??` — e.g. a headless or app-managed
-session), the fallback write to `/dev/tty` fails silently, which is
-correct: there is no terminal to paint.
-
-One caveat discovered while debugging this: in Claude Desktop–managed
-sessions (stream-json transport), the `UserPromptSubmit` event does not
-fire at all — so first-prompt tab naming and rain-start don't happen
-there. `SessionStart`, `PostToolUse`, `Stop`, and `Notification` still
-fire, so agent-cwd tracking and rain-clear keep working.
-
-`@uri` percent-encodes everything (spaces, UTF-8, control chars) so no raw
-byte from `.cwd` ever reaches the escape sequence; the `sed` only restores
-`/` so the encoded value still reads as a path. A missing `.cwd`, non-JSON
-input, or absent jq all produce no output (the `true` keeps the hook from
-ever failing the Claude Code call).
-
 Manual test commands (any tab):
 `printf '\033]9;4;3;0\033\\'` (rain) · `printf '\033]9;4;0;0\033\\'` (clear) ·
 `printf '\a'` (bell) ·
-`printf '\033]2;\xe2\x9d\xaf\xe2\x81\xa3 some name\xe2\x81\xa3claude-fable-5\007'` (auto-name + model) ·
+`printf '\033]2;\xe2\x9d\xaf\xe2\x81\xa3 some name\007'` (auto-name) ·
 `printf '\033]7;file://localhost/tmp\033\\'` (agent cwd).
 Tabs can be scripted via AppleScript: `tell application id
 "com.mitchellh.ghostty" to new tab in window 1`.
