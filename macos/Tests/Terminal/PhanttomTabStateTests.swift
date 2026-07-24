@@ -24,13 +24,36 @@ struct PhanttomTabStateTests {
         #expect(state.autoTitle == nil)
     }
 
-    @Test func claudeAndCodexTitlesSetKind() {
+    @Test func claudeCodexAndCursorTitlesSetKind() {
         let state = PhanttomTabState()
         state.update(titles: ["claude"], isWorking: false, isSelected: true)
         #expect(state.kind == .claude)
 
         state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
         #expect(state.kind == .codex)
+
+        state.update(titles: ["Cursor Agent"], isWorking: false, isSelected: true)
+        #expect(state.kind == .cursor)
+
+        state.update(titles: ["cursor-agent"], isWorking: false, isSelected: true)
+        #expect(state.kind == .cursor)
+
+        // Bare "agent" must not become a Cursor tab.
+        state.update(titles: ["zsh"], isWorking: false, isSelected: true)
+        state.update(titles: ["agent"], isWorking: false, isSelected: true)
+        #expect(state.kind == .terminal)
+    }
+
+    @Test func cursorInAPathTitleIsNotAnAgentTab() {
+        // "cursor" is an ordinary word in paths and filenames, and every
+        // Cursor user has a `~/.cursor`. A shell tab whose title is its cwd
+        // (or an edited file) must stay a plain terminal row — the match is
+        // anchored at the start of the title, not a substring scan.
+        for title in ["~/.cursor", "src/cursor.rs", "vim cursor.c", "nvim: cursor"] {
+            let state = PhanttomTabState()
+            state.update(titles: [title], isWorking: false, isSelected: true)
+            #expect(state.kind == .terminal, "\(title) should not be a Cursor tab")
+        }
     }
 
     @Test func decoratedTitleKeepsStickyKind() {
@@ -127,10 +150,7 @@ struct PhanttomTabStateTests {
     }
 
     @Test func modelOnlyMarkerSetsModelWithoutNamingTab() {
-        // The statusline sideband emits "❯" + U+2063 + U+2063 + model at
-        // session start, before any prompt exists: model and kind must be
-        // captured, the (empty) prompt field must not become an auto-name,
-        // and titleFallback carries the kind label for the sidebar.
+        // Legacy statusline sideband: "❯" + U+2063 + U+2063 + model.
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker)\u{2063}claude-fable-5"],
@@ -146,6 +166,58 @@ struct PhanttomTabStateTests {
             isWorking: false, isSelected: true)
         #expect(state.autoTitle == "fix login bug")
         #expect(state.titleFallback == "fix login bug")
+    }
+
+    @Test func kindTokenMarkerSetsCursorKindAndModel() {
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker).cursor\u{2063}\u{2063}grok-4.5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .cursor)
+        #expect(state.model == "grok-4.5")
+        #expect(state.autoTitle == nil)
+        #expect(state.titleFallback == "Cursor")
+
+        state.update(
+            titles: ["\(marker).cursor\u{2063}fix the sidebar\u{2063}grok-4.5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .cursor)
+        #expect(state.autoTitle == "fix the sidebar")
+        #expect(state.titleFallback == "fix the sidebar")
+    }
+
+    @Test func kindTokenMarkerSetsClaudeKind() {
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker).claude\u{2063}fix login bug\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .claude)
+        #expect(state.autoTitle == "fix login bug")
+        #expect(state.model == "claude-fable-5")
+    }
+
+    @Test func legacyPromptNamedCursorDoesNotBecomeCursorKind() {
+        // Dot-prefixed tokens avoid this collision; a bare "cursor" prompt
+        // under the legacy format must stay Claude.
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker)cursor\u{2063}claude-fable-5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .claude)
+        #expect(state.autoTitle == "cursor")
+        #expect(state.model == "claude-fable-5")
+    }
+
+    @Test func cursorMarkerForcesKindBackFromCodex() {
+        let state = PhanttomTabState()
+        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        #expect(state.kind == .codex)
+
+        state.update(
+            titles: ["\(marker).cursor\u{2063}\u{2063}grok-4.5"],
+            isWorking: false, isSelected: true)
+        #expect(state.kind == .cursor)
+        #expect(state.model == "grok-4.5")
     }
 
     @Test func markerWithoutModelSuffixLeavesModelNil() {

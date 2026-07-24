@@ -444,7 +444,7 @@ struct SidebarTabRow: View {
             Group {
                 switch tab.kind {
                 case .terminal: terminalRow
-                case .claude, .codex: agentRow
+                case .claude, .codex, .cursor: agentRow
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -465,6 +465,7 @@ struct SidebarTabRow: View {
                 case .terminal: trailing
                 case .claude: agentTrailing(icon: "PhanttomClaude")
                 case .codex: agentTrailing(icon: "PhanttomCodex")
+                case .cursor: agentTrailing(icon: "PhanttomCursor")
                 }
             }
             .padding(.trailing, SidebarTrailingColumn.padding)
@@ -694,6 +695,7 @@ struct SidebarTabRow: View {
         switch kind {
         case .claude: return "PhanttomClaudeMark"
         case .codex: return "PhanttomCodexMark"
+        case .cursor: return "PhanttomCursorMark"
         case .terminal: return nil
         }
     }

@@ -2,9 +2,9 @@
 
 A fork of [Ghostty](https://github.com/ghostty-org/ghostty) with vertical tabs
 in a sidebar, an appearance settings GUI, and first-class support for AI coding
-agents (Claude Code / Codex) — tab auto-naming, working/done/attention status,
-and a pixel-rain activity indicator. The name is "Phantom" with two t's, in the
-spirit of Ghostty's two t's.
+agents (Claude Code / Codex / Cursor Agent CLI) — tab auto-naming,
+working/done/attention status, and a pixel-rain activity indicator. The name is
+"Phantom" with two t's, in the spirit of Ghostty's two t's.
 
 **This file is the entry point for anyone (human or agent) working on the
 fork.** Upstream's `AGENTS.md` covers general Ghostty conventions; this file
@@ -69,7 +69,8 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Settings UI | `Features/Settings/PhanttomSettingsView.swift` |
 | Settings window host | `Features/Settings/SettingsWindowController.swift` |
 | Claude Code hook installer (launch auto-install/re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
-| Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
+| Cursor Agent CLI hook installer (launch auto-install/re-sync, merge/strip) | `Features/Settings/PhanttomCursorIntegration.swift` (tests: `macos/Tests/Settings/PhanttomCursorIntegrationTests.swift`) |
+| Claude/Codex/Cursor icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset`, `PhanttomCursor.imageset` (+ `*Mark` variants) |
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
 
@@ -91,8 +92,9 @@ Touches to upstream files are deliberately tiny and greppable — search
   `AppDelegate+Phanttom.swift`; inserts "Phanttom Settings…" ⌘⇧, and
   "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched),
   `PhanttomSettings.shared.setupOnLaunch(ghostty:)` (writes locked chrome
-  into `phanttom.conf`), and `autoSyncClaudeIntegration()`
-  (Claude Code hook auto-install/re-sync; see the hooks protocol section).
+  into `phanttom.conf`), and `autoSyncClaudeIntegration()` /
+  `autoSyncCursorIntegration()` (Claude Code / Cursor Agent hook
+  auto-install/re-sync; see the hooks protocol sections).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
   the window falls back to plain upstream behavior. This is decided once per
@@ -151,18 +153,28 @@ user's Ghostty config. Phanttom Settings no longer exposes chrome controls.
 
 ## Tab semantics (the behavioral contract)
 
-**Kind** (`terminal` | `claude` | `codex`) is detected from surface titles —
-every split's title, not just the focused one, so an idle agent in a
+**Kind** (`terminal` | `claude` | `codex` | `cursor`) is detected from surface
+titles — every split's title, not just the focused one, so an idle agent in a
 background split keeps its identity — and stored sticky on the window
 (`phanttomTabState`):
 
 - title starts with the hook marker `❯` + U+2063 (invisible separator) →
-  `claude`, stored sticky (only our hook emits the marker)
-- title contains "claude"/"codex" → that kind
+  agent kind from the marker payload (see below), stored sticky (only our
+  hooks emit the marker)
+- title contains "claude" / "codex" / "cursor" → that kind (Cursor Agent CLI
+  titles look like `Cursor Agent` / `Cursor ready`; bare `"agent"` is **not**
+  matched)
 - decorated title (leading non-alphanumeric glyph, e.g. Claude Code's "✳ …" or
   a bare "❯ …" prompt char from starship/pure) → keeps the previous kind
 - plain title (shell integration reclaiming the tab) → back to `terminal`,
   and clears the auto-name
+
+**Marker wire format** (OSC 2 title). Fields are separated by U+2063:
+
+- Kind-aware (current): `❯⁣.claude⁣<prompt>⁣<model>` / `.cursor` / `.codex`
+  (model-only: empty prompt field). Kind tokens are **dot-prefixed** so a
+  legacy prompt that is literally `cursor` cannot be misread as a kind field.
+- Legacy Claude (still accepted): `❯⁣<prompt>⁣<model>` → kind `.claude`.
 
 **Status** (leading slot on agent cards, trailing slot on terminal rows):
 
@@ -278,12 +290,68 @@ JSON parsing prefers `jq` when present, else `/usr/bin/perl` + `JSON::PP`
 | Event / subcommand                                                                | Emits                                                                                                                                                            | Phanttom effect                                                                     |
 | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `prompt-submit`                                                                   | OSC 9;4 state 3 (indeterminate)                                                                                                                                  | pixel rain starts                                                                   |
-| `prompt-submit`                                                                   | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`)                                                                           | first prompt names the tab; model from last non-synthetic assistant transcript turn |
+| `prompt-submit`                                                                   | OSC 2 title `❯⁣.claude⁣<prompt, 56ch>⁣<model-id>` — `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`) + `.claude` kind token                                              | first prompt names the tab; model from last non-synthetic assistant transcript turn |
 | `prompt-submit`, `session-start`, `post-tool-use` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (URI-encoded, `%2F` restored to `/`)                                                                                               | tab pwd tracks the _agent's_ directory, not just the shell's                        |
 | `stop`                                                                            | OSC 9;4 clear **or** re-arm state 3                                                                                                                              | reads stdin `background_tasks` (Claude Code ≥2.1.145): if any in-flight background work remains, re-emits rain; otherwise clears → Done if unselected. Missing/unparseable → clear (pre-2.1.145) |
 | `subagent-start`                                                                  | OSC 9;4 state 3 (indeterminate)                                                                                                                                  | re-arms rain when a subagent spawns (covers races where Stop cleared before tasks were registered). `SubagentStop` is intentionally not hooked — clearing there can flash rain off before the parent wakes |
 | `notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                              | → Attention if unselected                                                           |
-| `statusline`                                                                      | model-only marker `❯⁣⁣<model-id>` on change (cache file under `$TMPDIR`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
+| `statusline`                                                                      | model-only marker `❯⁣.claude⁣⁣<model-id>` on change (cache file under `$TMPDIR`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
+
+Bumping `payloadVersion` (currently 5 for the `.claude` kind-token markers)
+shows every existing Claude-integrated user Settings' "Update available" and
+triggers silent launch repair — expected churn, not a regression.
+
+## Cursor Agent CLI integration (hooks protocol)
+
+**Zero-touch**, exactly like the Claude integration above: hooks install
+(and repair / update) automatically on every launch whenever `~/.cursor`
+exists — no prompt, no consent dialog (`autoSyncCursorIntegration` in
+`AppDelegate+Phanttom.swift`). The only off switch is **Phanttom Settings →
+Cursor Agent → Remove…**, which sets the `PhanttomCursorAutoInstallDisabled`
+default so removal sticks across launches; `Set Up` clears it and auto-sync
+resumes. A missing `~/.cursor` or unparseable `hooks.json` / `cli-config.json`
+is silently retried next launch. There is no consent-key migration here (the
+Claude side has one): this integration never shipped a prompt, so there is no
+prior decision to honor. Implementation:
+`macos/Sources/Features/Settings/PhanttomCursorIntegration.swift`.
+
+**Architecture.** Same versioned helper pattern as Claude, adapted to Cursor's
+split config:
+
+```sh
+sh "$HOME/.cursor/phanttom-hook.sh" session-start
+sh "$HOME/.cursor/phanttom-hook.sh" pre-tool-use
+sh "$HOME/.cursor/phanttom-hook.sh" model-update
+sh "$HOME/.cursor/phanttom-hook.sh" stop
+sh "$HOME/.cursor/phanttom-hook.sh" statusline
+```
+
+| File | Role |
+| --- | --- |
+| `~/.cursor/hooks.json` | Lifecycle hooks (flat `{ "command" }` entries; foreign hooks preserved) |
+| `~/.cursor/cli-config.json` | `statusLine` command (absent file treated as empty `[:]`, not corrupt) |
+| `~/.cursor/phanttom-hook.sh` | Versioned payload (`chmod 0755`) |
+| `~/.cursor/phanttom-integration.json` | `{version, originalStatusLine, originalStatusLineObject?}` |
+| `*.bak-phanttom-<stamp>` | Timestamped backups of hooks.json / cli-config.json (keep ≤5 + oldest) |
+
+**Emit guards.** Hooks only emit OSC when `CURSOR_AGENT=1` (Cursor Agent CLI
+sets this; IDE Agent Chat does not) **and** a real pty is found by walking
+ancestors from `$PPID` (or from `PHANTTOM_TTY` injected by `sessionStart`'s
+`env` response). There is no `CURSOR_PID` analog and **no** `/dev/tty`
+fallback — bare `/dev/tty` is known-broken for hook processes.
+
+| Event / subcommand | Emits | Phanttom effect |
+| --- | --- | --- |
+| `sessionStart` | model-only marker `❯⁣.cursor⁣⁣<model>`; OSC 7 from `workspace_roots[0]` / `CURSOR_PROJECT_DIR`; optional `{env:{PHANTTOM_TTY}}` | kind sticky, model badge, agent pwd |
+| `preToolUse` | OSC 9;4 state 3; model marker; OSC 7 | pixel rain + model/pwd refresh |
+| `afterAgentThought` / `postToolUse` | model marker on change | live model badge |
+| `stop` | OSC 9;4 clear (**always** — no Claude-style `background_tasks` re-arm) | → Done if unselected |
+| `statusLine` (`cli-config.json`) | model marker on change; chains prior statusline | model from session start / `/model` |
+
+`beforeSubmitPrompt` is not installed yet — print-mode CLI spikes did not
+observe it; auto-name falls back to the `"Cursor"` kind label / surface title
+until that path is confirmed in a real interactive tab. Codex remains
+title-branding only (no hooks installer).
 
 The U+2063 INVISIBLE SEPARATOR makes the marker collision-proof: a bare "❯"
 is the default prompt char of starship/pure/p10k and must NOT trigger
