@@ -50,7 +50,8 @@ extension AppDelegate {
     /// Zero-touch Claude Code integration: on every launch, silently install
     /// (or repair / update) Phanttom's hooks whenever `~/.claude` exists —
     /// no consent prompt. The only off switch is an explicit Remove… in
-    /// Settings, which sets `autoInstallDisabledKey`; Set Up re-enables it.
+    /// Settings, which writes the shared opt-out marker beside
+    /// settings.json; Set Up removes it.
     /// Failures are log-only here (Settings surfaces them on demand); a
     /// missing `~/.claude` or corrupt settings.json just retries next launch.
     @MainActor
@@ -78,8 +79,12 @@ extension AppDelegate {
                 statusError: status.error
             ) {
             case .disableAutoInstall:
-                defaults.set(
-                    true, forKey: PhanttomClaudeIntegration.autoInstallDisabledKey)
+                // Defer the whole migration while `~/.claude` is absent: the
+                // marker can't be written yet, and clearing the old keys now
+                // would silently drop the user's opt-out.
+                guard PhanttomClaudeIntegration.migrateOptOutFromDefaults(
+                    wasDisabled: true)
+                else { return }
                 fallthrough
             case .autoInstall:
                 defaults.removeObject(
@@ -91,9 +96,16 @@ extension AppDelegate {
             }
         }
 
-        guard !defaults.bool(
-            forKey: PhanttomClaudeIntegration.autoInstallDisabledKey)
-        else { return }
+        // One-shot move of the pre-marker UserDefaults opt-out into the
+        // shared marker file. Only clear the key once the move has actually
+        // happened — it defers while ~/.claude is absent.
+        if defaults.bool(forKey: PhanttomClaudeIntegration.autoInstallDisabledKey),
+           PhanttomClaudeIntegration.migrateOptOutFromDefaults(wasDisabled: true) {
+            defaults.removeObject(
+                forKey: PhanttomClaudeIntegration.autoInstallDisabledKey)
+        }
+
+        guard !PhanttomClaudeIntegration.isAutoInstallDisabled() else { return }
         // claudeNotFound / settingsCorrupt: nothing safe to do — retry next
         // launch (once ~/.claude appears or settings.json parses again).
         guard status.error == nil else { return }

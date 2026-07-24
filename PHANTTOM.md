@@ -239,13 +239,26 @@ same one isn't immediately re-captured).
 **Zero-touch:** hooks install (and repair / update) automatically on every
 launch whenever `~/.claude` exists — no prompt, no consent dialog
 (`autoSyncClaudeIntegration` in `AppDelegate+Phanttom.swift`). The only off
-switch is **Phanttom Settings → Claude Code → Remove…**, which sets the
-`PhanttomClaudeAutoInstallDisabled` default so removal sticks across
-launches; `Set Up` clears it and auto-sync resumes. A missing `~/.claude`
-or corrupt `settings.json` is silently retried next launch. The two
-pre-auto-install consent defaults (`PhanttomClaudeSetupPrompted`, PR #15
-`PhanttomClaudeHooks`) are migrated once via `migrateConsent`: a prior
-decline / Remove becomes the opt-out; installed users keep syncing.
+switch is **Phanttom Settings → Claude Code → Remove…**, which writes an
+empty `~/.claude/.phanttom-no-autoinstall` marker so removal sticks across
+launches; `Set Up` deletes it and auto-sync resumes. A missing `~/.claude`
+or corrupt `settings.json` is silently retried next launch.
+
+**The opt-out is a file, not a UserDefaults key** — deliberately.
+`UserDefaults.standard` is scoped to the bundle identifier, so the Debug
+build (`com.mitchellh.ghostty.debug`) and the release build
+(`com.mitchellh.ghostty`) have separate domains while auto-installing into
+the *same* `~/.claude`: a defaults-backed opt-out set in one build was
+invisible to the other, which silently reinstalled the hooks. Keep the
+marker beside `settings.json` (and **not** in `phanttom-integration.json`,
+which uninstall deletes — `optOutSurvivesUninstall` guards that).
+
+Three pre-marker defaults are migrated once and never written again:
+`PhanttomClaudeSetupPrompted` and PR #15's `PhanttomClaudeHooks` via
+`migrateConsent` (a prior decline / Remove becomes the opt-out; installed
+users keep syncing), and `PhanttomClaudeAutoInstallDisabled` via
+`migrateOptOutFromDefaults`. Both migrations defer while `~/.claude` is
+absent rather than consuming the key with nowhere to record the answer.
 Installer implementation:
 `macos/Sources/Features/Settings/PhanttomClaudeIntegration.swift`.
 
