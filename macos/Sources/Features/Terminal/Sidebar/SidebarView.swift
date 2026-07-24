@@ -15,6 +15,7 @@ struct SidebarView: View {
     @ObservedObject var updateModel: UpdateViewModel
     @ObservedObject private var settings = PhanttomSettings.shared
     @ObservedObject private var collapseStore = ProjectCollapseStore.shared
+    @ObservedObject private var groupOrderStore = ProjectGroupOrderStore.shared
 
     /// Create a new tab in the given working directory. The second argument
     /// is the window to insert the new tab before in the native tab order —
@@ -27,9 +28,14 @@ struct SidebarView: View {
         // SidebarTabGroup; the view only decides flat vs grouped and
         // renders). Grouping is presentation-only; headers need at least
         // one project group — an all-unknown-pwd list has nothing to label.
-        let groups = SidebarTabGroup.groups(from: tabManager.tabs)
+        let groups = SidebarTabGroup.groups(
+            from: tabManager.tabs,
+            preferringOrder: groupOrderStore.order)
         let grouped = settings.sidebarGroupByProject && groups.contains {
             if case .project = $0 { return true } else { return false }
+        }
+        let projectIDs: [String] = groups.compactMap {
+            if case .project(let id, _, _) = $0 { return id } else { return nil }
         }
         VStack(spacing: 0) {
             ScrollView {
@@ -44,11 +50,14 @@ struct SidebarView: View {
                                 projectBlock(
                                     id: id,
                                     title: title,
-                                    groupTabs: groupTabs)
+                                    groupTabs: groupTabs,
+                                    visibleProjectIDs: projectIDs)
                             case .pending(let pendingTabs):
                                 VStack(spacing: 4) {
                                     ForEach(pendingTabs) { tab in
-                                        tabRow(tab)
+                                        // Pending tabs share a nil project key —
+                                        // constrain so they reorder among themselves.
+                                        tabRow(tab, constrainToProject: true)
                                     }
                                 }
                             }
@@ -56,7 +65,7 @@ struct SidebarView: View {
                     } else {
                         VStack(spacing: 4) {
                             ForEach(tabManager.tabs) { tab in
-                                tabRow(tab)
+                                tabRow(tab, constrainToProject: false)
                             }
                         }
                     }
@@ -100,7 +109,8 @@ struct SidebarView: View {
     private func projectBlock(
         id: String,
         title: String,
-        groupTabs: [SidebarTabManager.TabItem]
+        groupTabs: [SidebarTabManager.TabItem],
+        visibleProjectIDs: [String]
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ProjectHeader(
@@ -126,11 +136,17 @@ struct SidebarView: View {
                     onNewTab(path, insertBefore)
                 }
             )
+            .onDrag {
+                SidebarDragReorder.groupProvider(projectRoot: id)
+            }
+            .onDrop(of: [.phanttomSidebarGroup], isTargeted: nil) { providers in
+                handleGroupDrop(providers, onto: id, visibleIDs: visibleProjectIDs)
+            }
             .transition(.phanttomTabRow)
             if !collapseStore.isCollapsed(id) {
                 VStack(spacing: 4) {
                     ForEach(groupTabs) { tab in
-                        tabRow(tab)
+                        tabRow(tab, constrainToProject: true)
                     }
                 }
             }
@@ -139,15 +155,63 @@ struct SidebarView: View {
 
     /// One tab row — shared between the flat and the grouped layout so the
     /// row identity (and thus its insert/remove transition) is the same in
-    /// both.
-    private func tabRow(_ tab: SidebarTabManager.TabItem) -> some View {
+    /// both. `constrainToProject` rejects cross-group drops when grouping
+    /// is on (grouping follows cwd/git root, so a drop cannot reassign a
+    /// tab's project).
+    private func tabRow(
+        _ tab: SidebarTabManager.TabItem,
+        constrainToProject: Bool
+    ) -> some View {
         SidebarTabRow(
             tab: tab,
             onSelect: { tabManager.select(tab) },
             onClose: { tabManager.close(tab) },
             onRename: { tabManager.rename(tab, to: $0) }
         )
+        .onDrag {
+            SidebarDragReorder.tabProvider(windowNumber: tab.window.windowNumber)
+        }
+        .onDrop(of: [.phanttomSidebarTab], isTargeted: nil) { providers in
+            handleTabDrop(providers, onto: tab, constrainToProject: constrainToProject)
+        }
         .transition(.phanttomTabRow)
+    }
+
+    private func handleTabDrop(
+        _ providers: [NSItemProvider],
+        onto target: SidebarTabManager.TabItem,
+        constrainToProject: Bool
+    ) -> Bool {
+        SidebarDragReorder.loadString(from: providers, type: .phanttomSidebarTab) { payload in
+            guard let windowNumber = Int(payload),
+                  let source = tabManager.tabs.first(where: {
+                      $0.window.windowNumber == windowNumber
+                  })
+            else { return }
+            if constrainToProject {
+                let sourceKey = SidebarTabGroup.projectKey(for: source)
+                let targetKey = SidebarTabGroup.projectKey(for: target)
+                guard sourceKey == targetKey else { return }
+            }
+            withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                tabManager.reorder(source, relativeTo: target)
+            }
+        }
+    }
+
+    private func handleGroupDrop(
+        _ providers: [NSItemProvider],
+        onto targetID: String,
+        visibleIDs: [String]
+    ) -> Bool {
+        SidebarDragReorder.loadString(from: providers, type: .phanttomSidebarGroup) { sourceID in
+            withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                groupOrderStore.move(
+                    sourceID,
+                    relativeTo: targetID,
+                    visibleIDs: visibleIDs)
+            }
+        }
     }
 }
 
