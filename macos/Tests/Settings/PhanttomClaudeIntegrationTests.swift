@@ -287,13 +287,23 @@ struct PhanttomClaudeIntegrationTests {
             .first { $0.event == "Stop" }
         #expect(stop?.command.contains("phanttom-hook.sh\" stop") == true)
         // Both re-arm (state 3) and clear (state 0) paths present in stop).
-        if let range = script.range(of: "stop)") {
-            let stopBody = String(script[range...].prefix(400))
+        if let stopBody = Self.caseBody(of: "stop)", in: script) {
             #expect(stopBody.contains("emit_osc74 3"))
             #expect(stopBody.contains("emit_osc74 0"))
         } else {
             Issue.record("missing stop) case in hookScript")
         }
+    }
+
+    /// The body of one `case` arm in `hookScript`: everything from `label`
+    /// up to its terminating `;;`. Slicing on the real delimiter rather than
+    /// a fixed character count keeps these assertions correct when the arm's
+    /// comments or logic grow.
+    private static func caseBody(of label: String, in script: String) -> String? {
+        guard let start = script.range(of: label) else { return nil }
+        let rest = script[start.lowerBound...]
+        guard let end = rest.range(of: ";;") else { return String(rest) }
+        return String(rest[..<end.lowerBound])
     }
 
     @Test func subagentStartSpecEmitsRain() {
@@ -302,8 +312,7 @@ struct PhanttomClaudeIntegrationTests {
         #expect(start?.command.contains("subagent-start") == true)
         let script = PhanttomClaudeIntegration.hookScript
         #expect(script.contains("subagent-start)"))
-        if let range = script.range(of: "subagent-start)") {
-            let body = String(script[range...].prefix(80))
+        if let body = Self.caseBody(of: "subagent-start)", in: script) {
             #expect(body.contains("emit_osc74 3"))
             #expect(!body.contains("emit_osc74 0"))
         } else {
