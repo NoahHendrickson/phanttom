@@ -316,6 +316,10 @@ Chrome is locked; only a few preferences remain:
   one-time optional include (`config-file = ?phanttom.conf`). Never write
   the user's own config beyond that line.
 - **Font size override** (optional) also flows through that fragment.
+- **Restore windows on quit** (`restoreWindowsOnQuit`, default off) writes
+  `window-save-state = always` into the same fragment when enabled; when
+  off the key is omitted so a user's own `window-save-state` is not
+  overridden. Exposed in **Phanttom Settings → Windows**.
 - **Sidebar grouping** (`sidebarGroupByProject`) is UserDefaults-only and
   applies instantly through SwiftUI.
 
@@ -357,25 +361,25 @@ That is why Debug “comes back after a crash” feels special: Xcode Stop is
 forced termination, which saves under `default`. Intentional Cmd-Q of prod
 does not restore unless you opt in.
 
-**Opt in for quit → reopen restore** (prod or Debug) — put this in
-`~/.config/ghostty/config` (or another included config file):
+**Opt in for quit → reopen restore** (preferred): **Phanttom Settings →
+Windows → Restore windows on quit**. That writes `window-save-state =
+always` into `phanttom.conf` and reloads config. Equivalent manual config:
 
 ```ini
 window-save-state = always
 ```
 
-No fork code change required. Mapped in `AppDelegate.ghosttyConfigDidChange`
-to `NSQuitAlwaysKeepsWindows`. Encode path:
-`TerminalController.window(_:willEncodeRestorableState:)` →
+Mapped in `AppDelegate.ghosttyConfigDidChange` to `NSQuitAlwaysKeepsWindows`.
+Encode path: `TerminalController.window(_:willEncodeRestorableState:)` →
 `TerminalRestorableState` (currently version 7, minimum 5). Decode path:
 `TerminalWindowRestoration` in `TerminalRestorable.swift`.
 
 **Product guidance (do not “just flip” these):**
 
-- Prefer documenting / exposing this setting over changing the fork default.
-  Flipping the fork default to `always` is a user-visible divergence from
-  upstream (every Cmd-Q reopens windows; some users dislike that) that every
-  rebase must consciously preserve.
+- The Settings toggle is the productized opt-in. Do **not** change the fork
+  default to `always` — that is a user-visible divergence from upstream
+  (every Cmd-Q reopens windows; some users dislike that) that every rebase
+  must consciously preserve.
 - Encoding `PhanttomTabState` into restorable state is real work (`final`
   class, not currently `Codable`; restorable state is versioned — bump +
   migrate) and buys only cosmetic survival (name/kind), not a live session.

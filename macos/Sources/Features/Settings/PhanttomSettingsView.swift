@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// Phanttom's settings window content. Font-size changes apply live
-/// (debounced) through a managed config fragment; sidebar grouping applies
-/// instantly through SwiftUI. Chrome (sidebar/terminal colors) is locked
-/// to the Figma design and is not exposed here.
+/// Phanttom's settings window content. Font-size and quit→reopen window
+/// restore apply live (debounced) through a managed config fragment;
+/// sidebar grouping applies instantly through SwiftUI. Chrome
+/// (sidebar/terminal colors) is locked to the Figma design and is not
+/// exposed here.
 ///
 /// Lives in its own file (upstream's `SettingsView` placeholder is left
 /// untouched) so upstream's future settings GUI merges cleanly.
@@ -31,6 +32,20 @@ struct PhanttomSettingsView: View {
                 Text("Overrides font-size from your config. Turn off to return to your configured size.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Restore windows on quit", isOn: $settings.restoreWindowsOnQuit)
+            } header: {
+                Text("Windows")
+            } footer: {
+                Text(
+                    "Keeps tab and split layout (and each tab's directory) "
+                        + "after Cmd-Q. Does not restore running programs, "
+                        + "scrollback, or agent status — those start fresh."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Section("Sidebar") {
