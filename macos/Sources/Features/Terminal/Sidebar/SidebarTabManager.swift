@@ -7,6 +7,11 @@ extension Notification.Name {
     /// reorder). Posted from `TerminalController.relabelTabs`, which upstream
     /// already invokes on every membership change.
     static let phanttomSidebarTabsDidChange = Notification.Name("phanttomSidebarTabsDidChange")
+
+    /// Posted once when a sidebar reorder finishes mutating the tab group, so
+    /// every window's sidebar rebuilds exactly once instead of once per
+    /// `makeKey()` inside the shuffle.
+    static let phanttomSidebarReorderDidFinish = Notification.Name("phanttomSidebarReorderDidFinish")
 }
 
 /// Observes the tab group of a window and publishes tab metadata for the
@@ -140,6 +145,17 @@ final class SidebarTabManager: ObservableObject {
             DispatchQueue.main.async { self?.scheduleRefresh() }
         })
 
+        // The single refresh a reorder is allowed. Synchronous, like
+        // didBecomeKey below and for the same reason: the reordered list has
+        // to land in the frame the mouse came up on, not a turn later.
+        notificationObservers.append(center.addObserver(
+            forName: .phanttomSidebarReorderDidFinish,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        })
+
         // didBecomeKey refreshes synchronously, in the notification's own
         // runloop turn. A brand-new tab's window becomes key in the same
         // turn its first frame is committed, and the manager's initial
@@ -156,6 +172,12 @@ final class SidebarTabManager: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, let affected = notification.object as? NSWindow,
                       self.isInGroup(affected) else { return }
+                // A reorder calls makeKey() to put selection back, and this
+                // notification is app-wide — so without this guard a single
+                // drop costs one synchronous whole-list rebuild per window in
+                // the group. The reorder posts one refresh for everyone when
+                // it unwinds instead.
+                guard !Self.isReordering else { return }
                 self.refresh()
                 // Our own window's first key moment is also its first
                 // on-screen frame — the cue that a held-back row (see the
@@ -247,17 +269,55 @@ final class SidebarTabManager: ObservableObject {
         }
     }
 
+    /// Depth of an in-flight reorder, process-wide because the refreshes being
+    /// suppressed fire on *other* windows' managers.
+    private static var reorderDepth = 0
+
+    static var isReordering: Bool { reorderDepth > 0 }
+
+    /// Whether the single post-reorder refresh should animate. False for a
+    /// drag, where the rows already parted to show the final arrangement;
+    /// true for menu/keyboard moves, where the list has to show what changed.
+    /// Read by `refresh` during the finish notification, by which point the
+    /// depth is already back to 0 — so `isReordering` can't carry this.
+    private static var reorderWantsAnimation = true
+
+    /// Runs `body` with reorder-driven key-change refreshes suppressed, then
+    /// tells every sidebar to refresh once. `defer`-balanced so an early
+    /// return inside can't wedge the app into a permanently stale sidebar.
+    private static func withReorderSuppression(
+        animated: Bool,
+        _ body: () -> Void
+    ) {
+        reorderDepth += 1
+        defer {
+            reorderDepth -= 1
+            if reorderDepth == 0 {
+                reorderWantsAnimation = animated
+                NotificationCenter.default.post(
+                    name: .phanttomSidebarReorderDidFinish, object: nil)
+                reorderWantsAnimation = true
+            }
+        }
+        body()
+    }
+
     /// Reorder `tab` immediately before or after `target` in the native tab
     /// group. `.before` → `ordered: .below`, `.after` → `ordered: .above`
     /// (AppKit tab-group placement). Preserves whichever tab was selected
     /// before the move — `removeWindow`/`addTabbedWindow` otherwise steals
     /// selection (often onto the moved window). Same contract as keyboard
-    /// move-tab otherwise; sidebar refresh follows via `relabelTabs` →
-    /// `.phanttomSidebarTabsDidChange`.
+    /// move-tab otherwise; every sidebar refreshes once when this unwinds,
+    /// via `.phanttomSidebarReorderDidFinish`.
+    ///
+    /// `animated` is false when a sidebar drag drove this: the rows have
+    /// already parted to show the result, so the publish only has to swap the
+    /// real order in underneath.
     func reorder(
         _ tab: TabItem,
         relativeTo target: TabItem,
-        edge: SidebarDragReorder.Edge
+        edge: SidebarDragReorder.Edge,
+        animated: Bool = true
     ) {
         guard tab.id != target.id else { return }
         let moved = tab.window
@@ -289,11 +349,16 @@ final class SidebarTabManager: ObservableObject {
         // synchronous re-add glitches the native tab strip on macOS 26+.
         if #available(macOS 26, *) {
             if moved is TitlebarTabsTahoeTerminalWindow {
-                tabGroup.removeWindow(moved)
-                anchor.addTabbedWindowSafely(moved, ordered: ordered)
-                // Sync restore for the sidebar snapshot; async again after
-                // AppKit settles (Tahoe titlebar-tabs glitch workaround).
-                Self.restoreSelection(selected, in: tabGroup)
+                Self.withReorderSuppression(animated: animated) {
+                    tabGroup.removeWindow(moved)
+                    anchor.addTabbedWindowSafely(moved, ordered: ordered)
+                    // Sync restore for the sidebar snapshot; async again after
+                    // AppKit settles (Tahoe titlebar-tabs glitch workaround).
+                    Self.restoreSelection(selected, in: tabGroup)
+                }
+                // Deliberately outside the suppression: the depth is already
+                // back to 0 by the time this runs, and this pass has to be
+                // allowed to publish.
                 DispatchQueue.main.async {
                     Self.restoreSelection(selected, in: tabGroup)
                 }
@@ -301,12 +366,14 @@ final class SidebarTabManager: ObservableObject {
             }
         }
 
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-        tabGroup.removeWindow(moved)
-        anchor.addTabbedWindowSafely(moved, ordered: ordered)
-        Self.restoreSelection(selected, in: tabGroup)
-        NSAnimationContext.endGrouping()
+        Self.withReorderSuppression(animated: animated) {
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0
+            tabGroup.removeWindow(moved)
+            anchor.addTabbedWindowSafely(moved, ordered: ordered)
+            Self.restoreSelection(selected, in: tabGroup)
+            NSAnimationContext.endGrouping()
+        }
     }
 
     /// Put `window` back as the tab group's selected/key window when it is
@@ -508,9 +575,18 @@ final class SidebarTabManager: ObservableObject {
                     tabs = newTabs
                 }
             } else if tabs.map(\.id) != newTabs.map(\.id) {
-                // Same membership, new order (sidebar drag-reorder). Snappier
-                // than insert/remove — release should feel immediate.
-                withAnimation(SidebarDragReorder.settleAnimation) {
+                // Same membership, new order. When this is the tail of a
+                // sidebar drag it must be instant: the rows already parted to
+                // show this exact arrangement, so animating would re-animate
+                // a list that is visually already correct — which is what
+                // used to read as the row floating before it settled. A
+                // reorder from anywhere else (the keyboard move-tab command)
+                // still gets the snappy settle.
+                if Self.reorderWantsAnimation {
+                    withAnimation(SidebarDragReorder.settleAnimation) {
+                        tabs = newTabs
+                    }
+                } else {
                     tabs = newTabs
                 }
             } else {

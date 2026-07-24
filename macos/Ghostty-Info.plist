@@ -130,30 +130,6 @@
 			<key>UTTypeTagSpecification</key>
 			<dict/>
 		</dict>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.mitchellh.ghostty.phanttomSidebarTab</string>
-			<key>UTTypeDescription</key>
-			<string>Phanttom Sidebar Tab</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict/>
-		</dict>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.mitchellh.ghostty.phanttomSidebarGroup</string>
-			<key>UTTypeDescription</key>
-			<string>Phanttom Sidebar Project Group</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict/>
-		</dict>
 	</array>
 </dict>
 </plist>
