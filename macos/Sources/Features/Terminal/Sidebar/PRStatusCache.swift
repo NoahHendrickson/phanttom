@@ -108,7 +108,18 @@ final class PRStatusCache {
             readComplete.signal()
         }
         if readComplete.wait(timeout: .now() + 15) == .timedOut {
-            if process.isRunning { process.terminate() }
+            if process.isRunning {
+                process.terminate()
+                // SIGTERM is asynchronous, so gh is still a zombie until it is
+                // reaped. Returning without waiting would leak one defunct
+                // child per timed-out query, and these are polled per branch.
+                // Reap off this thread: the caller must not block a second
+                // time on a process that just proved it can hang, and Process
+                // reaps on its own reader queue once waitUntilExit returns.
+                DispatchQueue.global(qos: .utility).async {
+                    process.waitUntilExit()
+                }
+            }
             return nil
         }
         // EOF was reached, so gh has closed stdout and is exiting.
