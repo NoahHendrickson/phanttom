@@ -89,6 +89,12 @@ extension AppDelegate {
         if result.error == .claudeNotFound {
             return
         }
+        if result.error == .settingsCorrupt {
+            // Can't safely offer "Set Up" against an unparseable settings.json
+            // (the install would abort). Stay quiet — without setting the
+            // prompted key — so the prompt reappears once it's valid again.
+            return
+        }
         switch result.status {
         case .notInstalled, .legacyInline:
             break
@@ -116,11 +122,27 @@ extension AppDelegate {
 
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            _ = PhanttomClaudeIntegration.performInstall()
+            presentClaudeInstallFailure(PhanttomClaudeIntegration.performInstall())
         case .alertSecondButtonReturn:
             SettingsWindowController.shared.show(ghostty: ghostty)
         default:
             break
         }
+    }
+
+    /// Surface an install failure the user explicitly triggered (the first-launch
+    /// "Set Up" button). Silent background repairs stay log-only; a failure the
+    /// user asked for must not be swallowed.
+    @MainActor
+    private func presentClaudeInstallFailure(
+        _ result: PhanttomClaudeIntegration.ActionResult
+    ) {
+        guard result.error != nil else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn’t Set Up Claude Code Integration"
+        alert.informativeText = result.message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }

@@ -125,6 +125,83 @@ struct PhanttomClaudeIntegrationTests {
         #expect(jsonEqual(once, twice))
     }
 
+    @Test func installIsIdempotentWithStashedStatusline() {
+        // The real Update flow re-runs install() on settings that already
+        // carry our statusLine + the stashed original. The second pass must
+        // preserve the stash rather than re-stashing our own command.
+        let input: [String: Any] = [
+            "statusLine": [
+                "type": "command",
+                "command": "echo user-status",
+            ] as [String: Any],
+        ]
+        let once = PhanttomClaudeIntegration.install(into: input)
+        let twice = PhanttomClaudeIntegration.install(into: once)
+        #expect(
+            twice[PhanttomClaudeIntegration.originalStatusLineKey] as? String
+                == "echo user-status"
+        )
+        #expect(jsonEqual(once, twice))
+    }
+
+    @Test func stripKeepsUserHookSharingAnEntryWithOurs() {
+        // A single matcher entry holding BOTH a foreign command and a phanttom
+        // command: uninstall must drop only ours and keep the foreign one.
+        let mixedEntry: [String: Any] = [
+            "hooks": [
+                ["type": "command", "command": "echo user-cleanup"] as [String: Any],
+                ["type": "command",
+                 "command": PhanttomClaudeIntegration.desiredHooks[3].command] as [String: Any],
+            ] as [[String: Any]],
+        ]
+        let input: [String: Any] = [
+            "hooks": ["Stop": [mixedEntry] as [[String: Any]]] as [String: Any],
+        ]
+
+        let stripped = PhanttomClaudeIntegration.uninstall(from: input)
+        let stopEntries = (stripped["hooks"] as? [String: Any])?["Stop"]
+            as? [[String: Any]] ?? []
+        let cmds = stopEntries.flatMap(commands(in:))
+        #expect(cmds.contains("echo user-cleanup"))
+        #expect(!cmds.contains(where: { $0.contains("phanttom-hook.sh") }))
+    }
+
+    @Test func statuslineObjectSiblingKeysSurviveRoundTrip() {
+        // Extra keys on the user's statusLine object (e.g. padding) must
+        // round-trip through Set Up → Remove, not just the command string.
+        let input: [String: Any] = [
+            "statusLine": [
+                "type": "command",
+                "command": "echo my-status",
+                "padding": 0,
+            ] as [String: Any],
+        ]
+        let installed = PhanttomClaudeIntegration.install(into: input)
+        #expect(
+            (installed["statusLine"] as? [String: Any])?["command"] as? String
+                == PhanttomClaudeIntegration.desiredStatusLine["command"]
+        )
+
+        let restored = PhanttomClaudeIntegration.uninstall(from: installed)
+        let statusLine = restored["statusLine"] as? [String: Any]
+        #expect(statusLine?["command"] as? String == "echo my-status")
+        #expect(statusLine?["padding"] as? Int == 0)
+        #expect(restored[PhanttomClaudeIntegration.originalStatusLineObjectKey] == nil)
+    }
+
+    @Test func installLeavesNonArrayEventValueUntouched() {
+        // Schema-invalid (non-array) event value is left as-is rather than
+        // clobbering user data; the integration just can't reach "current".
+        let input: [String: Any] = [
+            "hooks": ["Stop": "oops"] as [String: Any],
+        ]
+        let result = PhanttomClaudeIntegration.install(into: input)
+        #expect((result["hooks"] as? [String: Any])?["Stop"] as? String == "oops")
+        #expect(PhanttomClaudeIntegration.status(
+            of: result, scriptText: PhanttomClaudeIntegration.hookScript
+        ) != .installedCurrent)
+    }
+
     @Test func statuslineStashAndRestore() {
         let input: [String: Any] = [
             "statusLine": [
@@ -234,18 +311,20 @@ struct PhanttomClaudeIntegrationTests {
         #expect(backups.count == 1)
     }
 
-    @Test func backupPrunedAtFive() throws {
+    @Test func backupPrunesToFiveNewestPlusPristineOldest() throws {
         let dir = try makeTempClaudeDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let paths = PhanttomClaudeIntegration.Paths(
             baseDir: URL(fileURLWithPath: dir))
         try PhanttomClaudeIntegration.writeSettings([:], to: paths.settings)
 
+        var names: [String] = []
         for i in 0..<7 {
             let name = String(format: "settings.json.bak-phanttom-2026010%d-120000", i)
+            names.append(name)
             let url = paths.baseDir.appendingPathComponent(name)
             try Data("{}".utf8).write(to: url)
-            // Distinct mtimes so prune sort is stable.
+            // Distinct mtimes so prune sort is stable (i=0 is the oldest).
             try FileManager.default.setAttributes(
                 [.modificationDate: Date().addingTimeInterval(Double(i))],
                 ofItemAtPath: url.path
@@ -254,7 +333,10 @@ struct PhanttomClaudeIntegrationTests {
         PhanttomClaudeIntegration.pruneBackups(in: paths.baseDir, keeping: 5)
         let backups = try FileManager.default.contentsOfDirectory(atPath: dir)
             .filter { $0.hasPrefix("settings.json.bak-phanttom-") }
-        #expect(backups.count == 5)
+        // 5 newest + the single oldest (pristine pre-Phanttom) snapshot.
+        #expect(backups.count == 6)
+        #expect(backups.contains(names[0]), "pristine oldest backup must survive prune")
+        #expect(!backups.contains(names[1]), "second-oldest is pruned, not protected")
     }
 
     @Test func corruptSettingsAbortsUntouched() throws {
@@ -306,6 +388,58 @@ struct PhanttomClaudeIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: paths.state.path))
     }
 
+    @Test func stuckOutdatedInstallDoesNotChurnBackups() throws {
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(
+            baseDir: URL(fileURLWithPath: dir))
+        // Malformed (non-array) value on a desired event → install can never
+        // reach `.installedCurrent`, so launch-time repair keeps re-running.
+        try PhanttomClaudeIntegration.writeSettings(
+            ["hooks": ["Stop": "oops"] as [String: Any]], to: paths.settings)
+
+        let first = PhanttomClaudeIntegration.performInstall(paths: paths)
+        #expect(first.status != .installedCurrent)
+        #expect(try backupCount(in: dir) == 1)
+
+        // Simulate repeated launch-time repair passes: the config is already
+        // at its fixed point, so no further backups (or writes) should occur.
+        for _ in 0..<4 { _ = PhanttomClaudeIntegration.performInstall(paths: paths) }
+        #expect(try backupCount(in: dir) == 1)
+    }
+
+    @Test func migratesLegacyStatuslineWrapper() throws {
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(
+            baseDir: URL(fileURLWithPath: dir))
+        // Legacy hand-install: statusLine points at the phanttom wrapper, which
+        // chained to the user's real statusline-command.sh on disk.
+        try PhanttomClaudeIntegration.writeSettings([
+            "statusLine": [
+                "type": "command",
+                "command": "sh \"$HOME/.claude/statusline-phanttom.sh\"",
+            ] as [String: Any],
+        ], to: paths.settings)
+        let chained = paths.baseDir.appendingPathComponent("statusline-command.sh")
+        try Data("#!/bin/bash\necho hi\n".utf8).write(to: chained)
+        let legacyWrapper = paths.baseDir
+            .appendingPathComponent("statusline-phanttom.sh")
+        try Data("#!/bin/sh\n".utf8).write(to: legacyWrapper)
+
+        let result = PhanttomClaudeIntegration.performInstall(paths: paths)
+        #expect(result.error == nil)
+
+        // The user's real statusline is recovered into the persisted state so
+        // the hook chains to it and Remove can restore it.
+        let stateData = try Data(contentsOf: paths.state)
+        let state = try JSONSerialization.jsonObject(with: stateData) as? [String: Any]
+        #expect(state?["originalStatusLine"] as? String
+            == "bash \"$HOME/.claude/statusline-command.sh\"")
+        // Legacy wrapper script is deleted as part of migration.
+        #expect(!FileManager.default.fileExists(atPath: legacyWrapper.path))
+    }
+
     @Test func missingClaudeDirReportsNotFound() {
         let paths = PhanttomClaudeIntegration.Paths(
             baseDir: URL(fileURLWithPath: "/tmp/phanttom-no-such-\(UUID().uuidString)"))
@@ -334,6 +468,12 @@ struct PhanttomClaudeIntegrationTests {
             .appendingPathComponent("phanttom-claude-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    private func backupCount(in dir: String) throws -> Int {
+        try FileManager.default.contentsOfDirectory(atPath: dir)
+            .filter { $0.hasPrefix("settings.json.bak-phanttom-") }
+            .count
     }
 
     private func entry(command: String, matcher: String? = nil) -> [String: Any] {

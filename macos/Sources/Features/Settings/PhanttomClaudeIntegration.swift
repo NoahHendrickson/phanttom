@@ -11,12 +11,17 @@ import GhosttyKit
 enum PhanttomClaudeIntegration {
     /// Bump on any change to `hookScript` text or `desiredHooks` /
     /// `desiredStatusLine`. Drives the Settings "Update available" state.
-    static let payloadVersion = 2
+    static let payloadVersion = 3
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
     static let settingsFileName = "settings.json"
     static let originalStatusLineKey = "phanttomOriginalStatusLine"
+    /// Full original `statusLine` object (not just its `command`), stashed so
+    /// sibling keys like `padding` survive a Set Up → Remove round-trip. The
+    /// string `originalStatusLineKey` above stays authoritative for the hook's
+    /// runtime statusline chaining and for back-compat.
+    static let originalStatusLineObjectKey = "phanttomOriginalStatusLineObject"
     static let setupPromptedKey = "PhanttomClaudeSetupPrompted"
 
     // MARK: - Status
@@ -113,6 +118,9 @@ enum PhanttomClaudeIntegration {
               my $j = eval { decode_json($raw) };
               exit 0 unless $j && defined $j->{cwd} && !ref($j->{cwd});
               my $s = $j->{cwd};
+              # decode_json yields Unicode chars; percent-encode UTF-8 *bytes*
+              # (matching jq @uri), so ord() sees octets 0-255 not codepoints.
+              utf8::encode($s);
               $s =~ s/([^A-Za-z0-9\\-_.~\\/])/sprintf("%%%02X", ord($1))/ge;
               $s =~ s/%2F/\\//gi;
               print $s;
@@ -134,7 +142,11 @@ enum PhanttomClaudeIntegration {
 
         emit_prompt_title() {
           j="$1"
-          p=$(printf "%s" "$j" | json_get prompt | tr "\\n" " " | cut -c1-56)
+          # Strip control bytes (ESC/BEL/etc.) so a crafted prompt can't inject
+          # escape sequences into the OSC 2 title written below. Newlines first
+          # become spaces; LC_ALL=C keeps multibyte UTF-8 (0x80+) intact.
+          p=$(printf "%s" "$j" | json_get prompt | tr "\\n" " " |
+              LC_ALL=C tr -d "[:cntrl:]" | cut -c1-56)
           tp=$(printf "%s" "$j" | json_get transcript_path)
           m=""
           if [ -n "$tp" ] && [ -f "$tp" ]; then
@@ -159,6 +171,7 @@ enum PhanttomClaudeIntegration {
             fi
           fi
           [ -n "$p" ] || return 0
+          m=$(printf "%s" "$m" | LC_ALL=C tr -d "[:cntrl:]")
           t=$(resolve_tty)
           printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3 %s\\xe2\\x81\\xa3%s\\007" "$p" "$m" > "$t" 2>/dev/null || true
         }
@@ -169,6 +182,7 @@ enum PhanttomClaudeIntegration {
           if [ -z "$m" ]; then
             m=$(printf "%s" "$j" | json_get model.display_name)
           fi
+          m=$(printf "%s" "$m" | LC_ALL=C tr -d "[:cntrl:]")
           sid=$(printf "%s" "$j" | json_get session_id)
           c="${TMPDIR:-/tmp}/phanttom-model-${sid:-unknown}-${CLAUDE_PID:-$PPID}"
           if [ -n "$m" ] && [ "$(cat "$c" 2>/dev/null || true)" != "$m" ]; then
@@ -282,14 +296,29 @@ enum PhanttomClaudeIntegration {
         guard var hooksObj = result["hooks"] as? [String: Any] else { return result }
 
         for (event, value) in hooksObj {
-            guard var entries = asEntryArray(value) else { continue }
-            entries.removeAll { entry in
-                commands(in: entry).contains(where: isOurs(command:))
+            guard let entries = asEntryArray(value) else { continue }
+            var kept: [[String: Any]] = []
+            for var entry in entries {
+                guard let inner = entry["hooks"] as? [Any] else {
+                    // No inner hooks array to inspect — leave the entry as-is.
+                    kept.append(entry)
+                    continue
+                }
+                // Filter phanttom-owned commands *individually* so a foreign
+                // command sharing an entry with ours survives.
+                let filtered = inner.filter { hook in
+                    guard let cmd = (hook as? [String: Any])?["command"] as? String
+                    else { return true }
+                    return !isOurs(command: cmd)
+                }
+                if filtered.isEmpty { continue }
+                entry["hooks"] = filtered
+                kept.append(entry)
             }
-            if entries.isEmpty {
+            if kept.isEmpty {
                 hooksObj.removeValue(forKey: event)
             } else {
-                hooksObj[event] = entries
+                hooksObj[event] = kept
             }
         }
         if hooksObj.isEmpty && !keepEmptyHooksObject {
@@ -330,6 +359,8 @@ enum PhanttomClaudeIntegration {
            !isOurs(command: cmd),
            result[originalStatusLineKey] == nil {
             result[originalStatusLineKey] = cmd
+            // Stash the whole object so sibling keys (e.g. `padding`) restore.
+            result[originalStatusLineObjectKey] = existing
         }
         result["statusLine"] = desiredStatusLine as [String: Any]
 
@@ -339,7 +370,10 @@ enum PhanttomClaudeIntegration {
     nonisolated static func uninstall(from settings: [String: Any]) -> [String: Any] {
         var result = removeOwnedHooks(from: settings)
 
-        if let stashed = result[originalStatusLineKey] as? String {
+        if let stashedObject = result[originalStatusLineObjectKey] as? [String: Any] {
+            // Lossless restore of the user's original statusLine (incl. padding).
+            result["statusLine"] = stashedObject
+        } else if let stashed = result[originalStatusLineKey] as? String {
             result["statusLine"] = [
                 "type": "command",
                 "command": stashed,
@@ -350,6 +384,7 @@ enum PhanttomClaudeIntegration {
             result.removeValue(forKey: "statusLine")
         }
         result.removeValue(forKey: originalStatusLineKey)
+        result.removeValue(forKey: originalStatusLineObjectKey)
 
         return result
     }
@@ -575,17 +610,16 @@ enum PhanttomClaudeIntegration {
         }
 
         let fm = FileManager.default
-        var settings: [String: Any]
-        if fm.fileExists(atPath: paths.settings.path) {
+        let settingsExists = fm.fileExists(atPath: paths.settings.path)
+        var settings: [String: Any] = [:]
+        if settingsExists {
             do {
                 settings = try readSettings(at: paths.settings)
             } catch {
                 throw ActionError.settingsCorrupt
             }
-            try backupSettings(at: paths.settings)
-        } else {
-            settings = [:]
         }
+        let onDisk = settings
 
         // Legacy statusline wrapper is "ours", so the pure merge won't stash
         // the user's real statusline. Recover the known chain target when
@@ -595,7 +629,17 @@ enum PhanttomClaudeIntegration {
 
         try writeScript(paths: paths)
         try writeState(paths: paths, settings: next)
-        try writeSettings(next, to: paths.settings)
+        // Only rewrite settings.json (and snapshot a backup) when it actually
+        // changes. Repeated launch-time repair passes on a config that can
+        // never reach `.installedCurrent` (e.g. a malformed non-array event
+        // value) must not churn backups and prune away the pristine
+        // pre-Phanttom snapshot.
+        if !settingsExists || !jsonEqual(next, onDisk) {
+            if settingsExists {
+                try backupSettings(at: paths.settings)
+            }
+            try writeSettings(next, to: paths.settings)
+        }
         removeLegacyStatuslineScript(paths: paths)
 
         return currentStatus(paths: paths)
@@ -729,7 +773,10 @@ enum PhanttomClaudeIntegration {
                 .contentModificationDate) ?? .distantPast
             return da > db
         }
-        for url in backups.dropFirst(max) {
+        // Keep the `max` newest plus the single oldest backup — that oldest
+        // snapshot is the pristine pre-Phanttom copy and must never be pruned.
+        let oldest = backups.last
+        for url in backups.dropFirst(max) where url != oldest {
             try? fm.removeItem(at: url)
         }
     }
@@ -762,6 +809,19 @@ enum PhanttomClaudeIntegration {
     }
 
     // MARK: - Dictionary helpers
+
+    /// Structural JSON equality (key order independent). Returns false if
+    /// either side isn't a serializable JSON object, so callers fall back to
+    /// writing rather than skipping a needed update.
+    nonisolated private static func jsonEqual(
+        _ a: [String: Any], _ b: [String: Any]
+    ) -> Bool {
+        let opts: JSONSerialization.WritingOptions = [.sortedKeys]
+        guard let da = try? JSONSerialization.data(withJSONObject: a, options: opts),
+              let db = try? JSONSerialization.data(withJSONObject: b, options: opts)
+        else { return false }
+        return da == db
+    }
 
     nonisolated private static func deepCopy(_ settings: [String: Any]) -> [String: Any] {
         guard JSONSerialization.isValidJSONObject(settings),
