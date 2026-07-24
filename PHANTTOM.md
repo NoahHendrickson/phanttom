@@ -143,10 +143,9 @@ AppKit, and the config fragment:
   `background` / opacity `1` / blur `0`)
 - Divider: `#2D2E2E`
 - Working / done / attention status: `#24FE8A` / `#3A89D8` / `#F5CC64`
-- Selected row: `white @ 4%`, corner radius 12; hover: `white @ 4%`, radius 8
+- Selected / hover row: `white @ 4%`, corner radius 12
 
-First launch shows a one-time notice before writing `phanttom.conf` (and
-appending the optional include). Later launches re-apply silently.
+Launch re-applies `phanttom.conf` (and the optional include) silently.
 Escape hatch: remove the `config-file = ?phanttom.conf` include from the
 user's Ghostty config. Phanttom Settings no longer exposes chrome controls.
 
@@ -202,10 +201,9 @@ design; click the header to collapse/expand; state is process-global in
 persisted in UserDefaults). Expanded headers carry a trailing "+"
 (`PhanttomPlus`) that opens a new tab in that project's directory (explicit
 `SurfaceConfiguration.workingDirectory`, the window-restoration path). The
-home group (`~`) also shows a folder-plus menu (`PhanttomFolderPlus`, from
-Figma) left of "+" listing top-level folders in `~/Developer` — choosing one
-seeds a new tab into that project the same way the group's "+" does. A bottom-of-list
-"New tab" row always opens in home (`~`), independent of the focused project.
+pinned top-of-sidebar "New tab" row always opens in home (`~`), with a
+trailing folder-plus menu (`PhanttomFolderPlus`) listing top-level folders
+in `~/Developer` — choosing one seeds a new tab into that project.
 Grouping is presentation-only in `SidebarView`: native tab order, animations,
 and all cross-window state are untouched. Tabs whose pwd isn't known yet form
 a trailing header-less bucket. Sidebar drag-and-drop reorders tabs by mutating
@@ -408,7 +406,7 @@ limitation).
 - The design source of truth is the Figma file ("Untitled",
   `MgM8y8QIVMfT2zNEbbxz1S`): component set "tab" with variants for
   kind/selection/status. Metrics: rows 255 wide, 12/8 padding, selected
-  radius 12 / `white 4%`, hover radius 8, sidebar width 271, sidebar bg
+  radius 12 / `white 4%` (selected and hover), sidebar width 271, sidebar bg
   `#161917`, terminal bg `#101211`.
 - Rebase policy: rebase `phanttom` onto upstream release tags once one ships
   requiring Zig 0.16+; until then we pin upstream main. Keep upstream-file

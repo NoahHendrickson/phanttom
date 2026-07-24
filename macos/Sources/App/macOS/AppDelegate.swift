@@ -314,7 +314,7 @@ class AppDelegate: NSObject,
         // Setup our menu
         setupMenuImages()
         setupPhanttomMenus()
-        // Locked Figma chrome → phanttom.conf (one-time notice on first launch).
+        // Locked Figma chrome → phanttom.conf (silent on every launch).
         PhanttomSettings.shared.setupOnLaunch(ghostty: ghostty)
 
         // Claude Code integration: zero-touch install / repair / update on

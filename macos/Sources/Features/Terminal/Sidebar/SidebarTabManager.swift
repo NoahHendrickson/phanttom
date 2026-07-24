@@ -247,13 +247,18 @@ final class SidebarTabManager: ObservableObject {
         }
     }
 
-    /// Reorder `tab` to the index of `target` in the native tab group.
-    /// Moving down places it after the target's pre-move neighbors so a drop
-    /// onto the last row can become last; moving up inserts before `target`.
-    /// Same `removeWindow` + `addTabbedWindowSafely` contract as keyboard
-    /// move-tab and the group "+" insert path — sidebar refresh follows via
-    /// `relabelTabs` → `.phanttomSidebarTabsDidChange`.
-    func reorder(_ tab: TabItem, relativeTo target: TabItem) {
+    /// Reorder `tab` immediately before or after `target` in the native tab
+    /// group. `.before` → `ordered: .below`, `.after` → `ordered: .above`
+    /// (AppKit tab-group placement). Preserves whichever tab was selected
+    /// before the move — `removeWindow`/`addTabbedWindow` otherwise steals
+    /// selection (often onto the moved window). Same contract as keyboard
+    /// move-tab otherwise; sidebar refresh follows via `relabelTabs` →
+    /// `.phanttomSidebarTabsDidChange`.
+    func reorder(
+        _ tab: TabItem,
+        relativeTo target: TabItem,
+        edge: SidebarDragReorder.Edge
+    ) {
         guard tab.id != target.id else { return }
         let moved = tab.window
         let anchor = target.window
@@ -268,7 +273,17 @@ final class SidebarTabManager: ObservableObject {
               let to = windows.firstIndex(where: { $0 === anchor })
         else { return }
 
-        let ordered: NSWindow.OrderingMode = from < to ? .above : .below
+        // Already in the requested slot — nothing to do.
+        switch edge {
+        case .before where from == to - 1: return
+        case .after where from == to + 1: return
+        default: break
+        }
+
+        let ordered: NSWindow.OrderingMode = edge == .after ? .above : .below
+        // Capture before removeWindow — AppKit often retargets selection
+        // during the shuffle (to the moved window or a neighbor).
+        let selected = tabGroup.selectedWindow
 
         // Match TerminalController.onMoveTab's Tahoe titlebar-tab workaround:
         // synchronous re-add glitches the native tab strip on macOS 26+.
@@ -276,8 +291,11 @@ final class SidebarTabManager: ObservableObject {
             if moved is TitlebarTabsTahoeTerminalWindow {
                 tabGroup.removeWindow(moved)
                 anchor.addTabbedWindowSafely(moved, ordered: ordered)
+                // Sync restore for the sidebar snapshot; async again after
+                // AppKit settles (Tahoe titlebar-tabs glitch workaround).
+                Self.restoreSelection(selected, in: tabGroup)
                 DispatchQueue.main.async {
-                    moved.makeKey()
+                    Self.restoreSelection(selected, in: tabGroup)
                 }
                 return
             }
@@ -287,7 +305,17 @@ final class SidebarTabManager: ObservableObject {
         NSAnimationContext.current.duration = 0
         tabGroup.removeWindow(moved)
         anchor.addTabbedWindowSafely(moved, ordered: ordered)
+        Self.restoreSelection(selected, in: tabGroup)
         NSAnimationContext.endGrouping()
+    }
+
+    /// Put `window` back as the tab group's selected/key window when it is
+    /// still a member. Uses `makeKey()` (not `makeKeyAndOrderFront`) to
+    /// avoid an extra z-order flash on top of the tab shuffle.
+    private static func restoreSelection(_ window: NSWindow?, in tabGroup: NSWindowTabGroup) {
+        guard let window, tabGroup.windows.contains(where: { $0 === window }) else { return }
+        tabGroup.selectedWindow = window
+        window.makeKey()
     }
 
     // MARK: - Refresh
@@ -474,10 +502,21 @@ final class SidebarTabManager: ObservableObject {
                 }
             } else if !insertedIDs.isEmpty {
                 tabs = newTabs
-            } else {
+            } else if oldIDs != Set(newTabs.map(\.id)) {
+                // Removal — animate the collapse.
                 withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
                     tabs = newTabs
                 }
+            } else if tabs.map(\.id) != newTabs.map(\.id) {
+                // Same membership, new order (sidebar drag-reorder). Snappier
+                // than insert/remove — release should feel immediate.
+                withAnimation(SidebarDragReorder.settleAnimation) {
+                    tabs = newTabs
+                }
+            } else {
+                // In-place field updates only (selection, title, status) —
+                // instant so a selection change doesn't reshuffle the list.
+                tabs = newTabs
             }
         }
 
