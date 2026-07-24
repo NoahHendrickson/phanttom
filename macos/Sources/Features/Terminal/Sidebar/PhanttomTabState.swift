@@ -18,6 +18,28 @@ final class PhanttomTabState {
         case terminal
         case claude
         case codex
+        case cursor
+
+        /// Sidebar label when a model-only marker has no prompt yet.
+        var label: String {
+            switch self {
+            case .terminal: return "Terminal"
+            case .claude: return "Claude"
+            case .codex: return "Codex"
+            case .cursor: return "Cursor"
+            }
+        }
+    }
+
+    /// Parse a leading marker field as a kind token. Bare names are not
+    /// accepted — they collide with legacy prompt text.
+    static func kind(fromMarkerToken token: String) -> Kind? {
+        switch token {
+        case ".claude": return .claude
+        case ".codex": return .codex
+        case ".cursor": return .cursor
+        default: return nil
+        }
     }
 
     /// Activity state shown in the leading status slot of the tab row. An
@@ -170,6 +192,15 @@ final class PhanttomTabState {
                 if namedKind == nil { namedKind = .claude }
             } else if t.contains("codex") {
                 if namedKind == nil { namedKind = .codex }
+            } else if t == "cursor" || t.hasPrefix("cursor ")
+                        || t.hasPrefix("cursor-") {
+                // Cursor Agent CLI titles ("Cursor Agent", "Cursor ready",
+                // "cursor-agent"). Anchored at the start rather than a
+                // substring match: "cursor" is an ordinary word in paths and
+                // filenames, and every Cursor user has a `~/.cursor` — a plain
+                // shell tab whose title is its cwd must not be branded as an
+                // agent tab. Bare "agent" is too generic to match at all.
+                if namedKind == nil { namedKind = .cursor }
             } else if let first = title.unicodeScalars.first,
                       !CharacterSet.alphanumerics.contains(first) {
                 // Decorated title: a leading symbol glyph, e.g. Claude
@@ -183,28 +214,43 @@ final class PhanttomTabState {
         // the session's FIRST prompt names the tab. It re-arms when the
         // shell reclaims the title (session over) or via Reset Name.
         if let markerTitle {
-            // Marker payload: "<prompt>", optionally followed by another
-            // U+2063 and the session's model id (empty until the transcript
-            // has an assistant turn — keep the last known model then).
+            // Marker payload (kind-aware):
+            //   ❯⁣.claude⁣<prompt>⁣<model>   / ❯⁣.cursor⁣… / ❯⁣.codex⁣…
+            //   ❯⁣.cursor⁣⁣<model>           (model-only; empty prompt)
+            // Legacy Claude (no leading-dot kind field):
+            //   ❯⁣<prompt>⁣<model>
+            // Kind tokens are dot-prefixed so a legacy prompt that is
+            // literally "cursor"/"claude"/"codex" cannot be misread as a
+            // kind field.
             let fields = markerTitle.dropFirst(Self.autoNameMarker.count)
                 .split(separator: "\u{2063}", omittingEmptySubsequences: false)
-            let auto = (fields.first ?? "").trimmingCharacters(in: .whitespaces)
-            if fields.count > 1 {
-                let id = fields[1].trimmingCharacters(in: .whitespaces)
-                if !id.isEmpty { model = id }
+            let parsedKind: Kind
+            let auto: String
+            let modelField: String?
+            if let token = fields.first.map({ $0.trimmingCharacters(in: .whitespaces) }),
+               let kind = Self.kind(fromMarkerToken: token) {
+                parsedKind = kind
+                auto = fields.count > 1
+                    ? fields[1].trimmingCharacters(in: .whitespaces) : ""
+                modelField = fields.count > 2
+                    ? fields[2].trimmingCharacters(in: .whitespaces) : nil
+            } else {
+                parsedKind = .claude
+                auto = (fields.first ?? "").trimmingCharacters(in: .whitespaces)
+                modelField = fields.count > 1
+                    ? fields[1].trimmingCharacters(in: .whitespaces) : nil
             }
+            if let id = modelField, !id.isEmpty { model = id }
             if !auto.isEmpty, autoTitle == nil, markerTitle != lastResetTitle {
                 autoTitle = auto
             }
             // Presentation fallback for the sidebar when autoTitle is nil
             // (model-only marker, or post-rearm before a new prompt).
-            // Markers are Claude-only today; the kind label covers the
-            // empty-prompt case so the view model never re-parses fields.
-            titleFallback = auto.isEmpty ? "Claude" : auto
-            // Only our Claude hook emits the marker. Force kind even when a
-            // prior Codex session left agentKind sticky — otherwise the card
-            // stays Codex and the model badge (Claude-only) never shows.
-            agentKind = .claude
+            titleFallback = auto.isEmpty ? parsedKind.label : auto
+            // Force kind from the marker even when a prior agent left
+            // agentKind sticky — otherwise the card keeps the old kind and
+            // the model badge never shows for the new session.
+            agentKind = parsedKind
             return
         }
 

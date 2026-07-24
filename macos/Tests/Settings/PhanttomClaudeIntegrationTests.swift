@@ -279,6 +279,12 @@ struct PhanttomClaudeIntegrationTests {
 
     /// Stop must inspect Claude's background_tasks so rain survives a
     /// main-agent pause while subagents (or other background work) run.
+    @Test func hookScriptEmitsKindTokenMarkers() {
+        let script = PhanttomClaudeIntegration.hookScript
+        #expect(script.contains(".claude"))
+        #expect(script.contains("# phanttom-hook v\(PhanttomClaudeIntegration.payloadVersion)"))
+    }
+
     @Test func stopSpecChecksBackgroundTasks() {
         let script = PhanttomClaudeIntegration.hookScript
         #expect(script.contains("json_background_tasks_len"))

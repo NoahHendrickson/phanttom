@@ -317,10 +317,11 @@ class AppDelegate: NSObject,
         // Locked Figma chrome → phanttom.conf (silent on every launch).
         PhanttomSettings.shared.setupOnLaunch(ghostty: ghostty)
 
-        // Claude Code integration: zero-touch install / repair / update on
-        // every launch (opt-out via Settings → Claude Code → Remove…).
+        // Agent integrations: zero-touch install / repair / update on every
+        // launch (opt-out via Settings → Claude Code / Cursor Agent → Remove…).
         DispatchQueue.main.async { [weak self] in
             self?.autoSyncClaudeIntegration()
+            self?.autoSyncCursorIntegration()
         }
 
         // Setup signal handlers

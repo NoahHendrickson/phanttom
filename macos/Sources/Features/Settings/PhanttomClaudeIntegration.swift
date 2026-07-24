@@ -11,7 +11,10 @@ import GhosttyKit
 enum PhanttomClaudeIntegration {
     /// Bump on any change to `hookScript` text or `desiredHooks` /
     /// `desiredStatusLine`. Drives the Settings "Update available" state.
-    static let payloadVersion = 4
+    /// v5: marker wire format includes a `.claude` kind token so Cursor/Codex
+    /// can share the same OSC parser without colliding with legacy prompts.
+    /// Existing installs see Settings "Update available" / silent launch repair.
+    static let payloadVersion = 5
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
@@ -237,7 +240,8 @@ enum PhanttomClaudeIntegration {
           [ -n "$p" ] || return 0
           m=$(printf "%s" "$m" | LC_ALL=C tr -d "[:cntrl:]")
           t=$(resolve_tty)
-          printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3 %s\\xe2\\x81\\xa3%s\\007" "$p" "$m" > "$t" 2>/dev/null || true
+          # Kind-aware marker: ❯⁣.claude⁣<prompt>⁣<model>
+          printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3.claude\\xe2\\x81\\xa3%s\\xe2\\x81\\xa3%s\\007" "$p" "$m" > "$t" 2>/dev/null || true
         }
 
         emit_model_sideband() {
@@ -252,7 +256,8 @@ enum PhanttomClaudeIntegration {
           if [ -n "$m" ] && [ "$(cat "$c" 2>/dev/null || true)" != "$m" ]; then
             printf "%s" "$m" > "$c" 2>/dev/null || true
             t=$(resolve_tty)
-            printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3\\xe2\\x81\\xa3%s\\007" "$m" > "$t" 2>/dev/null || true
+            # Model-only marker: ❯⁣.claude⁣⁣<model>
+            printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3.claude\\xe2\\x81\\xa3\\xe2\\x81\\xa3%s\\007" "$m" > "$t" 2>/dev/null || true
           fi
         }
 
