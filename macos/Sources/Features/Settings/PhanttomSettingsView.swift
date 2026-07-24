@@ -62,6 +62,10 @@ private struct ClaudeCodeIntegrationSection: View {
             HStack {
                 if showPrimaryButton {
                     Button(primaryButtonTitle) {
+                        // Explicit Set Up also lifts a prior Remove's opt-out
+                        // so launch-time auto-sync resumes.
+                        UserDefaults.standard.removeObject(
+                            forKey: PhanttomClaudeIntegration.autoInstallDisabledKey)
                         apply(PhanttomClaudeIntegration.performInstall())
                     }
                     .disabled(claudeMissing)
@@ -75,9 +79,11 @@ private struct ClaudeCodeIntegrationSection: View {
             Text("Claude Code")
         } footer: {
             Text(
-                "Installs Phanttom hooks for pixel rain, tab auto-naming, " +
-                "agent pwd tracking, and the model label. Writes " +
-                "~/.claude/settings.json (with a timestamped backup)."
+                "Phanttom hooks (pixel rain, tab auto-naming, agent pwd " +
+                "tracking, model label) install automatically on launch when " +
+                "~/.claude exists, writing ~/.claude/settings.json with a " +
+                "timestamped backup. Remove turns this off until you set up " +
+                "again."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -85,11 +91,15 @@ private struct ClaudeCodeIntegrationSection: View {
         .onAppear { apply(PhanttomClaudeIntegration.currentStatus()) }
         .alert("Remove Claude Code Integration?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) {
+                // Removal must stick: block launch-time auto-install until an
+                // explicit Set Up.
+                UserDefaults.standard.set(
+                    true, forKey: PhanttomClaudeIntegration.autoInstallDisabledKey)
                 apply(PhanttomClaudeIntegration.performUninstall())
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Restores your previous statusline (if any) and removes Phanttom's hooks and helper script.")
+            Text("Restores your previous statusline (if any) and removes Phanttom's hooks and helper script. Automatic setup on launch stays off until you set up again.")
         }
     }
 

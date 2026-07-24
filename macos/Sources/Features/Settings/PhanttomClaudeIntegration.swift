@@ -22,8 +22,15 @@ enum PhanttomClaudeIntegration {
     /// string `originalStatusLineKey` above stays authoritative for the hook's
     /// runtime statusline chaining and for back-compat.
     static let originalStatusLineObjectKey = "phanttomOriginalStatusLineObject"
+    /// Set (true) by an explicit Remove… in Settings; cleared by Set Up /
+    /// Update. While set, launch-time auto-install stays off — an explicit
+    /// removal must stick across launches.
+    static let autoInstallDisabledKey = "PhanttomClaudeAutoInstallDisabled"
+    /// Pre-auto-install "one prompt, ever" key. Consumed by
+    /// `migrateConsent`; never written anymore.
     static let setupPromptedKey = "PhanttomClaudeSetupPrompted"
-    /// PR #15 consent key. Cleared on one-shot migration to `setupPromptedKey`.
+    /// PR #15 consent key ("enabled"/"disabled"). Consumed by
+    /// `migrateConsent`; never written anymore.
     static let legacyConsentKey = "PhanttomClaudeHooks"
 
     // MARK: - Status
@@ -35,18 +42,38 @@ enum PhanttomClaudeIntegration {
         case legacyInline
     }
 
-    /// Whether a one-shot PR #15 `enabled` consent should trigger install.
-    /// Matches the post-prompt repair path: upgrade outdated/legacy only —
-    /// never reinstall after an explicit Remove (`.notInstalled`).
-    nonisolated static func shouldRepairAfterLegacyEnabled(
-        status: IntegrationStatus
-    ) -> Bool {
-        switch status {
-        case .installedOutdated, .legacyInline:
-            return true
-        case .notInstalled, .installedCurrent:
-            return false
-        }
+    /// Outcome of the one-shot migration from the pre-auto-install consent
+    /// keys (`setupPromptedKey`, PR #15 `legacyConsentKey`) to
+    /// `autoInstallDisabledKey`.
+    enum ConsentMigration: Equatable {
+        /// Consume the old keys; auto-install proceeds.
+        case autoInstall
+        /// Consume the old keys; a prior decline / Remove becomes the opt-out.
+        case disableAutoInstall
+        /// Status unreadable — keep the old keys and retry next launch.
+        case retryLater
+    }
+
+    /// Pure decision for migrating old consent state. `legacyValue` is the
+    /// PR #15 string ("enabled"/"disabled"), `promptedKeySet` the old
+    /// "one prompt, ever" bool.
+    nonisolated static func migrateConsent(
+        legacyValue: String?,
+        promptedKeySet: Bool,
+        status: IntegrationStatus,
+        statusError: ActionError?
+    ) -> ConsentMigration {
+        // PR #15's explicit "disabled" is an opt-out regardless of status.
+        if legacyValue == "disabled" { return .disableAutoInstall }
+        guard legacyValue != nil || promptedKeySet else { return .autoInstall }
+        // Neither old key recorded a positive answer reliably: the prompted
+        // key was set on "Set Up", "Not Now", and "Open Settings" alike, and
+        // PR #15's "enabled" deliberately never reinstalled after an explicit
+        // Remove. `.notInstalled` under either key therefore means the user
+        // declined or removed the hooks — opt-outs auto-install must not
+        // override. Any installed/legacy state means they wanted the hooks.
+        if statusError != nil { return .retryLater }
+        return status == .notInstalled ? .disableAutoInstall : .autoInstall
     }
 
     enum ActionError: Error, Equatable {
