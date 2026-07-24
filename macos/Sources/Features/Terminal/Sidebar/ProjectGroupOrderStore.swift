@@ -38,8 +38,12 @@ final class ProjectGroupOrderStore: ObservableObject {
     }
 
     /// Reorder `sourceID` immediately before or after `targetID` among the
-    /// currently visible project roots. Persists the resulting visible
-    /// sequence (unknowns get locked into their slot once the user reorders).
+    /// currently visible project roots, then splice that new visible sequence
+    /// back into the full stored order. Roots absent from `visibleIDs` (closed
+    /// projects) are preserved in storage at their existing slots so reopening
+    /// one returns it to its old position — honoring `merge`'s contract rather
+    /// than persisting only the visible list. First-seen unknowns get locked
+    /// into their slot once the user reorders.
     func move(
         _ sourceID: String,
         relativeTo targetID: String,
@@ -47,25 +51,41 @@ final class ProjectGroupOrderStore: ObservableObject {
         visibleIDs: [String]
     ) {
         guard sourceID != targetID else { return }
-        var list = Self.merge(order: order, appearing: visibleIDs)
-        guard let from = list.firstIndex(of: sourceID),
-              let to = list.firstIndex(of: targetID),
+
+        // Compute the reordered *visible* sequence exactly as displayed.
+        var visible = Self.merge(order: order, appearing: visibleIDs)
+        guard let from = visible.firstIndex(of: sourceID),
+              let to = visible.firstIndex(of: targetID),
               from != to
         else { return }
 
+        // Already in the requested slot — nothing to do.
         switch edge {
         case .before where from == to - 1: return
         case .after where from == to + 1: return
         default: break
         }
 
-        list.remove(at: from)
-        guard let newTo = list.firstIndex(of: targetID) else { return }
+        visible.remove(at: from)
+        guard let newTo = visible.firstIndex(of: targetID) else { return }
         switch edge {
-        case .before: list.insert(sourceID, at: newTo)
-        case .after: list.insert(sourceID, at: newTo + 1)
+        case .before: visible.insert(sourceID, at: newTo)
+        case .after: visible.insert(sourceID, at: newTo + 1)
         }
-        order = list
+
+        // Splice `visible` back into the full stored order: keep every stored
+        // id, appending any brand-new visible ids, then refill the slots
+        // occupied by visible ids with the reordered sequence. Closed ids stay
+        // anchored at their absolute positions between their visible neighbors.
+        let visibleSet = Set(visibleIDs)
+        var full = order
+        for id in visibleIDs where !full.contains(id) {
+            full.append(id)
+        }
+        var nextVisible = visible.makeIterator()
+        order = full.map { id in
+            visibleSet.contains(id) ? (nextVisible.next() ?? id) : id
+        }
         persist()
     }
 

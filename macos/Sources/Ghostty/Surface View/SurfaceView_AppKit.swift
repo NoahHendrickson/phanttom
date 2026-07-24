@@ -86,6 +86,10 @@ extension Ghostty {
         // Cancellable for the debounced accessibility selection-change post.
         private var accessibilitySelectionCancellable: AnyCancellable?
 
+        // Phanttom: clears an indeterminate progress report when the surface's
+        // process exits (see the subscription in init).
+        private var childExitedProgressCancellable: AnyCancellable?
+
         // Whether the pointer should be visible or not
         @Published private(set) var pointerStyle: CursorStyle = .horizontalText
 
@@ -310,6 +314,25 @@ extension Ghostty {
                 .sink { [weak self] _ in
                     guard let self else { return }
                     NSAccessibility.post(element: self, notification: .selectedTextChanged)
+                }
+
+            // Phanttom: indeterminate progress reports (agent activity) are
+            // exempt from the 15s staleness timeout above and persist until an
+            // explicit clear. But a crashed or killed agent may never emit that
+            // clear, leaving the indicator up forever. Clearing when the
+            // surface's process exits recovers that case and is provably safe:
+            // the process is gone, so nothing is still running to interrupt —
+            // unlike a time-based watchdog, which would risk false-clearing a
+            // long-running task that legitimately emits no interim updates
+            // (exactly the fragility the indeterminate exemption avoids). The
+            // determinate path keeps its own 15s timeout unchanged.
+            childExitedProgressCancellable = $childExitedMessage
+                .compactMap { $0 }
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    if self.progressReport?.state == .indeterminate {
+                        self.progressReport = nil
+                    }
                 }
 
             // Before we initialize the surface we want to register our notifications

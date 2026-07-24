@@ -433,12 +433,13 @@ struct SidebarTabRow: View {
     private var cornerRadius: CGFloat { 12 }
 
     var body: some View {
-        // Select/rename gestures live on the label only — wrapping the close
-        // button too would make X clicks also select (front) the tab, and
-        // guarding on the X's hover state is fragile (onHover doesn't re-fire
-        // when a row's frame shifts under a stationary cursor). Padding lives
-        // on the children so the label's contentShape still covers the row
-        // edge (not just the text).
+        // Select/rename gestures live on the leading label AND the agent
+        // card's trailing model strip (agentTrailing) — every part of the row
+        // except the close button. Wrapping the close button too would make X
+        // clicks also select (front) the tab, and guarding on the X's hover
+        // state is fragile (onHover doesn't re-fire when a row's frame shifts
+        // under a stationary cursor). Padding lives on the children so the
+        // label's contentShape still covers the row edge (not just the text).
         HStack(spacing: 0) {
             Group {
                 switch tab.kind {
@@ -655,24 +656,36 @@ struct SidebarTabRow: View {
                 }
             }
             .frame(width: closeSlot, height: closeSlot)
-            if let model = tab.model, let mark = brandMark(for: tab.kind) {
-                HStack(spacing: 4) {
-                    Image(mark)
+            // The model label is a wide strip; make it select/rename the row
+            // like the leading label (same no-delay gesture pairing) so the
+            // whole row — everything but the close button above — is tappable.
+            Group {
+                if let model = tab.model, let mark = brandMark(for: tab.kind) {
+                    HStack(spacing: 4) {
+                        Image(mark)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 8, height: 8)
+                        Text(model)
+                            .font(SidebarFont.font(size: subtitleSize))
+                            .foregroundStyle(Color.white.opacity(0.5))
+                            .lineLimit(1)
+                    }
+                    .frame(height: 13)
+                } else {
+                    Image(icon)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 8, height: 8)
-                    Text(model)
-                        .font(SidebarFont.font(size: subtitleSize))
-                        .foregroundStyle(Color.white.opacity(0.5))
-                        .lineLimit(1)
+                        .frame(width: 13, height: 13)
                 }
-                .frame(height: 13)
-            } else {
-                Image(icon)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 13, height: 13)
             }
+            .contentShape(Rectangle())
+            // Simultaneous (not exclusive `.gesture`) for the same reason as
+            // the leading label: an exclusive double-tap claims the mouse
+            // sequence and blocks the row's `.onDrag`, so a reorder started
+            // from the model strip would never begin.
+            .simultaneousGesture(TapGesture(count: 2).onEnded(startRename))
+            .simultaneousGesture(TapGesture().onEnded(onSelect))
         }
     }
 
