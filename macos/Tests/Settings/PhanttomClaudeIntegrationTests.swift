@@ -271,6 +271,51 @@ struct PhanttomClaudeIntegrationTests {
             == .legacyInline)
     }
 
+    /// Stop must inspect Claude's background_tasks so rain survives a
+    /// main-agent pause while subagents (or other background work) run.
+    @Test func stopSpecChecksBackgroundTasks() {
+        let script = PhanttomClaudeIntegration.hookScript
+        #expect(script.contains("json_background_tasks_len"))
+        #expect(script.contains("background_tasks"))
+        let stop = PhanttomClaudeIntegration.desiredHooks
+            .first { $0.event == "Stop" }
+        #expect(stop?.command.contains("phanttom-hook.sh\" stop") == true)
+        // Both re-arm (state 3) and clear (state 0) paths present in stop).
+        if let range = script.range(of: "stop)") {
+            let stopBody = String(script[range...].prefix(400))
+            #expect(stopBody.contains("emit_osc74 3"))
+            #expect(stopBody.contains("emit_osc74 0"))
+        } else {
+            Issue.record("missing stop) case in hookScript")
+        }
+    }
+
+    @Test func subagentStartSpecEmitsRain() {
+        let start = PhanttomClaudeIntegration.desiredHooks
+            .first { $0.event == "SubagentStart" }
+        #expect(start?.command.contains("subagent-start") == true)
+        let script = PhanttomClaudeIntegration.hookScript
+        #expect(script.contains("subagent-start)"))
+        if let range = script.range(of: "subagent-start)") {
+            let body = String(script[range...].prefix(80))
+            #expect(body.contains("emit_osc74 3"))
+            #expect(!body.contains("emit_osc74 0"))
+        } else {
+            Issue.record("missing subagent-start) case in hookScript")
+        }
+    }
+
+    @Test func legacyEnabledConsentDoesNotReinstallAfterRemove() {
+        #expect(!PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
+            status: .notInstalled))
+        #expect(!PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
+            status: .installedCurrent))
+        #expect(PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
+            status: .installedOutdated(installedVersion: 1)))
+        #expect(PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
+            status: .legacyInline))
+    }
+
     // MARK: - File I/O (temp base dir)
 
     @Test func installWritesScriptStateAndBackup() throws {

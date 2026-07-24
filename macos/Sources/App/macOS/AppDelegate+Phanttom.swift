@@ -59,14 +59,20 @@ extension AppDelegate {
         }
 
         let key = PhanttomClaudeIntegration.setupPromptedKey
-        let legacyKey = "PhanttomClaudeHooks"
+        let legacyKey = PhanttomClaudeIntegration.legacyConsentKey
 
-        // PR #15 used an enable/disable string; map it once and never re-ask.
+        // PR #15 used an enable/disable string; map it once, clear the legacy
+        // key, and never re-ask. Without clearing, every launch would see
+        // `enabled` + `.notInstalled` after Remove and silently reinstall.
         if let legacy = UserDefaults.standard.string(forKey: legacyKey) {
             UserDefaults.standard.set(true, forKey: key)
+            UserDefaults.standard.removeObject(forKey: legacyKey)
             if legacy == "enabled" {
                 let st = PhanttomClaudeIntegration.currentStatus()
-                if st.error == nil, st.status != .installedCurrent {
+                if st.error == nil,
+                   PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
+                    status: st.status)
+                {
                     _ = PhanttomClaudeIntegration.performInstall()
                 }
             }

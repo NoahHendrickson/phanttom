@@ -158,7 +158,9 @@ background split keeps its identity — and stored sticky on the window
   report (agents in non-focused splits count). Indeterminate reports (state 3,
   what the hooks emit) are exempt from upstream's 15s staleness timeout in
   `SurfaceView_AppKit.swift`, so the rain runs for the whole task and stops
-  only on an explicit clear (Stop/Notification hooks) or surface close.
+  only on an explicit clear (Stop with no in-flight `background_tasks`,
+  Notification, or surface close). A Stop that still has background work
+  (e.g. subagents) re-arms rain instead of clearing.
 - `done` (blue `#2C86F4`) — work finished while the tab was unselected
 - `attention` (yellow `#F4BC2C`) — bell rang while unselected (judged against
   the bell window's own tab group)
@@ -248,7 +250,8 @@ JSON parsing prefers `jq` when present, else `/usr/bin/perl` + `JSON::PP`
 | `prompt-submit`                                                                   | OSC 9;4 state 3 (indeterminate)                                                                                                                                  | pixel rain starts                                                                   |
 | `prompt-submit`                                                                   | OSC 2 title `❯⁣ <prompt, 56ch>⁣<model-id>` — `❯` + U+2063 (`\xe2\x9d\xaf\xe2\x81\xa3`)                                                                           | first prompt names the tab; model from last non-synthetic assistant transcript turn |
 | `prompt-submit`, `session-start`, `post-tool-use` (`EnterWorktree\|ExitWorktree`) | OSC 7 `file://localhost<cwd>` (URI-encoded, `%2F` restored to `/`)                                                                                               | tab pwd tracks the _agent's_ directory, not just the shell's                        |
-| `stop`                                                                            | OSC 9;4 state 0 (clear)                                                                                                                                          | rain stops → Done if unselected                                                     |
+| `stop`                                                                            | OSC 9;4 clear **or** re-arm state 3                                                                                                                              | reads stdin `background_tasks` (Claude Code ≥2.1.145): if any in-flight background work remains, re-emits rain; otherwise clears → Done if unselected. Missing/unparseable → clear (pre-2.1.145) |
+| `subagent-start`                                                                  | OSC 9;4 state 3 (indeterminate)                                                                                                                                  | re-arms rain when a subagent spawns (covers races where Stop cleared before tasks were registered). `SubagentStop` is intentionally not hooked — clearing there can flash rain off before the parent wakes |
 | `notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                              | → Attention if unselected                                                           |
 | `statusline`                                                                      | model-only marker `❯⁣⁣<model-id>` on change (cache file under `$TMPDIR`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
 
