@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The sidebar's project-grouping policy, kept out of the view shell:
@@ -72,11 +73,12 @@ enum SidebarTrailingColumn {
 }
 
 /// Section header for a project group: folder glyph + repo folder name
-/// (click to collapse/expand), and a "+" on the trailing edge when expanded
-/// that opens a new tab in the project's directory. Matches the Figma
-/// chrome (16px folder, 12pt Inter regular @ 65%, 12px plus). On hover the folder swaps
-/// to a disclosure chevron so expand/collapse is obvious. The leading
-/// glyph sits in the same column as the tab status dots below.
+/// (click to collapse/expand), and a trailing "+" that opens a new tab in
+/// the project's directory (visible whether the group is collapsed or not).
+/// Matches the Figma chrome (16px folder, 12pt Inter regular @ 65%, 12px
+/// plus). On hover the folder swaps to a disclosure chevron so
+/// expand/collapse is obvious. The leading glyph sits in the same column
+/// as the tab status dots below.
 ///
 /// The home group (`~`) also shows a folder-plus menu immediately left of
 /// "+" listing top-level folders in `~/Developer`.
@@ -92,7 +94,6 @@ struct ProjectHeader: View {
     @State private var isHovering = false
     @State private var isHoveringToggle = false
     @State private var isHoveringPlus = false
-    @State private var isHoveringDeveloper = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -127,28 +128,31 @@ struct ProjectHeader: View {
             .onHover { isHoveringToggle = $0 }
             .backport.pointerStyle(.link)
 
-            if !isCollapsed {
-                HStack(spacing: 4) {
-                    if showDeveloperFolders {
-                        developerFoldersMenu
-                    }
-                    Button(action: onNewTab) {
-                        Image("PhanttomPlus")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 12, height: 12)
-                            .foregroundStyle(Color.white.opacity(
-                                isHoveringPlus ? 0.95 : (isHovering ? 0.65 : 0.5)))
-                            .frame(
-                                width: SidebarTrailingColumn.slot,
-                                height: SidebarTrailingColumn.slot)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("New Tab in \(name)")
-                    .onHover { isHoveringPlus = $0 }
-                    .backport.pointerStyle(.link)
+            HStack(spacing: 4) {
+                if showDeveloperFolders {
+                    // NSButton+NSMenu — SwiftUI Menu forces a pure-white
+                    // label tint and system-menu type that we can't override.
+                    DeveloperFoldersButton(onOpen: onOpenProject)
+                        .frame(
+                            width: SidebarTrailingColumn.slot,
+                            height: SidebarTrailingColumn.slot)
                 }
+                Button(action: onNewTab) {
+                    Image("PhanttomPlus")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 12, height: 12)
+                        .foregroundStyle(Color.white.opacity(
+                            isHoveringPlus ? 0.95 : (isHovering ? 0.65 : 0.5)))
+                        .frame(
+                            width: SidebarTrailingColumn.slot,
+                            height: SidebarTrailingColumn.slot)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("New Tab in \(name)")
+                .onHover { isHoveringPlus = $0 }
+                .backport.pointerStyle(.link)
             }
         }
         // Same leading inset as tab rows so the folder shares the status
@@ -158,66 +162,44 @@ struct ProjectHeader: View {
         .frame(height: 16)
         .onHover { isHovering = $0 }
     }
+}
 
-    @ViewBuilder
-    private var developerFoldersMenu: some View {
-        if #available(macOS 14, *) {
-            developerFoldersMenuContent.menuIndicator(.hidden)
-        } else {
-            developerFoldersMenuContent
-        }
+/// Home-group "open from ~/Developer" control. Uses AppKit so the glyph
+/// stays at 65% white (SwiftUI `Menu` always paints its label opaque) and
+/// the popup can use Inter at sidebar-readable size.
+private struct DeveloperFoldersButton: NSViewRepresentable {
+    var onOpen: (String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOpen: onOpen)
     }
 
-    private var developerFoldersMenuContent: some View {
-        Menu {
-            let items = Self.developerFolders()
-            if items.isEmpty {
-                Button("No folders in ~/Developer") {}
-                    .disabled(true)
-            } else {
-                ForEach(items, id: \.self) { path in
-                    Button {
-                        onOpenProject(path)
-                    } label: {
-                        Label {
-                            Text((path as NSString).lastPathComponent)
-                        } icon: {
-                            Image("PhanttomFolder")
-                        }
-                    }
-                }
-            }
-        } label: {
-            // Menu/NSPopUpButton ignores Image.frame — clear slot + overlay
-            // so we own the glyph size. Match group-header folders (16pt).
-            Color.clear
-                .frame(
-                    width: SidebarTrailingColumn.slot,
-                    height: SidebarTrailingColumn.slot)
-                .overlay {
-                    Image("PhanttomFolderPlus")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(
-                            width: SidebarLeadingColumn.width,
-                            height: SidebarLeadingColumn.width)
-                        .foregroundStyle(Color.white.opacity(
-                            isHoveringDeveloper ? 0.95 : 0.65))
-                }
-                .contentShape(Rectangle())
+    func makeNSView(context: Context) -> HoverTintButton {
+        let button = HoverTintButton(frame: .zero)
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.setButtonType(.momentaryChange)
+        button.imageScaling = .scaleProportionallyDown
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.showMenu(_:))
+        button.toolTip = "Open Project from ~/Developer"
+        if let image = NSImage(named: "PhanttomFolderPlus") {
+            image.isTemplate = true
+            button.image = image
         }
-        .menuStyle(.borderlessButton)
-        .controlSize(.mini)
-        .fixedSize()
-        .help("Open Project from ~/Developer")
-        .onHover { isHoveringDeveloper = $0 }
-        .backport.pointerStyle(.link)
+        button.idleAlpha = 0.65
+        button.hoverAlpha = 0.95
+        button.contentTintColor = NSColor.white.withAlphaComponent(button.idleAlpha)
+        return button
     }
 
-    /// Top-level directories under `~/Developer`, A–Z. Recomputed when the
-    /// menu content is built (on open), so newly created folders show up
-    /// without a separate refresh path.
-    private static func developerFolders() -> [String] {
+    func updateNSView(_ button: HoverTintButton, context: Context) {
+        context.coordinator.onOpen = onOpen
+    }
+
+    /// Top-level directories under `~/Developer`, A–Z.
+    static func developerFolders() -> [String] {
         let root = (NSHomeDirectory() as NSString)
             .appendingPathComponent("Developer")
         guard let urls = try? FileManager.default.contentsOfDirectory(
@@ -233,5 +215,93 @@ struct ProjectHeader: View {
             return isDir ? url.path : nil
         }
         .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    final class Coordinator: NSObject {
+        var onOpen: (String) -> Void
+
+        init(onOpen: @escaping (String) -> Void) {
+            self.onOpen = onOpen
+        }
+
+        @objc func showMenu(_ sender: NSButton) {
+            let menu = NSMenu()
+            // Match sidebar chrome; system menu 13pt reads tiny next to
+            // Inter 12pt headers, so bump to 14.
+            menu.font = NSFont(name: "InterVariable", size: 14)
+                ?? NSFont(name: "Inter Variable", size: 14)
+                ?? .systemFont(ofSize: 14)
+
+            let items = DeveloperFoldersButton.developerFolders()
+            if items.isEmpty {
+                let empty = NSMenuItem(
+                    title: "No folders in ~/Developer",
+                    action: nil,
+                    keyEquivalent: "")
+                empty.isEnabled = false
+                menu.addItem(empty)
+            } else {
+                for path in items {
+                    let name = (path as NSString).lastPathComponent
+                    let item = NSMenuItem(
+                        title: name,
+                        action: #selector(open(_:)),
+                        keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = path
+                    if let icon = NSImage(named: "PhanttomFolder") {
+                        icon.isTemplate = true
+                        item.image = icon
+                    }
+                    menu.addItem(item)
+                }
+            }
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: sender.bounds.height + 2),
+                in: sender)
+        }
+
+        @objc func open(_ sender: NSMenuItem) {
+            guard let path = sender.representedObject as? String else { return }
+            onOpen(path)
+        }
+    }
+}
+
+/// Borderless template button whose `contentTintColor` alpha tracks hover.
+private final class HoverTintButton: NSButton {
+    var idleAlpha: CGFloat = 0.65
+    var hoverAlpha: CGFloat = 0.95
+    private var tracking: NSTrackingArea?
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(
+            width: SidebarTrailingColumn.slot,
+            height: SidebarTrailingColumn.slot)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        contentTintColor = NSColor.white.withAlphaComponent(hoverAlpha)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        contentTintColor = NSColor.white.withAlphaComponent(idleAlpha)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }
