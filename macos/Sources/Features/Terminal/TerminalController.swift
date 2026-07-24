@@ -1055,7 +1055,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// Phanttom: sidebar storage; set up in TerminalController+PhanttomSidebar.swift.
     /// (Stored properties can't live in the extension.)
     var sidebarTabManager: SidebarTabManager?
-    var phanttomSettingsCancellables: Set<AnyCancellable> = []
 
     override func windowWillLoad() {
         // We do NOT want to cascade because we handle this manually from the manager.

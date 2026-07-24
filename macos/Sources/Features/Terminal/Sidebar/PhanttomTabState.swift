@@ -28,7 +28,7 @@ final class PhanttomTabState {
         case idle
         /// The tab's program reported progress (OSC 9;4) — animated sparkle.
         case working
-        /// Work finished while the tab was unselected — blue square.
+        /// Work finished while the tab was unselected — blue status dot.
         case done
         /// Bell rang while the tab was unselected — yellow square.
         case attention

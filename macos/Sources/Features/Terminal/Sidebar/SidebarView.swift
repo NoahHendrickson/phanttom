@@ -2,14 +2,12 @@ import SwiftUI
 
 /// The vertical tab sidebar: compact rows for plain terminal tabs, two-line
 /// cards for agent tabs (Claude/Codex). Both row styles lead with the status
-/// indicator (animated pixel rain while working, glowing "done"/"attention"
-/// dots) so the dots form one column down the list. Agent cards put the
-/// close button inline on the title row and anchor the agent icon + model
-/// name at the bottom-right beside the git branch line (the project group
-/// header already names the directory). Terminal rows keep a trailing
-/// close slot only.
+/// indicator (animated pixel rain while working, status dots / PR icons)
+/// so the marks form one column down the list. Agent cards put the close
+/// button inline on the title row and anchor the agent icon + model name at
+/// the bottom-right beside the git branch line. Chrome colors and metrics
+/// match the Figma design (solid `#161917`, no glass).
 struct SidebarView: View {
-    @ObservedObject var ghostty: Ghostty.App
     @ObservedObject var tabManager: SidebarTabManager
     /// The app-wide Sparkle update state, so "update available" is one click
     /// away in the sidebar footer (Cursor-style) rather than only in the
@@ -23,35 +21,6 @@ struct SidebarView: View {
     /// a group's "+" passes its first tab so the new one lands at the top of
     /// that group; nil appends at the default position.
     let onNewTab: (String, NSWindow?) -> Void
-
-    /// The sidebar's base color per style: system, custom, or derived from
-    /// the terminal theme (nudged so the split still reads). Prefer the
-    /// selected surface's live background for the terminal input — the
-    /// app-level config getter can lag or miss overrides (e.g. phanttom.conf).
-    private var resolvedBase: OSColor {
-        let terminal = OSColor(tabManager.terminalBackground ?? ghostty.config.backgroundColor)
-        return settings.resolvedSidebarColor(terminalBackground: terminal)
-    }
-
-    private var baseColor: Color {
-        Color(nsColor: resolvedBase)
-    }
-
-    /// Foreground derived from the base color's lightness so light sidebar
-    /// styles (System in light mode, light terminal themes) stay legible.
-    private var foreground: Color {
-        resolvedBase.isLightColor ? .black : .white
-    }
-
-    /// The sidebar background: base color at the configured opacity. When
-    /// glass is on, the window itself is transparent behind the sidebar
-    /// (see PhanttomWindowGlass) — so translucent pixels here reveal a
-    /// genuinely blurred (or clear, at 0) view of what's behind the window.
-    @ViewBuilder private var background: some View {
-        baseColor
-            .opacity(settings.sidebarOpacity)
-            .ignoresSafeArea()
-    }
 
     var body: some View {
         // Partition once per body evaluation (the policy lives in
@@ -67,60 +36,39 @@ struct SidebarView: View {
                 // Plain VStack, not LazyVStack: removal transitions are
                 // unreliable inside lazy containers on macOS 13, and a tab
                 // list is small enough that laziness buys nothing.
-                VStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 20) {
                     if grouped {
                         ForEach(groups) { group in
                             switch group {
                             case .project(let id, let title, let groupTabs):
-                                ProjectHeader(
-                                    name: title,
-                                    isCollapsed: collapseStore.isCollapsed(id),
-                                    foreground: foreground,
-                                    fontSize: settings.sidebarFontSize,
-                                    onToggle: {
-                                        withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
-                                            collapseStore.toggle(id)
-                                        }
-                                    },
-                                    onNewTab: {
-                                        collapseStore.expand(id)
-                                        onNewTab(id, groupTabs.first?.window)
-                                    }
-                                )
-                                .transition(.phanttomTabRow)
-                                if !collapseStore.isCollapsed(id) {
-                                    ForEach(groupTabs) { tab in
+                                projectBlock(
+                                    id: id,
+                                    title: title,
+                                    groupTabs: groupTabs)
+                            case .pending(let pendingTabs):
+                                VStack(spacing: 4) {
+                                    ForEach(pendingTabs) { tab in
                                         tabRow(tab)
                                     }
-                                }
-                            case .pending(let pendingTabs):
-                                ForEach(pendingTabs) { tab in
-                                    tabRow(tab)
                                 }
                             }
                         }
                     } else {
-                        ForEach(tabManager.tabs) { tab in
-                            tabRow(tab)
+                        VStack(spacing: 4) {
+                            ForEach(tabManager.tabs) { tab in
+                                tabRow(tab)
+                            }
                         }
                     }
 
-                    // Full-width row-style button trailing the last tab; it
-                    // rides the same layout animation, so it slides as tabs
-                    // come and go.
-                    NewTabRow(
-                        foreground: foreground,
-                        fontSize: settings.sidebarFontSize,
-                        // The bottom "New tab" is project-neutral: it always
-                        // opens in the home directory (and thus the "~"
-                        // group), not whatever project happens to be focused.
-                        // Expand that group first — a row created into a
-                        // collapsed group would appear and instantly vanish.
-                        action: {
-                            collapseStore.expand(NSHomeDirectory())
-                            onNewTab(NSHomeDirectory(), nil)
-                        }
-                    )
+                    // Full-width row trailing the last tab; project-neutral —
+                    // always opens in home (~), not the focused project.
+                    // Expand that group first so a row into a collapsed ~
+                    // doesn't appear and instantly vanish.
+                    NewTabRow {
+                        collapseStore.expand(NSHomeDirectory())
+                        onNewTab(NSHomeDirectory(), nil)
+                    }
                 }
                 .padding(8)
                 // Whether a tab change animates is decided at the publish
@@ -133,7 +81,7 @@ struct SidebarView: View {
             // the divider and padding so the footer doesn't grow an empty gap.
             if !updateModel.state.isIdle {
                 Rectangle()
-                    .fill(foreground.opacity(0.08))
+                    .fill(Color.white.opacity(0.08))
                     .frame(height: 1)
 
                 HStack {
@@ -145,7 +93,48 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(background)
+        .background(PhanttomSettings.sidebarBackground.ignoresSafeArea())
+    }
+
+    @ViewBuilder
+    private func projectBlock(
+        id: String,
+        title: String,
+        groupTabs: [SidebarTabManager.TabItem]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ProjectHeader(
+                name: title,
+                isCollapsed: collapseStore.isCollapsed(id),
+                // Developer-folder picker is home-only — other project
+                // groups already have a dedicated "+" for their own root.
+                showDeveloperFolders: id == NSHomeDirectory(),
+                onToggle: {
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                        collapseStore.toggle(id)
+                    }
+                },
+                onNewTab: {
+                    collapseStore.expand(id)
+                    onNewTab(id, groupTabs.first?.window)
+                },
+                onOpenProject: { path in
+                    collapseStore.expand(path)
+                    let insertBefore = tabManager.tabs.first { tab in
+                        (tab.git?.projectRoot ?? tab.directory) == path
+                    }?.window
+                    onNewTab(path, insertBefore)
+                }
+            )
+            .transition(.phanttomTabRow)
+            if !collapseStore.isCollapsed(id) {
+                VStack(spacing: 4) {
+                    ForEach(groupTabs) { tab in
+                        tabRow(tab)
+                    }
+                }
+            }
+        }
     }
 
     /// One tab row — shared between the flat and the grouped layout so the
@@ -154,8 +143,6 @@ struct SidebarView: View {
     private func tabRow(_ tab: SidebarTabManager.TabItem) -> some View {
         SidebarTabRow(
             tab: tab,
-            foreground: foreground,
-            fontSize: settings.sidebarFontSize,
             onSelect: { tabManager.select(tab) },
             onClose: { tabManager.close(tab) },
             onRename: { tabManager.rename(tab, to: $0) }
@@ -164,38 +151,38 @@ struct SidebarView: View {
     }
 }
 
-/// The "New tab" row at the end of the tab list: same metrics and hover
-/// treatment as a terminal tab row, so it reads as "the next tab slot".
+/// Bottom-of-list "New tab" control. Always seeds home (`~`), matching ⌘T's
+/// typical landing when no project context is chosen.
 private struct NewTabRow: View {
-    let foreground: Color
-    let fontSize: Double
     let action: () -> Void
 
     @State private var isHovering = false
 
-    private var iconSize: CGFloat { CGFloat(fontSize) + 2 }
-
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: "plus")
-                    .font(.system(size: max(6, fontSize - 2), weight: .medium))
-                    .frame(width: iconSize, height: iconSize)
+            HStack(spacing: SidebarLeadingColumn.contentSpacing) {
+                Image("PhanttomPlus")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 12, height: 12)
+                    .frame(
+                        width: SidebarLeadingColumn.width,
+                        height: SidebarLeadingColumn.width)
                 Text("New tab")
-                    .font(.system(size: fontSize))
+                    .font(SidebarFont.font(size: 12))
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(foreground.opacity(isHovering ? 1 : 0.7))
+            .foregroundStyle(Color.white.opacity(isHovering ? 0.95 : 0.55))
             .padding(.vertical, 8)
-            .padding(.leading, 8)
-            .padding(.trailing, 4)
+            .padding(.leading, SidebarLeadingColumn.padding)
+            .padding(.trailing, SidebarTrailingColumn.padding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(foreground.opacity(isHovering ? 0.04 : 0))
+                .fill(Color.white.opacity(isHovering ? 0.04 : 0))
         )
         .onHover { isHovering = $0 }
         .backport.pointerStyle(.link)
@@ -216,15 +203,15 @@ extension AnyTransition {
 
 struct SidebarTabRow: View {
     let tab: SidebarTabManager.TabItem
-    let foreground: Color
-    let fontSize: Double
     let onSelect: () -> Void
     let onClose: () -> Void
     let onRename: (String?) -> Void
 
-    /// Secondary text and icons scale with the title so rows stay balanced.
-    private var subtitleSize: Double { max(8, fontSize - 1) }
-    private var iconSize: CGFloat { CGFloat(fontSize) + 2 }
+    private let titleSize: Double = 12
+    private let subtitleSize: Double = 10
+    /// Same slot as `SidebarTrailingColumn.slot` / project-header Plus so
+    /// close X and Plus share a center-x (`padding + slot/2`).
+    private let closeSlot: CGFloat = SidebarTrailingColumn.slot
 
     @State private var isHovering = false
     @State private var isHoveringClose = false
@@ -234,9 +221,12 @@ struct SidebarTabRow: View {
     @FocusState private var editFocused: Bool
 
     private var rowBackground: Color {
-        if tab.isSelected { return foreground.opacity(0.08) }
-        if isHovering { return foreground.opacity(0.04) }
+        if tab.isSelected || isHovering { return Color.white.opacity(0.04) }
         return Color.clear
+    }
+
+    private var cornerRadius: CGFloat {
+        tab.isSelected ? 12 : 8
     }
 
     var body: some View {
@@ -255,7 +245,7 @@ struct SidebarTabRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 8)
-            .padding(.leading, 8)
+            .padding(.leading, SidebarLeadingColumn.padding)
             .padding(.trailing, 4)
             .contentShape(Rectangle())
             // Double-tap as .gesture plus single-tap as .simultaneousGesture:
@@ -273,10 +263,10 @@ struct SidebarTabRow: View {
                 case .codex: agentTrailing(icon: "PhanttomCodex")
                 }
             }
-            .padding(.trailing, 8)
+            .padding(.trailing, SidebarTrailingColumn.padding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(rowBackground))
+        .background(RoundedRectangle(cornerRadius: cornerRadius).fill(rowBackground))
         // The idle trailing slot is Color.clear, which is not hit-testable —
         // without an explicit shape, hover dies over the far-right strip of
         // a non-hovered row (exactly where the X will appear).
@@ -320,8 +310,8 @@ struct SidebarTabRow: View {
     private var titleEditor: some View {
         TextField("", text: $draft)
             .textFieldStyle(.plain)
-            .font(.system(size: fontSize))
-            .foregroundStyle(foreground)
+            .font(SidebarFont.font(size: titleSize))
+            .foregroundStyle(.white)
             .focused($editFocused)
             .onSubmit(commitRename)
             .onChange(of: editFocused) { focused in
@@ -332,41 +322,39 @@ struct SidebarTabRow: View {
             }
     }
 
-    /// Compact 29pt row: leading status slot (same position and metrics as
-    /// the agent cards, so the idle/status dots line up down the whole
-    /// list) + abbreviated path.
+    /// Compact row: leading status slot + abbreviated path.
     private var terminalRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: SidebarLeadingColumn.contentSpacing) {
             statusIndicator
-                .frame(width: 15, height: iconSize)
+                .frame(width: SidebarLeadingColumn.width, height: 13)
             if isEditing {
                 titleEditor
             } else {
                 Text(tab.customTitle ?? tab.abbreviatedDirectory ?? (tab.title.isEmpty ? "Terminal" : tab.title))
-                    .font(.system(size: fontSize))
-                    .foregroundStyle(foreground)
+                    .font(SidebarFont.font(size: titleSize))
+                    .foregroundStyle(.white)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
-        .frame(height: iconSize)
     }
 
     /// Two-line agent card: leading status slot, then title over
     /// directory + branch. The close button and agent icon live in the
     /// trailing column (`agentTrailing`), outside the select/rename gestures.
     private var agentRow: some View {
-        HStack(spacing: 8) {
-            // Fixed-width slot so titles stay put as status comes and goes.
+        HStack(spacing: SidebarLeadingColumn.contentSpacing) {
+            // Fixed-width slot so titles stay put as status comes and goes;
+            // width matches the project-header folder column above.
             statusIndicator
-                .frame(width: 15, height: 18)
-            VStack(alignment: .leading, spacing: 2) {
+                .frame(width: SidebarLeadingColumn.width, height: 18)
+            VStack(alignment: .leading, spacing: 4) {
                 if isEditing {
                     titleEditor
                 } else {
                     Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
-                        .font(.system(size: fontSize))
-                        .foregroundStyle(foreground)
+                        .font(SidebarFont.font(size: titleSize))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -388,43 +376,48 @@ struct SidebarTabRow: View {
     /// same metrics for the branch and the no-repo directory fallback so
     /// the line doesn't shift when a directory becomes a checkout.
     private func subtitleLabel(icon: String, text: String) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2) {
             Image(icon)
                 .resizable()
                 .scaledToFit()
-                .frame(width: subtitleSize, height: subtitleSize)
+                .frame(width: 10, height: 10)
             Text(text)
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .foregroundStyle(foreground.opacity(0.8))
-        .font(.system(size: subtitleSize))
+        .foregroundStyle(Color.white.opacity(0.5))
+        .font(SidebarFont.font(size: subtitleSize))
     }
 
     /// Status indicator: leading slot on both agent cards and terminal
     /// rows. Agent activity wins; an otherwise-idle tab shows its branch's
-    /// GitHub PR state (green = open, purple = merged), and a faint white
-    /// dot when there's nothing else to say.
+    /// GitHub PR state (PR icons), and a faint white dot when there's
+    /// nothing else to say.
     @ViewBuilder private var statusIndicator: some View {
         switch tab.status {
         case .idle:
             switch tab.prState {
             case .open:
-                statusDot(Color(red: 0x3F / 255, green: 0xB9 / 255, blue: 0x50 / 255))
+                Image("PhanttomGitPullRequestOpen")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 12, height: 12)
             case .merged:
-                statusDot(Color(red: 0xA3 / 255, green: 0x71 / 255, blue: 0xF7 / 255))
+                Image("PhanttomGitPullRequestMerged")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 12, height: 12)
             case nil:
-                // Faint presence mark — no glow, unlike done/attention dots.
                 Circle()
-                    .fill(Color.white.opacity(0.12))
+                    .fill(Color.white.opacity(0.3))
                     .frame(width: 8, height: 8)
             }
         case .working:
             PixelSparkleView()
         case .done:
-            statusDot(Color(red: 0x2C / 255, green: 0x86 / 255, blue: 0xF4 / 255))
+            statusDot(PhanttomSettings.doneStatusColor)
         case .attention:
-            statusDot(Color(red: 0xF4 / 255, green: 0xBC / 255, blue: 0x2C / 255))
+            statusDot(PhanttomSettings.attentionStatusColor)
         }
     }
 
@@ -432,44 +425,39 @@ struct SidebarTabRow: View {
         Circle()
             .fill(color)
             .frame(width: 8, height: 8)
-            .shadow(color: color.opacity(0.5), radius: 2)
     }
 
     /// Trailing column on agent cards: hover close button aligned with the
     /// title line, model label aligned with the subtitle line. With a known
-    /// model on a Claude tab the label is the bare brand mark + model name
-    /// (per the design); until the hook has reported one — or for kinds
-    /// with no brand mark (Codex) — it stays the chip-style `icon`.
+    /// model the label is the bare brand mark + model name; until the hook
+    /// has reported one it stays the chip-style `icon`.
     private func agentTrailing(icon: String) -> some View {
-        VStack(alignment: .trailing, spacing: 2) {
+        VStack(alignment: .trailing, spacing: 4) {
             Group {
                 if isHovering {
-                    closeButton(glyphSize: 8, slot: iconSize)
+                    closeButton
                 } else {
                     Color.clear
                 }
             }
-            .frame(width: iconSize, height: iconSize)
-            // Model label is a Claude-only contract today; resolve the mark
-            // from kind so a stale model on another kind can't hardcode the
-            // Claude asset over the chip `icon`.
+            .frame(width: closeSlot, height: closeSlot)
             if let model = tab.model, let mark = brandMark(for: tab.kind) {
-                HStack(spacing: 3) {
+                HStack(spacing: 4) {
                     Image(mark)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: CGFloat(subtitleSize) - 2,
-                               height: CGFloat(subtitleSize) - 2)
+                        .frame(width: 8, height: 8)
                     Text(model)
-                        .font(.system(size: subtitleSize))
-                        .foregroundStyle(foreground.opacity(0.65))
+                        .font(SidebarFont.font(size: subtitleSize))
+                        .foregroundStyle(Color.white.opacity(0.5))
                         .lineLimit(1)
                 }
-                .frame(height: iconSize)
+                .frame(height: 13)
             } else {
                 Image(icon)
                     .resizable()
-                    .frame(width: iconSize, height: iconSize)
+                    .scaledToFit()
+                    .frame(width: 13, height: 13)
             }
         }
     }
@@ -478,33 +466,34 @@ struct SidebarTabRow: View {
     private func brandMark(for kind: SidebarTabManager.TabKind) -> String? {
         switch kind {
         case .claude: return "PhanttomClaudeMark"
-        case .codex, .terminal: return nil
+        case .codex: return "PhanttomCodexMark"
+        case .terminal: return nil
         }
     }
 
-    /// Trailing edge of terminal rows: just the hover close button (status
-    /// lives in the leading slot, mirroring agent cards). Fixed 18×18 slot
-    /// so the X appearing never shifts row height or label width.
+    /// Trailing edge of terminal rows: just the hover close button.
     @ViewBuilder private var trailing: some View {
         Group {
             if isHovering {
-                closeButton(glyphSize: 8, slot: 16)
+                closeButton
             } else {
                 Color.clear
             }
         }
-        .frame(width: 18, height: 18)
+        .frame(width: closeSlot, height: closeSlot)
     }
 
-    private func closeButton(glyphSize: Double, slot: CGFloat) -> some View {
+    private var closeButton: some View {
         Button(action: onClose) {
+            // SF Symbol in the shared trailing slot (16pt); slightly larger
+            // than the old 6pt/13pt Figma metrics so it reads at sidebar scale.
             Image(systemName: "xmark")
-                .font(.system(size: glyphSize, weight: .bold))
-                .foregroundStyle(foreground.opacity(isHoveringClose ? 0.95 : 0.55))
-                .frame(width: slot, height: slot)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(Color.white.opacity(isHoveringClose ? 0.95 : 0.55))
+                .frame(width: closeSlot, height: closeSlot)
                 .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(foreground.opacity(isHoveringClose ? 0.14 : 0))
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.white.opacity(isHoveringClose ? 0.14 : 0))
                 )
                 .contentShape(Rectangle())
         }
@@ -518,15 +507,16 @@ struct SidebarTabRow: View {
 /// The "working" indicator: pixel rain. Four columns of drops fall through a
 /// 5-row grid, each column with its own speed and phase; the drop head is
 /// bright with an exponential trail above it and a sharp falloff below.
-/// Ported from the design's canvas reference ("Bare rain, 4 col").
+/// Ported from the design's canvas reference ("Bare rain, 4 col"). Color is
+/// locked to Figma `#24FE8A`.
 struct PixelSparkleView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ObservedObject private var settings = PhanttomSettings.shared
 
     private static let rows = 5
     private static let cols = 4
     private static let pitch: CGFloat = 3.8
     private static let cell: CGFloat = 2.85
+    private static let color = PhanttomSettings.workingIndicatorColor
 
     /// Deterministic pseudo-random in [0, 1), same hash as the reference.
     private static func frac(_ n: Double) -> Double {
@@ -535,26 +525,24 @@ struct PixelSparkleView: View {
     }
 
     var body: some View {
-        let color = settings.sidebarWorkingColor
-        return Group {
+        Group {
             if reduceMotion {
-                Canvas { canvas, _ in Self.draw(t: 0.6, color: color, into: &canvas) }
+                Canvas { canvas, _ in Self.draw(t: 0.6, into: &canvas) }
             } else {
                 TimelineView(.animation) { context in
                     Canvas { canvas, _ in
                         Self.draw(
                             t: context.date.timeIntervalSinceReferenceDate,
-                            color: color,
                             into: &canvas)
                     }
                 }
             }
         }
-        .frame(width: 15, height: 18)
+        .frame(width: SidebarLeadingColumn.width, height: 18)
         .accessibilityLabel("Working")
     }
 
-    private static func draw(t: Double, color: Color, into canvas: inout GraphicsContext) {
+    private static func draw(t: Double, into canvas: inout GraphicsContext) {
         for i in 0..<cols {
             let speed = 2.5 + frac(Double(i) * 5.7) * 2.5
             let phase = frac(Double(i) * 9.1) * 7
@@ -578,4 +566,3 @@ struct PixelSparkleView: View {
         }
     }
 }
-

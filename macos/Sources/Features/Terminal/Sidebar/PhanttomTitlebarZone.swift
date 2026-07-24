@@ -9,12 +9,9 @@ private final class PhanttomGroupingButton: NSButton {}
 
 extension TerminalWindow {
     /// Phanttom: splits the titlebar into two color zones aligned with the
-    /// sidebar divider (Cursor-style chrome). The left zone renders exactly
-    /// like the sidebar (same resolved color at the same opacity, so window
-    /// glass shows through identically); the right zone renders what the
-    /// window style would have painted for the terminal side. The style's
-    /// own full-width fill is cleared so the translucent left zone isn't
-    /// backed by an opaque layer.
+    /// sidebar divider (Cursor-style chrome). Left = Figma sidebar `#161917`,
+    /// right = Figma terminal `#101211`. The style's own full-width fill is
+    /// cleared so the zones own the chrome.
     ///
     /// Called (deferred via a same-pass runloop block — see
     /// phanttomSyncAppearanceDidRun) from syncAppearance so it runs after
@@ -32,7 +29,7 @@ extension TerminalWindow {
 
         // Take over background painting from the window style: it fills the
         // whole titlebar with one color (container on Ventura, titlebar view
-        // on Tahoe), which would sit opaquely behind our translucent zones.
+        // on Tahoe), which would sit opaquely behind our zones.
         titlebarView.wantsLayer = true
         titlebarView.layer?.backgroundColor = nil
         titlebarContainer?.layer?.backgroundColor = nil
@@ -54,30 +51,19 @@ extension TerminalWindow {
         left.autoresizingMask = [.height, .maxXMargin]
         right.autoresizingMask = [.height, .width]
 
-        // Left: the sidebar's exact look — resolved color at sidebar opacity.
-        let settings = PhanttomSettings.shared
-        let base = settings.resolvedSidebarColor(terminalBackground: preferredBackgroundColor)
-        left.layer?.backgroundColor = base
-            .withAlphaComponent(base.alphaComponent * settings.sidebarOpacity)
-            .cgColor
+        left.layer?.backgroundColor = PhanttomSettings.sidebarBackgroundNS.cgColor
 
-        // Right: what the transparent style would paint for the terminal side
-        // (clear when the Tahoe glass background style owns the titlebar).
+        // Right: solid terminal chrome, or clear when an upstream glass
+        // titlebar style owns the material.
         let glassTitlebar = derivedConfig.backgroundBlur.isGlassStyle &&
             (derivedConfig.macosTitlebarStyle == .transparent || derivedConfig.macosTitlebarStyle == .tabs)
         right.layer?.backgroundColor = glassTitlebar
             ? NSColor.clear.cgColor
-            : (preferredBackgroundColor ?? .windowBackgroundColor).cgColor
+            : PhanttomSettings.terminalBackgroundNS.cgColor
 
         // Hairline continuing the sidebar's divider through the titlebar.
-        // Stacked topmost (above the left zone, which sits above the right
-        // zone). Geometry (phanttomTitlebarZoneSetWidth) leaves the divider
-        // column free of BOTH zones, so this translucent hairline composites
-        // directly over the window background — exactly what the split
-        // view's divider composites over (opaque terminal color, or the
-        // glass blur when the window is transparent). Backing it with
-        // either zone's color tints the titlebar segment differently from
-        // the segment below it.
+        // Geometry (phanttomTitlebarZoneSetWidth) leaves the divider column
+        // free of BOTH zones.
         let divider: PhanttomTitlebarDividerView
         if let existing = titlebarView.subviews
             .compactMap({ $0 as? PhanttomTitlebarDividerView }).first {
@@ -88,23 +74,17 @@ extension TerminalWindow {
             divider.autoresizingMask = [.height]
             titlebarView.addSubview(divider, positioned: .above, relativeTo: left)
         }
-        divider.layer?.backgroundColor =
-            ((contentView as? SidebarSplitView)?.dividerColor
-                ?? NSColor(white: 0.35, alpha: 0.4)).cgColor
+        divider.layer?.backgroundColor = PhanttomSettings.dividerColorNS.cgColor
 
         // Grouping mode button hugging the sidebar's right edge (geometry in
-        // phanttomTitlebarZoneSetWidth, so it rides divider drags). Added
-        // normally (topmost), unlike the zones, so it draws above them like
-        // the traffic lights and accessories do.
+        // phanttomTitlebarZoneSetWidth, so it rides divider drags).
         if !titlebarView.subviews.contains(where: { $0 is PhanttomGroupingButton }) {
             let button = PhanttomGroupingButton()
             button.isBordered = false
             button.bezelStyle = .regularSquare
-            button.image = NSImage(
-                systemSymbolName: "rectangle.3.group",
-                accessibilityDescription: "Tab Grouping")
+            button.image = NSImage(named: "PhanttomRows")
                 ?? NSImage(
-                    systemSymbolName: "square.grid.2x2",
+                    systemSymbolName: "rectangle.3.group",
                     accessibilityDescription: "Tab Grouping")
             button.contentTintColor = .secondaryLabelColor
             button.toolTip = "Tab Grouping"
@@ -159,9 +139,7 @@ extension TerminalWindow {
 
         // Mirror the split view's geometry exactly: sidebar pane
         // [0, width - 1), divider column [width - 1, width), terminal from
-        // width. The divider column gets NEITHER zone behind it, so the
-        // hairline composites over the bare window background exactly like
-        // the split view's own divider one pixel below.
+        // width. The divider column gets NEITHER zone behind it.
         let dividerX = max(width - 1, 0)
         if let left = titlebarView.subviews
             .compactMap({ $0 as? PhanttomTitlebarLeftZoneView }).first {

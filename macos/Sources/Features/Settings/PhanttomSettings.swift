@@ -1,43 +1,64 @@
+import AppKit
 import SwiftUI
 import GhosttyKit
 
-/// Phanttom's user-adjustable appearance settings.
+/// Phanttom's user-adjustable settings plus locked chrome tokens.
 ///
-/// Terminal-rendering settings (background color/opacity/blur) are applied by
-/// writing a managed config fragment (`phanttom.conf`, next to the user's main
-/// Ghostty config) and asking libghostty to reload — the same pipeline as
-/// hand-edited config, so everything live-reloads and stays overridable. The
-/// user's own config file is touched exactly once, to add an optional include
-/// of the fragment.
-///
-/// Sidebar settings never touch libghostty (the sidebar is pure Swift); they
-/// persist in UserDefaults and apply instantly through SwiftUI.
+/// Terminal background is opinionated (Figma `#101211`): written into a
+/// managed config fragment (`phanttom.conf`) after a one-time notice on
+/// first launch, then reloaded via libghostty. Font-size override remains
+/// optional. Sidebar grouping is the only sidebar preference — appearance
+/// is hardcoded from `Chrome` below.
 @MainActor
 final class PhanttomSettings: ObservableObject {
     static let shared = PhanttomSettings()
 
-    /// Set when the settings window opens; used to trigger config reloads.
+    /// Single source for locked Figma chrome — sRGB components in 0…1.
+    /// Every `Color` / `NSColor` / `phanttom.conf` hex derives from here.
+    enum Chrome {
+        struct RGB: Equatable {
+            let r: Double
+            let g: Double
+            let b: Double
+
+            var color: Color { Color(red: r, green: g, blue: b) }
+
+            var nsColor: NSColor {
+                NSColor(red: r, green: g, blue: b, alpha: 1)
+            }
+
+            /// Lowercase `#rrggbb` for Ghostty config fragments.
+            var hex: String {
+                String(
+                    format: "#%02x%02x%02x",
+                    Int(round(r * 255)),
+                    Int(round(g * 255)),
+                    Int(round(b * 255)))
+            }
+
+            static func byte(_ r: Int, _ g: Int, _ b: Int) -> RGB {
+                RGB(r: Double(r) / 255, g: Double(g) / 255, b: Double(b) / 255)
+            }
+        }
+
+        static let sidebar = RGB.byte(0x16, 0x19, 0x17)
+        static let terminal = RGB.byte(0x10, 0x12, 0x11)
+        static let divider = RGB.byte(0x2D, 0x2E, 0x2E)
+        static let working = RGB.byte(0x24, 0xFE, 0x8A)
+        static let done = RGB.byte(0x3A, 0x89, 0xD8)
+        static let attention = RGB.byte(0xF5, 0xCC, 0x64)
+    }
+
+    static var sidebarBackground: Color { Chrome.sidebar.color }
+    static var sidebarBackgroundNS: NSColor { Chrome.sidebar.nsColor }
+    static var terminalBackgroundNS: NSColor { Chrome.terminal.nsColor }
+    static var dividerColorNS: NSColor { Chrome.divider.nsColor }
+    static var workingIndicatorColor: Color { Chrome.working.color }
+    static var doneStatusColor: Color { Chrome.done.color }
+    static var attentionStatusColor: Color { Chrome.attention.color }
+
+    /// Set when the app (or settings window) is ready; used to trigger config reloads.
     weak var ghosttyApp: Ghostty.App?
-
-    // MARK: - Terminal background (applied via config fragment)
-
-    @Published var overrideBackground: Bool {
-        didSet { persist(); scheduleApply() }
-    }
-
-    @Published var backgroundColor: Color {
-        didSet { persist(); scheduleApply() }
-    }
-
-    /// 0.1 ... 1.0
-    @Published var backgroundOpacity: Double {
-        didSet { persist(); scheduleApply() }
-    }
-
-    /// Blur radius, 0 = off.
-    @Published var backgroundBlur: Double {
-        didSet { persist(); scheduleApply() }
-    }
 
     // MARK: - Font (applied via config fragment)
 
@@ -50,55 +71,7 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist(); scheduleApply() }
     }
 
-    // MARK: - Sidebar (applied instantly, app-side only)
-
-    enum SidebarStyle: String, CaseIterable, Identifiable {
-        case matchTerminal
-        case system
-        case custom
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .matchTerminal: return "Match Terminal"
-            case .system: return "System"
-            case .custom: return "Custom"
-            }
-        }
-    }
-
-    @Published var sidebarStyle: SidebarStyle {
-        didSet { persist() }
-    }
-
-    @Published var sidebarColor: Color {
-        didSet { persist() }
-    }
-
-    /// 0.1 ... 1.0 — how solid the sidebar's color layer is.
-    @Published var sidebarOpacity: Double {
-        didSet { persist() }
-    }
-
-    /// Behind-window glass material under the color layer (Finder-sidebar
-    /// style blur, independent of the terminal's window-level blur).
-    @Published var sidebarGlass: Bool {
-        didSet { persist() }
-    }
-
-    /// 0.1 ... 1.0 — how strong the glass material reads. AppKit's material
-    /// blur radius isn't publicly tunable, so this blends the frosted layer's
-    /// visibility instead, which is what "less blurry" looks like.
-    @Published var sidebarBlurAmount: Double {
-        didSet { persist() }
-    }
-
-    /// Sidebar row title size in points; secondary text and icons scale from
-    /// it. The design's baseline is 11.
-    @Published var sidebarFontSize: Double {
-        didSet { persist() }
-    }
+    // MARK: - Sidebar (behavioral only)
 
     /// Group sidebar tabs under a header per project (git repo toplevel,
     /// with worktrees folded into their parent repo; non-git tabs group by
@@ -111,85 +84,71 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
-    /// Color of the "working" (thinking) pixel-rain indicator.
-    static let defaultWorkingColor = Color.white
-
-    @Published var sidebarWorkingColor: Color {
-        didSet { persist() }
-    }
-
-    /// The sidebar's base color per style, resolved to AppKit so both the
-    /// SwiftUI sidebar and the window chrome (titlebar zone) derive from the
-    /// same logic. `terminalBackground` feeds the `.matchTerminal` style.
-    func resolvedSidebarColor(terminalBackground: OSColor?) -> OSColor {
-        switch sidebarStyle {
-        case .system:
-            return .windowBackgroundColor
-        case .custom:
-            return OSColor(sidebarColor)
-        case .matchTerminal:
-            let base = terminalBackground ?? .windowBackgroundColor
-            return base.isLightColor ? base.darken(by: 0.06) : base.darken(by: 0.25)
-        }
-    }
-
     // MARK: - Persistence
 
     private enum Keys {
-        static let overrideBackground = "PhanttomOverrideBackground"
-        static let backgroundColor = "PhanttomBackgroundColor"
-        static let backgroundOpacity = "PhanttomBackgroundOpacity"
-        static let backgroundBlur = "PhanttomBackgroundBlur"
         static let overrideFontSize = "PhanttomOverrideFontSize"
         static let fontSize = "PhanttomFontSize"
-        static let sidebarStyle = "PhanttomSidebarStyle"
-        static let sidebarColor = "PhanttomSidebarColor"
-        static let sidebarOpacity = "PhanttomSidebarOpacity"
-        static let sidebarGlass = "PhanttomSidebarGlass"
-        static let sidebarBlurAmount = "PhanttomSidebarBlurAmount"
-        static let sidebarFontSize = "PhanttomSidebarFontSize"
         static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
-        static let sidebarWorkingColor = "PhanttomSidebarWorkingColor"
+        /// One-time notice before the first locked-chrome write.
+        static let lockedChromeNoticeShown = "PhanttomLockedChromeNoticeShown"
     }
 
     private var loaded = false
 
     private init() {
         let defaults = UserDefaults.standard
-        overrideBackground = defaults.bool(forKey: Keys.overrideBackground)
-        backgroundColor = Self.color(fromHex: defaults.string(forKey: Keys.backgroundColor)) ?? Color(red: 0.11, green: 0.11, blue: 0.13)
-        backgroundOpacity = defaults.object(forKey: Keys.backgroundOpacity) as? Double ?? 1.0
-        backgroundBlur = defaults.object(forKey: Keys.backgroundBlur) as? Double ?? 0
         overrideFontSize = defaults.bool(forKey: Keys.overrideFontSize)
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 13
-        sidebarStyle = SidebarStyle(rawValue: defaults.string(forKey: Keys.sidebarStyle) ?? "") ?? .matchTerminal
-        sidebarColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarColor)) ?? Color(red: 0.09, green: 0.09, blue: 0.11)
-        sidebarOpacity = defaults.object(forKey: Keys.sidebarOpacity) as? Double ?? 1.0
-        sidebarGlass = defaults.bool(forKey: Keys.sidebarGlass)
-        sidebarBlurAmount = defaults.object(forKey: Keys.sidebarBlurAmount) as? Double ?? 1.0
-        sidebarFontSize = defaults.object(forKey: Keys.sidebarFontSize) as? Double ?? 11
         sidebarGroupByProject = defaults.object(forKey: Keys.sidebarGroupByProject) as? Bool ?? true
-        sidebarWorkingColor = Self.color(fromHex: defaults.string(forKey: Keys.sidebarWorkingColor)) ?? Self.defaultWorkingColor
         loaded = true
+    }
+
+    /// Wire the Ghostty app. First launch shows a notice before writing the
+    /// locked chrome fragment; later launches apply silently.
+    func setupOnLaunch(ghostty: Ghostty.App) {
+        ghosttyApp = ghostty
+        // Ghostty.app is the XCTest host — never mutate the user's config
+        // or pop a notice during tests.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+        if UserDefaults.standard.bool(forKey: Keys.lockedChromeNoticeShown) {
+            apply()
+            return
+        }
+        // After the first window is up so the alert isn't buried.
+        DispatchQueue.main.async { [weak self] in
+            self?.presentLockedChromeNoticeThenApply()
+        }
+    }
+
+    private func presentLockedChromeNoticeThenApply() {
+        // Re-check: another window's launch path may have already shown it.
+        guard !UserDefaults.standard.bool(forKey: Keys.lockedChromeNoticeShown) else {
+            apply()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Phanttom locks the terminal background"
+        alert.informativeText =
+            "Phanttom sets the terminal background to \(Chrome.terminal.hex) "
+            + "to match its sidebar chrome, via a managed phanttom.conf "
+            + "include in your Ghostty config.\n\n"
+            + "Your own config only gets a one-line include. Remove "
+            + "`config-file = ?phanttom.conf` anytime to opt out."
+        alert.addButton(withTitle: "Continue")
+        _ = alert.runModal()
+        UserDefaults.standard.set(true, forKey: Keys.lockedChromeNoticeShown)
+        apply()
     }
 
     private func persist() {
         guard loaded else { return }
         let defaults = UserDefaults.standard
-        defaults.set(overrideBackground, forKey: Keys.overrideBackground)
-        defaults.set(Self.hex(from: backgroundColor), forKey: Keys.backgroundColor)
-        defaults.set(backgroundOpacity, forKey: Keys.backgroundOpacity)
-        defaults.set(backgroundBlur, forKey: Keys.backgroundBlur)
         defaults.set(overrideFontSize, forKey: Keys.overrideFontSize)
         defaults.set(fontSize, forKey: Keys.fontSize)
-        defaults.set(sidebarStyle.rawValue, forKey: Keys.sidebarStyle)
-        defaults.set(Self.hex(from: sidebarColor), forKey: Keys.sidebarColor)
-        defaults.set(sidebarOpacity, forKey: Keys.sidebarOpacity)
-        defaults.set(sidebarGlass, forKey: Keys.sidebarGlass)
-        defaults.set(sidebarBlurAmount, forKey: Keys.sidebarBlurAmount)
-        defaults.set(sidebarFontSize, forKey: Keys.sidebarFontSize)
         defaults.set(sidebarGroupByProject, forKey: Keys.sidebarGroupByProject)
-        defaults.set(Self.hex(from: sidebarWorkingColor), forKey: Keys.sidebarWorkingColor)
     }
 
     // MARK: - Applying terminal settings
@@ -233,14 +192,12 @@ final class PhanttomSettings: ObservableObject {
         let configDirectory = URL(fileURLWithPath: mainConfigPath)
             .deletingLastPathComponent()
         var lines = [
-            "# Managed by Phanttom Settings — do not edit; changes are overwritten.",
+            "# Managed by Phanttom — do not edit; changes are overwritten.",
             "# Remove the `config-file = ?phanttom.conf` line from your config to disable.",
+            "background = \(Chrome.terminal.hex)",
+            "background-opacity = 1",
+            "background-blur = 0",
         ]
-        if overrideBackground {
-            lines.append("background = \(Self.hex(from: backgroundColor))")
-            lines.append("background-opacity = \(String(format: "%.2f", backgroundOpacity))")
-            lines.append("background-blur = \(Int(backgroundBlur))")
-        }
         if overrideFontSize {
             lines.append("font-size = \(String(format: "%g", fontSize))")
         }
@@ -296,29 +253,5 @@ final class PhanttomSettings: ObservableObject {
         } else {
             try addition.write(to: mainURL, atomically: true, encoding: .utf8)
         }
-    }
-
-    // MARK: - Hex helpers
-
-    static func hex(from color: Color) -> String {
-        let ns = NSColor(color).usingColorSpace(.sRGB) ?? .black
-        return String(
-            format: "#%02x%02x%02x",
-            Int(round(ns.redComponent * 255)),
-            Int(round(ns.greenComponent * 255)),
-            Int(round(ns.blueComponent * 255))
-        )
-    }
-
-    static func color(fromHex hex: String?) -> Color? {
-        guard var hex else { return nil }
-        hex = hex.trimmingCharacters(in: .whitespaces)
-        if hex.hasPrefix("#") { hex.removeFirst() }
-        guard hex.count == 6, let value = UInt32(hex, radix: 16) else { return nil }
-        return Color(
-            red: Double((value >> 16) & 0xFF) / 255,
-            green: Double((value >> 8) & 0xFF) / 255,
-            blue: Double(value & 0xFF) / 255
-        )
     }
 }

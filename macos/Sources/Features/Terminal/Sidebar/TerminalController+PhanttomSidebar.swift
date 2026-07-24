@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 import GhosttyKit
 
@@ -29,7 +28,6 @@ extension TerminalController {
         let sidebarTabManager = SidebarTabManager(window: window)
         self.sidebarTabManager = sidebarTabManager
         let sidebarHost = NSHostingView(rootView: SidebarView(
-            ghostty: ghostty,
             tabManager: sidebarTabManager,
             // The app-wide Sparkle state; the fallback only exists so previews
             // and tests without an AppDelegate get an inert (idle) model.
@@ -53,36 +51,11 @@ extension TerminalController {
         window.contentView = sidebarSplit
         addSidebarToggleAccessory(to: window)
 
-        // Glass toggles/blur re-run the (heavier) glass + appearance path;
-        // other sidebar appearance settings only need the titlebar zone
-        // repainted. @Published emits on willSet, so defer a turn for the
-        // changed value to land.
-        let settings = PhanttomSettings.shared
-        Publishers.CombineLatest(settings.$sidebarGlass, settings.$sidebarBlurAmount)
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _, _ in
-                DispatchQueue.main.async {
-                    (self?.window as? TerminalWindow)?.phanttomGlassSettingsChanged()
-                }
-            }
-            .store(in: &phanttomSettingsCancellables)
-        Publishers.CombineLatest3(
-            settings.$sidebarStyle, settings.$sidebarColor, settings.$sidebarOpacity)
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async {
-                    (self?.window as? TerminalWindow)?.syncPhanttomTitlebarZone()
-                }
-            }
-            .store(in: &phanttomSettingsCancellables)
-
         return true
     }
 
-    /// Create a tab from the sidebar (a group header's "+", or the bottom
-    /// New-tab row) — the one owner of the seed/catch-up/reorder contract:
+    /// Create a tab from the sidebar (a group header's "+") — the one owner
+    /// of the seed/catch-up/reorder contract:
     ///
     /// - Starts from the parent surface's inherited tab config (what the
     ///   plain ⌘T path uses, so font size etc. carry over) with the
@@ -129,9 +102,10 @@ extension TerminalController {
     /// right of the traffic lights (Cursor-style).
     private func addSidebarToggleAccessory(to window: NSWindow) {
         guard window.styleMask.contains(.titled) else { return }
-        guard let image = NSImage(
-            systemSymbolName: "sidebar.left",
-            accessibilityDescription: "Toggle Sidebar") else { return }
+        guard let image = NSImage(named: "PhanttomSidebarSimple")
+            ?? NSImage(
+                systemSymbolName: "sidebar.left",
+                accessibilityDescription: "Toggle Sidebar") else { return }
 
         let button = NSButton(image: image, target: self, action: #selector(togglePhanttomSidebar(_:)))
         button.isBordered = false
