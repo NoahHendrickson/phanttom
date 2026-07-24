@@ -95,96 +95,114 @@ enum SidebarTrailingColumn {
 /// plus). On hover the folder swaps to a disclosure chevron so
 /// expand/collapse is obvious. The leading glyph sits in the same column
 /// as the tab status dots below.
-///
-/// The home group (`~`) also shows a folder-plus menu immediately left of
-/// "+" listing top-level folders in `~/Developer`.
 struct ProjectHeader: View {
     let name: String
     let isCollapsed: Bool
-    /// Home group only — `~/Developer` folder picker beside "+".
-    var showDeveloperFolders: Bool = false
+    /// Off during reorder drag / settle (same as tab rows).
+    var hoverEnabled: Bool = true
     let onToggle: () -> Void
     let onNewTab: () -> Void
-    var onOpenProject: (String) -> Void = { _ in }
 
     @State private var isHovering = false
     @State private var isHoveringToggle = false
     @State private var isHoveringPlus = false
 
+    private var showHover: Bool { hoverEnabled && isHovering }
+    private var showToggleHover: Bool { hoverEnabled && isHoveringToggle }
+    private var showPlusHover: Bool { hoverEnabled && isHoveringPlus }
+
     var body: some View {
         HStack(spacing: 0) {
-            Button(action: onToggle) {
-                HStack(spacing: SidebarLeadingColumn.contentSpacing) {
-                    // Idle: folder / open-folder. Hover: disclosure chevron
-                    // pointing the direction the next click will go.
-                    Group {
-                        if isHoveringToggle {
-                            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                                .font(.system(size: 9, weight: .semibold))
-                        } else {
-                            Image(isCollapsed ? "PhanttomFolder" : "PhanttomFolderOpen")
-                                .resizable()
-                                .scaledToFit()
-                        }
+            // Not a Button: SwiftUI Buttons consume mouseDown and block the
+            // parent's `.onDrag`, so group reorder could never start. Tap is
+            // simultaneous so a drag from the name/folder still wins.
+            HStack(spacing: SidebarLeadingColumn.contentSpacing) {
+                // Idle: folder / open-folder. Hover: disclosure chevron
+                // pointing the direction the next click will go.
+                Group {
+                    if showToggleHover {
+                        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    } else {
+                        Image(isCollapsed ? "PhanttomFolder" : "PhanttomFolderOpen")
+                            .resizable()
+                            .scaledToFit()
                     }
-                    .frame(
-                        width: SidebarLeadingColumn.width,
-                        height: SidebarLeadingColumn.width)
-                    Text(name)
-                        .font(SidebarFont.font(size: 12))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 0)
                 }
-                .foregroundStyle(Color.white.opacity(isHovering ? 0.8 : 0.65))
-                .contentShape(Rectangle())
+                .frame(
+                    width: SidebarLeadingColumn.width,
+                    height: SidebarLeadingColumn.width)
+                Text(name)
+                    .font(SidebarFont.font(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
+            .foregroundStyle(Color.white.opacity(showHover ? 0.8 : 0.65))
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded(onToggle))
             .help(isCollapsed ? "Expand" : "Collapse")
-            .onHover { isHoveringToggle = $0 }
+            .onHover { hovering in
+                guard hoverEnabled else {
+                    isHoveringToggle = false
+                    return
+                }
+                isHoveringToggle = hovering
+            }
             .backport.pointerStyle(.link)
 
-            HStack(spacing: 4) {
-                if showDeveloperFolders {
-                    // NSButton+NSMenu — SwiftUI Menu forces a pure-white
-                    // label tint and system-menu type that we can't override.
-                    DeveloperFoldersButton(onOpen: onOpenProject)
-                        .frame(
-                            width: SidebarTrailingColumn.slot,
-                            height: SidebarTrailingColumn.slot)
-                }
-                Button(action: onNewTab) {
-                    Image("PhanttomPlus")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 12, height: 12)
-                        .foregroundStyle(Color.white.opacity(
-                            isHoveringPlus ? 0.95 : (isHovering ? 0.65 : 0.5)))
-                        .frame(
-                            width: SidebarTrailingColumn.slot,
-                            height: SidebarTrailingColumn.slot)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("New Tab in \(name)")
-                .onHover { isHoveringPlus = $0 }
-                .backport.pointerStyle(.link)
+            Button(action: onNewTab) {
+                Image("PhanttomPlus")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 12, height: 12)
+                    .foregroundStyle(Color.white.opacity(
+                        showPlusHover ? 0.95 : (showHover ? 0.65 : 0.5)))
+                    .frame(
+                        width: SidebarTrailingColumn.slot,
+                        height: SidebarTrailingColumn.slot)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("New Tab in \(name)")
+            .onHover { hovering in
+                guard hoverEnabled else {
+                    isHoveringPlus = false
+                    return
+                }
+                isHoveringPlus = hovering
+            }
+            .backport.pointerStyle(.link)
         }
         // Same leading inset as tab rows so the folder shares the status
         // column's left edge; trailing matches the tab close/model gutter.
         .padding(.leading, SidebarLeadingColumn.padding)
         .padding(.trailing, SidebarTrailingColumn.padding)
         .frame(height: 16)
-        .onHover { isHovering = $0 }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            guard hoverEnabled else {
+                isHovering = false
+                return
+            }
+            isHovering = hovering
+        }
+        .onChange(of: hoverEnabled) { enabled in
+            if !enabled {
+                isHovering = false
+                isHoveringToggle = false
+                isHoveringPlus = false
+            }
+        }
     }
 }
 
-/// Home-group "open from ~/Developer" control. Uses AppKit so the glyph
-/// stays at 65% white (SwiftUI `Menu` always paints its label opaque) and
-/// the popup can use Inter at sidebar-readable size. Directory listing is
-/// capped and loaded off the main thread (cache shared across windows).
-private struct DeveloperFoldersButton: NSViewRepresentable {
+/// "Open from ~/Developer" control. Uses AppKit so the glyph stays at 65%
+/// white (SwiftUI `Menu` always paints its label opaque) and the popup can
+/// use Inter at sidebar-readable size. Directory listing is capped and
+/// loaded off the main thread (cache shared across windows). Lives on the
+/// pinned New-tab row, not on project headers.
+struct DeveloperFoldersButton: NSViewRepresentable {
     var onOpen: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -345,7 +363,7 @@ private final class DeveloperFoldersCache {
 }
 
 /// Borderless template button whose `contentTintColor` alpha tracks hover.
-private final class HoverTintButton: NSButton {
+final class HoverTintButton: NSButton {
     var idleAlpha: CGFloat = 0.65
     var hoverAlpha: CGFloat = 0.95
     private var tracking: NSTrackingArea?

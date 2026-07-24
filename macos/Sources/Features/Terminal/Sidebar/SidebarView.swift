@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The vertical tab sidebar: compact rows for plain terminal tabs, two-line
 /// cards for agent tabs (Claude/Codex). Both row styles lead with the status
@@ -16,6 +17,15 @@ struct SidebarView: View {
     @ObservedObject private var settings = PhanttomSettings.shared
     @ObservedObject private var collapseStore = ProjectCollapseStore.shared
     @ObservedObject private var groupOrderStore = ProjectGroupOrderStore.shared
+    @ObservedObject private var dragHover = SidebarDragHover.shared
+    /// Insertion-line target while a tab/group reorder drag is active.
+    @State private var dropHighlight: SidebarDragReorder.Highlight?
+    /// Shared across row drop delegates so `performDrop` can stop the
+    /// post-drop `dropUpdated` from resurrecting the insertion line.
+    @State private var dropGate = SidebarDropGate()
+    /// Mouse-up after a drop also fires the row's simultaneous tap; ignore
+    /// select briefly so the drop target doesn't steal selection.
+    @State private var ignoreSelectUntil: Date?
 
     /// Create a new tab in the given working directory. The second argument
     /// is the window to insert the new tab before in the native tab order —
@@ -38,6 +48,24 @@ struct SidebarView: View {
             if case .project(let id, _, _) = $0 { return id } else { return nil }
         }
         VStack(spacing: 0) {
+            // Pinned above the tab list: New tab (home) + ~/Developer picker.
+            NewTabRow(
+                onNewTab: {
+                    collapseStore.expand(NSHomeDirectory())
+                    onNewTab(NSHomeDirectory(), nil)
+                },
+                onOpenProject: { path in
+                    collapseStore.expand(path)
+                    let insertBefore = tabManager.tabs.first { tab in
+                        (tab.git?.projectRoot ?? tab.directory) == path
+                    }?.window
+                    onNewTab(path, insertBefore)
+                }
+            )
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
             ScrollView {
                 // Plain VStack, not LazyVStack: removal transitions are
                 // unreliable inside lazy containers on macOS 13, and a tab
@@ -69,17 +97,10 @@ struct SidebarView: View {
                             }
                         }
                     }
-
-                    // Full-width row trailing the last tab; project-neutral —
-                    // always opens in home (~), not the focused project.
-                    // Expand that group first so a row into a collapsed ~
-                    // doesn't appear and instantly vanish.
-                    NewTabRow {
-                        collapseStore.expand(NSHomeDirectory())
-                        onNewTab(NSHomeDirectory(), nil)
-                    }
                 }
-                .padding(8)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+                .padding(.top, 4)
                 // Whether a tab change animates is decided at the publish
                 // site (SidebarTabManager.refresh): removals and single-row
                 // inserts animate; bulk population and Reduce Motion stay
@@ -116,9 +137,7 @@ struct SidebarView: View {
             ProjectHeader(
                 name: title,
                 isCollapsed: collapseStore.isCollapsed(id),
-                // Developer-folder picker is home-only — other project
-                // groups already have a dedicated "+" for their own root.
-                showDeveloperFolders: id == NSHomeDirectory(),
+                hoverEnabled: !dragHover.suppressesHover,
                 onToggle: {
                     withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
                         collapseStore.toggle(id)
@@ -127,21 +146,33 @@ struct SidebarView: View {
                 onNewTab: {
                     collapseStore.expand(id)
                     onNewTab(id, groupTabs.first?.window)
-                },
-                onOpenProject: { path in
-                    collapseStore.expand(path)
-                    let insertBefore = tabManager.tabs.first { tab in
-                        (tab.git?.projectRoot ?? tab.directory) == path
-                    }?.window
-                    onNewTab(path, insertBefore)
                 }
             )
             .onDrag {
                 SidebarDragReorder.groupProvider(projectRoot: id)
             }
-            .onDrop(of: [.phanttomSidebarGroup], isTargeted: nil) { providers in
-                handleGroupDrop(providers, onto: id, visibleIDs: visibleProjectIDs)
-            }
+            .modifier(SidebarReorderDropChrome(
+                type: .phanttomSidebarGroup,
+                fallbackHeight: 16,
+                gate: dropGate,
+                highlight: $dropHighlight,
+                edgeInHighlight: { highlight in
+                    if case .group(let highlightID, let edge) = highlight,
+                       highlightID == id {
+                        return edge
+                    }
+                    return nil
+                },
+                makeHighlight: { .group(id: id, edge: $0) },
+                onPerform: { provider, edge in
+                    noteDropEnded()
+                    return handleGroupDrop(
+                        [provider],
+                        onto: id,
+                        edge: edge,
+                        visibleIDs: visibleProjectIDs)
+                }
+            ))
             .transition(.phanttomTabRow)
             if !collapseStore.isCollapsed(id) {
                 VStack(spacing: 4) {
@@ -162,27 +193,64 @@ struct SidebarView: View {
         _ tab: SidebarTabManager.TabItem,
         constrainToProject: Bool
     ) -> some View {
-        SidebarTabRow(
+        let windowNumber = tab.window.windowNumber
+        return SidebarTabRow(
             tab: tab,
-            onSelect: { tabManager.select(tab) },
+            hoverEnabled: !dragHover.suppressesHover,
+            onSelect: { selectUnlessPostDrop(tab) },
             onClose: { tabManager.close(tab) },
             onRename: { tabManager.rename(tab, to: $0) }
         )
         .onDrag {
-            SidebarDragReorder.tabProvider(windowNumber: tab.window.windowNumber)
+            SidebarDragReorder.tabProvider(windowNumber: windowNumber)
         }
-        .onDrop(of: [.phanttomSidebarTab], isTargeted: nil) { providers in
-            handleTabDrop(providers, onto: tab, constrainToProject: constrainToProject)
-        }
+        .modifier(SidebarReorderDropChrome(
+            type: .phanttomSidebarTab,
+            fallbackHeight: 32,
+            gate: dropGate,
+            highlight: $dropHighlight,
+            edgeInHighlight: { highlight in
+                if case .tab(let highlightNumber, let edge) = highlight,
+                   highlightNumber == windowNumber {
+                    return edge
+                }
+                return nil
+            },
+            makeHighlight: { .tab(windowNumber: windowNumber, edge: $0) },
+            onPerform: { provider, edge in
+                noteDropEnded()
+                return handleTabDrop(
+                    [provider],
+                    onto: tab,
+                    edge: edge,
+                    constrainToProject: constrainToProject)
+            }
+        ))
         .transition(.phanttomTabRow)
+    }
+
+    private func selectUnlessPostDrop(_ tab: SidebarTabManager.TabItem) {
+        if let until = ignoreSelectUntil, Date() < until { return }
+        tabManager.select(tab)
+    }
+
+    private func noteDropEnded() {
+        dropHighlight = nil
+        dropGate.isLive = false
+        // Cover the mouse-up → simultaneous tap that follows a drop.
+        ignoreSelectUntil = Date().addingTimeInterval(0.35)
+        // Keep row hover off while the list settles under the cursor.
+        dragHover.endAfterSettle()
     }
 
     private func handleTabDrop(
         _ providers: [NSItemProvider],
         onto target: SidebarTabManager.TabItem,
+        edge: SidebarDragReorder.Edge,
         constrainToProject: Bool
     ) -> Bool {
         SidebarDragReorder.loadString(from: providers, type: .phanttomSidebarTab) { payload in
+            dropHighlight = nil
             guard let windowNumber = Int(payload),
                   let source = tabManager.tabs.first(where: {
                       $0.window.windowNumber == windowNumber
@@ -193,64 +261,133 @@ struct SidebarView: View {
                 let targetKey = SidebarTabGroup.projectKey(for: target)
                 guard sourceKey == targetKey else { return }
             }
-            withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
-                tabManager.reorder(source, relativeTo: target)
-            }
+            // Mutate the native tab group, then refresh immediately — the
+            // usual relabelTabs → async → scheduleRefresh chain would leave
+            // the list stale for a couple of runloop turns after release.
+            tabManager.reorder(source, relativeTo: target, edge: edge)
+            tabManager.refresh()
         }
     }
 
     private func handleGroupDrop(
         _ providers: [NSItemProvider],
         onto targetID: String,
+        edge: SidebarDragReorder.Edge,
         visibleIDs: [String]
     ) -> Bool {
         SidebarDragReorder.loadString(from: providers, type: .phanttomSidebarGroup) { sourceID in
-            withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+            dropHighlight = nil
+            withAnimation(SidebarDragReorder.settleAnimation) {
                 groupOrderStore.move(
                     sourceID,
                     relativeTo: targetID,
+                    edge: edge,
                     visibleIDs: visibleIDs)
             }
         }
     }
 }
 
-/// Bottom-of-list "New tab" control. Always seeds home (`~`), matching ⌘T's
-/// typical landing when no project context is chosen.
+/// Drop chrome for one sidebar row: measures height, proposes `.move` (no
+/// green "+"), and draws the before/after insertion line.
+private struct SidebarReorderDropChrome: ViewModifier {
+    let type: UTType
+    let fallbackHeight: CGFloat
+    let gate: SidebarDropGate
+    @Binding var highlight: SidebarDragReorder.Highlight?
+    let edgeInHighlight: (SidebarDragReorder.Highlight) -> SidebarDragReorder.Edge?
+    let makeHighlight: (SidebarDragReorder.Edge) -> SidebarDragReorder.Highlight
+    let onPerform: (NSItemProvider, SidebarDragReorder.Edge) -> Bool
+
+    @State private var height: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { height = max(proxy.size.height, 1) }
+                        .onChange(of: proxy.size.height) { newHeight in
+                            height = max(newHeight, 1)
+                        }
+                }
+            )
+            .onDrop(
+                of: [type],
+                delegate: SidebarReorderDropDelegate(
+                    type: type,
+                    rowHeight: height > 0 ? height : fallbackHeight,
+                    gate: gate,
+                    onHighlight: { edge in
+                        highlight = edge.map(makeHighlight)
+                    },
+                    onPerform: onPerform
+                )
+            )
+            .overlay(alignment: insertionAlignment) {
+                if insertionEdge != nil {
+                    SidebarInsertionLine()
+                        .padding(.horizontal, SidebarLeadingColumn.padding)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+
+    private var insertionEdge: SidebarDragReorder.Edge? {
+        guard let highlight else { return nil }
+        return edgeInHighlight(highlight)
+    }
+
+    private var insertionAlignment: Alignment {
+        insertionEdge == .before ? .top : .bottom
+    }
+}
+
+/// Top-of-sidebar chrome: "New tab" (always home / `~`) with the
+/// `~/Developer` folder picker anchored on the trailing edge.
 private struct NewTabRow: View {
-    let action: () -> Void
+    let onNewTab: () -> Void
+    let onOpenProject: (String) -> Void
 
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: SidebarLeadingColumn.contentSpacing) {
-                Image("PhanttomPlus")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 12, height: 12)
-                    .frame(
-                        width: SidebarLeadingColumn.width,
-                        height: SidebarLeadingColumn.width)
-                Text("New tab")
-                    .font(SidebarFont.font(size: 12))
-                Spacer(minLength: 0)
+        HStack(spacing: 0) {
+            Button(action: onNewTab) {
+                HStack(spacing: SidebarLeadingColumn.contentSpacing) {
+                    Image("PhanttomPlus")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 12, height: 12)
+                        .frame(
+                            width: SidebarLeadingColumn.width,
+                            height: SidebarLeadingColumn.width)
+                    Text("New tab")
+                        .font(SidebarFont.font(size: 12))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Color.white.opacity(isHovering ? 0.95 : 0.55))
+                .padding(.vertical, 8)
+                .padding(.leading, SidebarLeadingColumn.padding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(Color.white.opacity(isHovering ? 0.95 : 0.55))
-            .padding(.vertical, 8)
-            .padding(.leading, SidebarLeadingColumn.padding)
-            .padding(.trailing, SidebarTrailingColumn.padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help("New Tab (⌘T)")
+
+            // NSButton+NSMenu — SwiftUI Menu forces a pure-white label tint.
+            DeveloperFoldersButton(onOpen: onOpenProject)
+                .frame(
+                    width: SidebarTrailingColumn.slot,
+                    height: SidebarTrailingColumn.slot)
+                .padding(.trailing, SidebarTrailingColumn.padding)
         }
-        .buttonStyle(.plain)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(Color.white.opacity(isHovering ? 0.04 : 0))
         )
         .onHover { isHovering = $0 }
         .backport.pointerStyle(.link)
-        .help("New Tab (⌘T)")
     }
 }
 
@@ -267,6 +404,9 @@ extension AnyTransition {
 
 struct SidebarTabRow: View {
     let tab: SidebarTabManager.TabItem
+    /// Off during reorder drag / settle so the row under the cursor doesn't
+    /// paint a second highlight while the list animates.
+    var hoverEnabled: Bool = true
     let onSelect: () -> Void
     let onClose: () -> Void
     let onRename: (String?) -> Void
@@ -285,13 +425,12 @@ struct SidebarTabRow: View {
     @FocusState private var editFocused: Bool
 
     private var rowBackground: Color {
-        if tab.isSelected || isHovering { return Color.white.opacity(0.04) }
+        if tab.isSelected { return Color.white.opacity(0.04) }
+        if hoverEnabled && isHovering { return Color.white.opacity(0.04) }
         return Color.clear
     }
 
-    private var cornerRadius: CGFloat {
-        tab.isSelected ? 12 : 8
-    }
+    private var cornerRadius: CGFloat { 12 }
 
     var body: some View {
         // Select/rename gestures live on the label only — wrapping the close
@@ -312,12 +451,12 @@ struct SidebarTabRow: View {
             .padding(.leading, SidebarLeadingColumn.padding)
             .padding(.trailing, 4)
             .contentShape(Rectangle())
-            // Double-tap as .gesture plus single-tap as .simultaneousGesture:
-            // chained onTapGesture modifiers would delay the single tap by the
-            // double-click disambiguation window (~300ms), which reads as tab-
-            // switching lag. This way selection fires on the first click
-            // immediately and a second click still starts a rename (Finder-style).
-            .gesture(TapGesture(count: 2).onEnded(startRename))
+            // Both taps must be simultaneous (not exclusive `.gesture`): an
+            // exclusive double-tap claims the mouse sequence and blocks the
+            // row's `.onDrag`, so tab reorder never starts. Simultaneous keeps
+            // first-click select immediate (no chained-onTapGesture delay) and
+            // still lets a second click start rename (Finder-style).
+            .simultaneousGesture(TapGesture(count: 2).onEnded(startRename))
             .simultaneousGesture(TapGesture().onEnded(onSelect))
 
             Group {
@@ -336,8 +475,19 @@ struct SidebarTabRow: View {
         // a non-hovered row (exactly where the X will appear).
         .contentShape(Rectangle())
         .onHover { hovering in
+            guard hoverEnabled else {
+                isHovering = false
+                isHoveringClose = false
+                return
+            }
             isHovering = hovering
             if !hovering { isHoveringClose = false }
+        }
+        .onChange(of: hoverEnabled) { enabled in
+            if !enabled {
+                isHovering = false
+                isHoveringClose = false
+            }
         }
         .contextMenu {
             Button("Rename Tab…", action: startRename)

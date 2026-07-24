@@ -5,10 +5,10 @@ import GhosttyKit
 /// Phanttom's user-adjustable settings plus locked chrome tokens.
 ///
 /// Terminal background is opinionated (Figma `#101211`): written into a
-/// managed config fragment (`phanttom.conf`) after a one-time notice on
-/// first launch, then reloaded via libghostty. Font-size override and
-/// quit→reopen window restore remain optional. Sidebar grouping is the
-/// only sidebar preference — appearance is hardcoded from `Chrome` below.
+/// managed config fragment (`phanttom.conf`) on launch, then reloaded via
+/// libghostty. Font-size override and quit→reopen window restore remain
+/// optional. Sidebar grouping is the only sidebar preference — appearance
+/// is hardcoded from `Chrome` below.
 @MainActor
 final class PhanttomSettings: ObservableObject {
     static let shared = PhanttomSettings()
@@ -102,8 +102,6 @@ final class PhanttomSettings: ObservableObject {
         static let fontSize = "PhanttomFontSize"
         static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
         static let restoreWindowsOnQuit = "PhanttomRestoreWindowsOnQuit"
-        /// One-time notice before the first locked-chrome write.
-        static let lockedChromeNoticeShown = "PhanttomLockedChromeNoticeShown"
     }
 
     private var loaded = false
@@ -117,42 +115,14 @@ final class PhanttomSettings: ObservableObject {
         loaded = true
     }
 
-    /// Wire the Ghostty app. First launch shows a notice before writing the
-    /// locked chrome fragment; later launches apply silently.
+    /// Wire the Ghostty app and apply the locked chrome fragment silently.
     func setupOnLaunch(ghostty: Ghostty.App) {
         ghosttyApp = ghostty
         // Ghostty.app is the XCTest host — never mutate the user's config
-        // or pop a notice during tests.
+        // during tests.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return
         }
-        if UserDefaults.standard.bool(forKey: Keys.lockedChromeNoticeShown) {
-            apply()
-            return
-        }
-        // After the first window is up so the alert isn't buried.
-        DispatchQueue.main.async { [weak self] in
-            self?.presentLockedChromeNoticeThenApply()
-        }
-    }
-
-    private func presentLockedChromeNoticeThenApply() {
-        // Re-check: another window's launch path may have already shown it.
-        guard !UserDefaults.standard.bool(forKey: Keys.lockedChromeNoticeShown) else {
-            apply()
-            return
-        }
-        let alert = NSAlert()
-        alert.messageText = "Phanttom locks the terminal background"
-        alert.informativeText =
-            "Phanttom sets the terminal background to \(Chrome.terminal.hex) "
-            + "to match its sidebar chrome, via a managed phanttom.conf "
-            + "include in your Ghostty config.\n\n"
-            + "Your own config only gets a one-line include. Remove "
-            + "`config-file = ?phanttom.conf` anytime to opt out."
-        alert.addButton(withTitle: "Continue")
-        _ = alert.runModal()
-        UserDefaults.standard.set(true, forKey: Keys.lockedChromeNoticeShown)
         apply()
     }
 

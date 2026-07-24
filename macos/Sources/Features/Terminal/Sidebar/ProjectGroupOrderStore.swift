@@ -37,10 +37,15 @@ final class ProjectGroupOrderStore: ObservableObject {
         return result
     }
 
-    /// Reorder `sourceID` to the index of `targetID` among the currently
-    /// visible project roots. Persists the resulting visible sequence
-    /// (unknowns get locked into their slot once the user reorders).
-    func move(_ sourceID: String, relativeTo targetID: String, visibleIDs: [String]) {
+    /// Reorder `sourceID` immediately before or after `targetID` among the
+    /// currently visible project roots. Persists the resulting visible
+    /// sequence (unknowns get locked into their slot once the user reorders).
+    func move(
+        _ sourceID: String,
+        relativeTo targetID: String,
+        edge: SidebarDragReorder.Edge,
+        visibleIDs: [String]
+    ) {
         guard sourceID != targetID else { return }
         var list = Self.merge(order: order, appearing: visibleIDs)
         guard let from = list.firstIndex(of: sourceID),
@@ -48,12 +53,17 @@ final class ProjectGroupOrderStore: ObservableObject {
               from != to
         else { return }
 
+        switch edge {
+        case .before where from == to - 1: return
+        case .after where from == to + 1: return
+        default: break
+        }
+
         list.remove(at: from)
         guard let newTo = list.firstIndex(of: targetID) else { return }
-        if from < to {
-            list.insert(sourceID, at: newTo + 1)
-        } else {
-            list.insert(sourceID, at: newTo)
+        switch edge {
+        case .before: list.insert(sourceID, at: newTo)
+        case .after: list.insert(sourceID, at: newTo + 1)
         }
         order = list
         persist()
