@@ -9,7 +9,6 @@ import SwiftUI
 /// untouched) so upstream's future settings GUI merges cleanly.
 struct PhanttomSettingsView: View {
     @ObservedObject private var settings = PhanttomSettings.shared
-    @ObservedObject private var claude = PhanttomClaudeIntegration.shared
 
     var body: some View {
         Form {
@@ -38,24 +37,86 @@ struct PhanttomSettingsView: View {
                 Toggle("Group tabs by project", isOn: $settings.sidebarGroupByProject)
             }
 
-            Section {
-                Toggle("Claude Code integration", isOn: $claude.enabled)
-            } header: {
-                Text("Agents")
-            } footer: {
-                Text(
-                    "Shows live Claude Code activity on tabs: thinking "
-                    + "animation, tab names from your first prompt, and "
-                    + "worktree-aware directory tracking. Installs hooks in "
-                    + "~/.claude/settings.json (backup kept); turning this "
-                    + "off removes only Phanttom's entries."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
+            ClaudeCodeIntegrationSection()
         }
         .formStyle(.grouped)
         .frame(width: 440)
-        .frame(minHeight: 280)
+        .frame(minHeight: 320)
+    }
+}
+
+/// Claude Code hooks/statusline installer (see `PhanttomClaudeIntegration`).
+private struct ClaudeCodeIntegrationSection: View {
+    @State private var caption = "…"
+    @State private var status: PhanttomClaudeIntegration.IntegrationStatus = .notInstalled
+    @State private var claudeMissing = false
+    @State private var lastError: String?
+    @State private var confirmRemove = false
+
+    var body: some View {
+        Section {
+            Text(lastError ?? caption)
+                .font(.caption)
+                .foregroundStyle(lastError == nil ? Color.secondary : Color.red)
+
+            HStack {
+                if showPrimaryButton {
+                    Button(primaryButtonTitle) {
+                        apply(PhanttomClaudeIntegration.performInstall())
+                    }
+                    .disabled(claudeMissing)
+                }
+                Button("Remove…") {
+                    confirmRemove = true
+                }
+                .disabled(claudeMissing || status == .notInstalled)
+            }
+        } header: {
+            Text("Claude Code")
+        } footer: {
+            Text(
+                "Installs Phanttom hooks for pixel rain, tab auto-naming, " +
+                "agent pwd tracking, and the model label. Writes " +
+                "~/.claude/settings.json (with a timestamped backup)."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .onAppear { apply(PhanttomClaudeIntegration.currentStatus()) }
+        .alert("Remove Claude Code Integration?", isPresented: $confirmRemove) {
+            Button("Remove", role: .destructive) {
+                apply(PhanttomClaudeIntegration.performUninstall())
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Restores your previous statusline (if any) and removes Phanttom's hooks and helper script.")
+        }
+    }
+
+    private var showPrimaryButton: Bool {
+        switch status {
+        case .installedCurrent: return false
+        case .notInstalled, .installedOutdated, .legacyInline: return true
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        switch status {
+        case .notInstalled: return "Set Up"
+        case .legacyInline, .installedOutdated: return "Update"
+        case .installedCurrent: return "Set Up"
+        }
+    }
+
+    private func apply(_ result: PhanttomClaudeIntegration.ActionResult) {
+        status = result.status
+        claudeMissing = result.error == .claudeNotFound
+        caption = result.message
+        // Surface actionable failures; "not found" is already the caption.
+        if let err = result.error, err != .claudeNotFound {
+            lastError = result.message
+        } else {
+            lastError = nil
+        }
     }
 }

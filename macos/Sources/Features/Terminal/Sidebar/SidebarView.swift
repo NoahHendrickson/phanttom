@@ -120,7 +120,6 @@ struct SidebarView: View {
                 },
                 onOpenProject: { path in
                     collapseStore.expand(path)
-                    RecentProjectsStore.shared.record(path)
                     let insertBefore = tabManager.tabs.first { tab in
                         (tab.git?.projectRoot ?? tab.directory) == path
                     }?.window

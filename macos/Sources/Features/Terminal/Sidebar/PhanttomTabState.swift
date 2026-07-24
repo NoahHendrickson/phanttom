@@ -68,10 +68,6 @@ final class PhanttomTabState {
     /// resolved cache values, never cleared on unknown.
     var lastGitMetadata: GitBranchCache.Resolved?
 
-    /// Last project root fed into `RecentProjectsStore` for this window.
-    /// Dedupes refreshes so tab-list order doesn't reshuffle the MRU.
-    var lastRecordedRecentProject: String?
-
     /// An automatic tab name derived from the user's first agent prompt of
     /// the session (set via a marker title emitted by the Claude Code
     /// UserPromptSubmit hook). Beaten by the user's rename (upstream's

@@ -314,15 +314,6 @@ final class SidebarTabManager: ObservableObject {
                 state.lastGitMetadata = freshMeta
             }
             let gitMeta = state?.lastGitMetadata ?? freshMeta
-            // Same key SidebarTabGroup uses — bump the home header's recent
-            // list when this window's project identity changes (not on every
-            // refresh, or tab order would reshuffle the MRU).
-            if let root = gitMeta?.projectRoot ?? pwd,
-               let state,
-               state.lastRecordedRecentProject != root {
-                state.lastRecordedRecentProject = root
-                RecentProjectsStore.shared.record(root)
-            }
             var prState: PRStatusCache.PRState?
             if let pwd, let branch = gitMeta?.branch {
                 prState = PRStatusCache.shared.state(at: pwd, branch: branch)

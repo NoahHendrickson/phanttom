@@ -4,7 +4,12 @@ extension TerminalWindow {
     /// Phanttom's single hook at the end of upstream's syncAppearance —
     /// keeps the upstream edit to one line so merges stay cheap, and keeps
     /// the titlebar zone deferred past subclass repaints in fork-owned code.
+    /// (Name kept short at the upstream call site; glass is gone — this only
+    /// re-syncs the titlebar zone after AppKit/subclass repaints.)
     func phanttomSyncAppearanceDidRun(_ surfaceConfig: Ghostty.SurfaceView.DerivedConfig) {
+        // surfaceConfig unused: upstream passes it; we only need the timing
+        // of the hook. Underscore would force a one-line upstream churn.
+        _ = surfaceConfig
         // Repaint the titlebar strip above the sidebar. Deferred because
         // subclass syncAppearance overrides run after this base hook and
         // repaint (or lose, when AppKit rebuilds the titlebar on tab
