@@ -48,18 +48,20 @@ struct SidebarView: View {
             if case .project(let id, _, _) = $0 { return id } else { return nil }
         }
         VStack(spacing: 0) {
-            // Pinned above the tab list: New tab (home) + ~/Developer picker.
-            NewTabRow(
+            // Pinned above the tab list: "Sessions" label + ~/Developer
+            // picker + new-tab (home), trailing controls matching project
+            // headers.
+            SessionsHeader(
                 onNewTab: {
-                    collapseStore.expand(NSHomeDirectory())
-                    onNewTab(NSHomeDirectory(), nil)
+                    let home = NSHomeDirectory()
+                    collapseStore.expand(home)
+                    groupOrderStore.bringToFront(home)
+                    onNewTab(home, insertBeforeWindow(forProject: home))
                 },
                 onOpenProject: { path in
                     collapseStore.expand(path)
-                    let insertBefore = tabManager.tabs.first { tab in
-                        (tab.git?.projectRoot ?? tab.directory) == path
-                    }?.window
-                    onNewTab(path, insertBefore)
+                    groupOrderStore.bringToFront(path)
+                    onNewTab(path, insertBeforeWindow(forProject: path))
                 }
             )
             .padding(.horizontal, 8)
@@ -124,6 +126,19 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PhanttomSettings.sidebarBackground.ignoresSafeArea())
+    }
+
+    /// Window to insert a new Sessions-header tab before: first tab of that
+    /// project (top of its group), else the first tab overall (top of the
+    /// list). Matches project-header "+" behavior.
+    private func insertBeforeWindow(forProject path: String) -> NSWindow? {
+        let target = URL(fileURLWithPath: path).standardizedFileURL.path
+        if let match = tabManager.tabs.first(where: {
+            SidebarTabGroup.projectKey(for: $0) == target
+        }) {
+            return match.window
+        }
+        return tabManager.tabs.first?.window
     }
 
     @ViewBuilder
@@ -343,51 +358,52 @@ private struct SidebarReorderDropChrome: ViewModifier {
     }
 }
 
-/// Top-of-sidebar chrome: "New tab" (always home / `~`) with the
-/// `~/Developer` folder picker anchored on the trailing edge.
-private struct NewTabRow: View {
+/// Top-of-sidebar chrome: "Sessions" label with trailing ~/Developer
+/// folder-plus and new-tab "+" (always home / `~`), mirroring project
+/// headers so the two actions stay visually distinct.
+private struct SessionsHeader: View {
     let onNewTab: () -> Void
     let onOpenProject: (String) -> Void
 
-    @State private var isHovering = false
+    @State private var isHoveringPlus = false
 
     var body: some View {
         HStack(spacing: 0) {
-            Button(action: onNewTab) {
-                HStack(spacing: SidebarLeadingColumn.contentSpacing) {
-                    Image("PhanttomPlus")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 12, height: 12)
-                        .frame(
-                            width: SidebarLeadingColumn.width,
-                            height: SidebarLeadingColumn.width)
-                    Text("New tab")
-                        .font(SidebarFont.font(size: 12))
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(Color.white.opacity(isHovering ? 0.95 : 0.55))
-                .padding(.vertical, 8)
-                .padding(.leading, SidebarLeadingColumn.padding)
+            Text("Sessions")
+                .font(SidebarFont.font(size: 12))
+                .foregroundStyle(Color.white.opacity(0.65))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("New Tab (⌘T)")
 
             // NSButton+NSMenu — SwiftUI Menu forces a pure-white label tint.
             DeveloperFoldersButton(onOpen: onOpenProject)
                 .frame(
                     width: SidebarTrailingColumn.slot,
                     height: SidebarTrailingColumn.slot)
-                .padding(.trailing, SidebarTrailingColumn.padding)
+                .padding(.trailing, 4)
+
+            Button(action: onNewTab) {
+                Image("PhanttomPlus")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 12, height: 12)
+                    .foregroundStyle(Color.white.opacity(isHoveringPlus ? 0.95 : 0.55))
+                    .frame(
+                        width: SidebarTrailingColumn.slot,
+                        height: SidebarTrailingColumn.slot)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color.white.opacity(isHoveringPlus ? 0.14 : 0))
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("New Tab (⌘T)")
+            .onHover { isHoveringPlus = $0 }
+            .backport.pointerStyle(.link)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(isHovering ? 0.04 : 0))
-        )
-        .onHover { isHovering = $0 }
-        .backport.pointerStyle(.link)
+        .padding(.leading, SidebarLeadingColumn.padding)
+        .padding(.trailing, SidebarTrailingColumn.padding)
+        .frame(height: 16)
     }
 }
 

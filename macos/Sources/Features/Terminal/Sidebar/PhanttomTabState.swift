@@ -37,10 +37,10 @@ final class PhanttomTabState {
     private(set) var status: Status = .idle
 
     /// The working directory this tab was created into (sidebar group "+",
-    /// bottom New-tab row). Only a pwd fallback: the sidebar uses it until
-    /// the shell integration reports a real pwd, so a brand-new tab lands
-    /// in its project group immediately instead of flashing through the
-    /// pending bucket. Cleared on the first real pwd.
+    /// Sessions header + / folder picker). Only a pwd fallback: the sidebar
+    /// uses it until the shell integration reports a real pwd, so a
+    /// brand-new tab lands in its project group immediately instead of
+    /// flashing through the pending bucket. Cleared on the first real pwd.
     var seedDirectory: String?
 
     /// True from sidebar-driven creation until this window's own sidebar

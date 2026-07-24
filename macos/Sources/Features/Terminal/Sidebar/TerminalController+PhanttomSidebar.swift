@@ -49,7 +49,8 @@ extension TerminalController {
             (self?.window as? TerminalWindow)?.syncPhanttomTitlebarZone(width: width)
         }
         window.contentView = sidebarSplit
-        addSidebarToggleAccessory(to: window)
+        // Sidebar toggle lives in the titlebar zone, immediately left of
+        // the grouping button (see PhanttomTitlebarZone).
 
         return true
     }
@@ -96,32 +97,6 @@ extension TerminalController {
 
     @IBAction func togglePhanttomSidebar(_ sender: Any?) {
         (window?.contentView as? SidebarSplitView)?.toggleSidebar()
-    }
-
-    /// The titlebar button that collapses/expands the sidebar, placed just
-    /// right of the traffic lights (Cursor-style).
-    private func addSidebarToggleAccessory(to window: NSWindow) {
-        guard window.styleMask.contains(.titled) else { return }
-        guard let image = NSImage(named: "PhanttomSidebarSimple")
-            ?? NSImage(
-                systemSymbolName: "sidebar.left",
-                accessibilityDescription: "Toggle Sidebar") else { return }
-
-        let button = NSButton(image: image, target: self, action: #selector(togglePhanttomSidebar(_:)))
-        button.isBordered = false
-        button.bezelStyle = .regularSquare
-        button.contentTintColor = .secondaryLabelColor
-        button.toolTip = "Toggle Sidebar (⌘B)"
-        button.frame = NSRect(x: 8, y: 1, width: 20, height: 20)
-        button.autoresizingMask = [.minYMargin, .maxYMargin]
-
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 36, height: 22))
-        container.addSubview(button)
-
-        let accessory = NSTitlebarAccessoryViewController()
-        accessory.view = container
-        accessory.layoutAttribute = .left
-        window.addTitlebarAccessoryViewController(accessory)
     }
 }
 

@@ -5,7 +5,25 @@ import AppKit
 private final class PhanttomTitlebarLeftZoneView: NSView {}
 private final class PhanttomTitlebarRightZoneView: NSView {}
 private final class PhanttomTitlebarDividerView: NSView {}
+private final class PhanttomSidebarToggleButton: NSButton {}
 private final class PhanttomGroupingButton: NSButton {}
+
+/// Marks the left titlebar accessory used when the sidebar is collapsed so
+/// the toggle parks in AppKit's accessory lane (after traffic lights, before
+/// the document icon / title) instead of overlapping them at a fixed x.
+private let phanttomSidebarToggleAccessoryID =
+    NSUserInterfaceItemIdentifier("PhanttomSidebarToggleAccessory")
+
+/// Invisible left spacer matching the sidebar width (minus traffic lights)
+/// so AppKit centers the document icon + title in the terminal half of the
+/// titlebar while the sidebar is open — not next to the traffic lights in
+/// the sidebar color zone.
+private let phanttomTitleSpacerAccessoryID =
+    NSUserInterfaceItemIdentifier("PhanttomTitleSpacerAccessory")
+
+/// Approximate trailing edge of the traffic-light cluster; left accessories
+/// begin after this.
+private let phanttomTrafficLightsTrailingX: CGFloat = 78
 
 extension TerminalWindow {
     /// Phanttom: splits the titlebar into two color zones aligned with the
@@ -76,8 +94,25 @@ extension TerminalWindow {
         }
         divider.layer?.backgroundColor = PhanttomSettings.dividerColorNS.cgColor
 
-        // Grouping mode button hugging the sidebar's right edge (geometry in
-        // phanttomTitlebarZoneSetWidth, so it rides divider drags).
+        // Sidebar toggle + grouping mode button (geometry in
+        // phanttomTitlebarZoneSetWidth). While open, toggle sits left of
+        // grouping at the divider; while collapsed, a left titlebar
+        // accessory parks the toggle in AppKit's accessory lane.
+        if !titlebarView.subviews.contains(where: { $0 is PhanttomSidebarToggleButton }) {
+            let button = PhanttomSidebarToggleButton()
+            button.isBordered = false
+            button.bezelStyle = .regularSquare
+            button.image = NSImage(named: "PhanttomSidebarSimple")
+                ?? NSImage(
+                    systemSymbolName: "sidebar.left",
+                    accessibilityDescription: "Toggle Sidebar")
+            button.contentTintColor = .secondaryLabelColor
+            button.toolTip = "Toggle Sidebar (⌘B)"
+            button.target = self
+            button.action = #selector(phanttomToggleSidebar(_:))
+            button.autoresizingMask = [.maxXMargin]
+            titlebarView.addSubview(button)
+        }
         if !titlebarView.subviews.contains(where: { $0 is PhanttomGroupingButton }) {
             let button = PhanttomGroupingButton()
             button.isBordered = false
@@ -95,6 +130,10 @@ extension TerminalWindow {
         }
 
         phanttomTitlebarZoneSetWidth(width ?? phanttomSidebarWidth)
+    }
+
+    @objc private func phanttomToggleSidebar(_ sender: Any?) {
+        (contentView as? SidebarSplitView)?.toggleSidebar()
     }
 
     /// The grouping button's menu: a mode chooser, not a bare toggle, so
@@ -157,23 +196,116 @@ extension TerminalWindow {
             divider.frame = NSRect(x: dividerX, y: 0, width: 1, height: bounds.height)
             divider.isHidden = width <= 0
         }
-        if let button = titlebarView.subviews
-            .compactMap({ $0 as? PhanttomGroupingButton }).first {
-            let size: CGFloat = 20
-            let buttonX = max(dividerX - size - 6, 0)
-            button.frame = NSRect(
-                x: buttonX,
+        // Toggle left of grouping while the sidebar is open. When collapsed
+        // (or mid-expand too narrow), hide the in-zone button and park a
+        // left titlebar accessory so AppKit keeps it clear of the document
+        // icon / title. Grouping stays hidden until there's room again.
+        let size: CGFloat = 20
+        let gap: CGFloat = 4
+        let trailingPad: CGFloat = 6
+        let groupingX = max(dividerX - size - trailingPad, 0)
+        let besideGroupingX = max(groupingX - size - gap, 0)
+        let parkToggle = width <= 0 || besideGroupingX < phanttomTrafficLightsTrailingX
+        if let toggle = titlebarView.subviews
+            .compactMap({ $0 as? PhanttomSidebarToggleButton }).first {
+            toggle.frame = NSRect(
+                x: besideGroupingX,
                 y: (bounds.height - size) / 2,
                 width: size, height: size)
-            // Gone (not squished against the traffic lights) while the sidebar
-            // is collapsed or dragged very narrow. Hidden until the button's
-            // left edge clears the traffic lights + the sidebar-toggle
-            // accessory, which together extend to ~x=97; below that the button
-            // would draw over them — a band the expand animation sweeps through
-            // transiently. Settled widths are always >= minWidth (160), so this
-            // gate only ever matters mid-animation.
-            button.isHidden = buttonX < 100
+            toggle.isHidden = parkToggle
         }
+        if let grouping = titlebarView.subviews
+            .compactMap({ $0 as? PhanttomGroupingButton }).first {
+            grouping.frame = NSRect(
+                x: groupingX,
+                y: (bounds.height - size) / 2,
+                width: size, height: size)
+            grouping.isHidden = parkToggle
+        }
+        phanttomSetSidebarToggleAccessoryParked(parkToggle)
+        phanttomSetTitleSpacerAccessory(
+            sidebarWidth: width, active: !parkToggle && width > 0)
+    }
+
+    /// Install or remove the collapsed-state left accessory. A free-floating
+    /// button at a fixed x lands on the document icon + title (`~`); the
+    /// accessory lane is the layout slot AppKit reserves for that.
+    private func phanttomSetSidebarToggleAccessoryParked(_ parked: Bool) {
+        guard styleMask.contains(.titled) else { return }
+        let existing = titlebarAccessoryViewControllers.first {
+            $0.identifier == phanttomSidebarToggleAccessoryID
+        }
+        if !parked {
+            if let existing,
+               let idx = titlebarAccessoryViewControllers.firstIndex(of: existing) {
+                removeTitlebarAccessoryViewController(at: idx)
+            }
+            return
+        }
+        // Spacer and toggle accessory both want .left; drop spacer first.
+        phanttomSetTitleSpacerAccessory(sidebarWidth: 0, active: false)
+        if existing != nil { return }
+
+        guard let image = NSImage(named: "PhanttomSidebarSimple")
+            ?? NSImage(
+                systemSymbolName: "sidebar.left",
+                accessibilityDescription: "Toggle Sidebar") else { return }
+
+        let button = NSButton(image: image, target: self, action: #selector(phanttomToggleSidebar(_:)))
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = "Toggle Sidebar (⌘B)"
+        button.frame = NSRect(x: 8, y: 1, width: 20, height: 20)
+        button.autoresizingMask = [.minYMargin, .maxYMargin]
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 36, height: 22))
+        container.addSubview(button)
+
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.identifier = phanttomSidebarToggleAccessoryID
+        accessory.view = container
+        accessory.layoutAttribute = .left
+        addTitlebarAccessoryViewController(accessory)
+    }
+
+    /// Left spacer so AppKit's title layout treats the sidebar strip as
+    /// occupied and centers the folder icon + directory label in the
+    /// terminal half of the titlebar.
+    private func phanttomSetTitleSpacerAccessory(sidebarWidth: CGFloat, active: Bool) {
+        guard styleMask.contains(.titled) else { return }
+        let existing = titlebarAccessoryViewControllers.first {
+            $0.identifier == phanttomTitleSpacerAccessoryID
+        }
+        if !active {
+            if let existing,
+               let idx = titlebarAccessoryViewControllers.firstIndex(of: existing) {
+                removeTitlebarAccessoryViewController(at: idx)
+            }
+            return
+        }
+
+        let spacerWidth = max(0, sidebarWidth - phanttomTrafficLightsTrailingX)
+        if let existing {
+            existing.view.frame.size.width = spacerWidth
+            existing.view.needsLayout = true
+            return
+        }
+
+        // Don't stack under the parked toggle accessory.
+        if titlebarAccessoryViewControllers.contains(where: {
+            $0.identifier == phanttomSidebarToggleAccessoryID
+        }) {
+            return
+        }
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: spacerWidth, height: 22))
+        container.wantsLayer = false
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.identifier = phanttomTitleSpacerAccessoryID
+        accessory.view = container
+        accessory.layoutAttribute = .left
+        addTitlebarAccessoryViewController(accessory)
     }
 
     private var phanttomSidebarWidth: CGFloat {

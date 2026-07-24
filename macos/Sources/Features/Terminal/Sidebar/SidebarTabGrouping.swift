@@ -173,11 +173,14 @@ struct ProjectHeader: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: 12, height: 12)
-                    .foregroundStyle(Color.white.opacity(
-                        showPlusHover ? 0.95 : (showHover ? 0.65 : 0.5)))
+                    .foregroundStyle(Color.white.opacity(showPlusHover ? 0.95 : 0.55))
                     .frame(
                         width: SidebarTrailingColumn.slot,
                         height: SidebarTrailingColumn.slot)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color.white.opacity(showPlusHover ? 0.14 : 0))
+                    )
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -218,7 +221,7 @@ struct ProjectHeader: View {
 /// white (SwiftUI `Menu` always paints its label opaque) and the popup can
 /// use Inter at sidebar-readable size. Directory listing is capped and
 /// loaded off the main thread (cache shared across windows). Lives on the
-/// pinned New-tab row, not on project headers.
+/// pinned Sessions header (left of "+"), not on project headers.
 struct DeveloperFoldersButton: NSViewRepresentable {
     var onOpen: (String) -> Void
 

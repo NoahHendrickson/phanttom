@@ -16,6 +16,18 @@ final class ProjectGroupOrderStore: ObservableObject {
         order = UserDefaults.standard.stringArray(forKey: Self.key) ?? []
     }
 
+    /// Pin a project root to the front of the saved display order. Used by
+    /// the Sessions header (+ / ~/Developer) so a newly opened project
+    /// isn't stuck at the bottom behind first-appearance appends.
+    func bringToFront(_ id: String) {
+        let key = URL(fileURLWithPath: id).standardizedFileURL.path
+        var next = order.filter { $0 != key && $0 != id }
+        next.insert(key, at: 0)
+        guard next != order else { return }
+        order = next
+        persist()
+    }
+
     /// Merge a saved order with the roots currently appearing: saved keys
     /// keep their relative order, then first-seen unknowns append in
     /// `appearing` order. Roots absent from `appearing` are skipped (kept
