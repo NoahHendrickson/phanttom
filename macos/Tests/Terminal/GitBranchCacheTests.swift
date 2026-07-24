@@ -123,6 +123,66 @@ struct GitBranchCacheTests {
         #expect(resolved.isWorktree == false)
     }
 
+    @Test func crlfGitFileIsTrimmed() throws {
+        // A `.git` file written with CRLF line endings leaves a trailing `\r`
+        // on the gitdir path unless trimmed with a CR-inclusive set; that
+        // stray `\r` would make HEAD unreadable and corrupt projectRoot.
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let repo = (root as NSString).appendingPathComponent("repo")
+        let worktree = (root as NSString).appendingPathComponent("wt-feature")
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
+
+        let gitdir = (repo as NSString)
+            .appendingPathComponent(".git/worktrees/wt-feature")
+        try write(at: gitdir, relative: "HEAD", contents: "ref: refs/heads/feature\n")
+        try write(
+            at: worktree,
+            relative: ".git",
+            contents: "gitdir: \(gitdir)\r\n"
+        )
+
+        let resolved = GitBranchCache.readMetadata(at: worktree)
+        #expect(resolved.branch == "feature")
+        #expect(resolved.projectRoot == repo)
+        #expect(resolved.isWorktree == true)
+    }
+
+    @Test func worktreeProjectRootIsNormalized() throws {
+        // The gitdir routes through a `.` segment before `/.git/worktrees/`.
+        // The worktree verdict is lexical; projectRoot must be derived from
+        // the same normalized string (and standardized) so it string-equals
+        // the parent repo's pwd used for grouping — not `<repo>/.`.
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let repo = (root as NSString).appendingPathComponent("repo")
+        let worktree = (root as NSString).appendingPathComponent("wt-feature")
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
+
+        // On-disk gitdir (POSIX resolves `.` so HEAD stays readable)…
+        let gitdir = (repo as NSString)
+            .appendingPathComponent(".git/worktrees/wt-feature")
+        try write(at: gitdir, relative: "HEAD", contents: "ref: refs/heads/feature\n")
+        // …but the recorded path carries a `.` segment (built by explicit
+        // concatenation so the `.` isn't collapsed before readMetadata sees
+        // it).
+        let unnormalizedGitdir = repo + "/./.git/worktrees/wt-feature"
+        try write(
+            at: worktree,
+            relative: ".git",
+            contents: "gitdir: \(unnormalizedGitdir)\n"
+        )
+
+        let resolved = GitBranchCache.readMetadata(at: worktree)
+        #expect(resolved.branch == "feature")
+        #expect(resolved.projectRoot == repo)
+        #expect(resolved.isWorktree == true)
+    }
+
     @Test func isLinkedWorktreeGitdirUsesPathComponents() {
         #expect(GitBranchCache.isLinkedWorktreeGitdir(
             "/repo/.git/worktrees/feature") == true)

@@ -189,17 +189,23 @@ struct PhanttomClaudeIntegrationTests {
         #expect(restored[PhanttomClaudeIntegration.originalStatusLineObjectKey] == nil)
     }
 
-    @Test func installLeavesNonArrayEventValueUntouched() {
-        // Schema-invalid (non-array) event value is left as-is rather than
-        // clobbering user data; the integration just can't reach "current".
+    @Test func installRepairsNonArrayEventValue() {
+        // A schema-invalid (non-array) event value can't be merged, so install
+        // replaces it with a fresh array carrying our dispatch rather than
+        // skipping it forever. Skipping used to leave `hasCompleteDispatch`
+        // permanently false, pinning status at "outdated" and re-running
+        // install every launch. After repair the integration reaches
+        // "current". (The unmergeable "oops" value is necessarily dropped.)
         let input: [String: Any] = [
             "hooks": ["Stop": "oops"] as [String: Any],
         ]
         let result = PhanttomClaudeIntegration.install(into: input)
-        #expect((result["hooks"] as? [String: Any])?["Stop"] as? String == "oops")
+        let stop = (result["hooks"] as? [String: Any])?["Stop"]
+        #expect(stop as? String == nil)
+        #expect(stop is [Any])
         #expect(PhanttomClaudeIntegration.status(
             of: result, scriptText: PhanttomClaudeIntegration.hookScript
-        ) != .installedCurrent)
+        ) == .installedCurrent)
     }
 
     @Test func statuslineStashAndRestore() {
@@ -467,22 +473,23 @@ struct PhanttomClaudeIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: paths.state.path))
     }
 
-    @Test func stuckOutdatedInstallDoesNotChurnBackups() throws {
+    @Test func nonArrayEventRepairInstallsWithoutChurningBackups() throws {
         let dir = try makeTempClaudeDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let paths = PhanttomClaudeIntegration.Paths(
             baseDir: URL(fileURLWithPath: dir))
-        // Malformed (non-array) value on a desired event → install can never
-        // reach `.installedCurrent`, so launch-time repair keeps re-running.
+        // A malformed (non-array) value on a desired event is repaired by
+        // install (replaced with a fresh array carrying our dispatch), so the
+        // first pass reaches `.installedCurrent` instead of looping forever.
         try PhanttomClaudeIntegration.writeSettings(
             ["hooks": ["Stop": "oops"] as [String: Any]], to: paths.settings)
 
         let first = PhanttomClaudeIntegration.performInstall(paths: paths)
-        #expect(first.status != .installedCurrent)
+        #expect(first.status == .installedCurrent)
         #expect(try backupCount(in: dir) == 1)
 
-        // Simulate repeated launch-time repair passes: the config is already
-        // at its fixed point, so no further backups (or writes) should occur.
+        // Re-running is idempotent: the config is already at its fixed point,
+        // so no further backups (or writes) should occur.
         for _ in 0..<4 { _ = PhanttomClaudeIntegration.performInstall(paths: paths) }
         #expect(try backupCount(in: dir) == 1)
     }

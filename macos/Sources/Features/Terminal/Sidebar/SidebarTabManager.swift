@@ -563,10 +563,19 @@ final class SidebarTabManager: ObservableObject {
             ]
         }
 
-        // Progress reports and background of every surface in the group —
-        // not just the focused one, so background splits still report.
+        // Progress reports, title, and background of every surface in the
+        // group — not just the focused one, so background splits still report.
+        // Tab identity is computed from every split's title (refresh reads
+        // surfaces.map(\.title)); window.title mirrors only the focused split,
+        // so a background split's title change would otherwise fire no refresh.
         surfaceCancellables = surfaces.flatMap { surface -> [AnyCancellable] in
             [
+                surface.$title
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { [weak self] _ in
+                        DispatchQueue.main.async { self?.scheduleRefresh() }
+                    },
                 surface.$progressReport
                     .dropFirst()
                     .removeDuplicates { $0 == nil && $1 == nil }

@@ -373,9 +373,17 @@ enum PhanttomClaudeIntegration {
         guard var hooksObj = result["hooks"] as? [String: Any] else { return result }
 
         for (event, value) in hooksObj {
-            guard let entries = asEntryArray(value) else { continue }
-            var kept: [[String: Any]] = []
-            for var entry in entries {
+            // Iterate the ORIGINAL array so foreign non-object elements (stray
+            // strings/numbers) and objects we don't own round-trip untouched —
+            // only Phanttom-owned object entries are removed.
+            guard let elements = value as? [Any] else { continue }
+            var kept: [Any] = []
+            for element in elements {
+                guard var entry = element as? [String: Any] else {
+                    // Not an object entry — preserve it verbatim.
+                    kept.append(element)
+                    continue
+                }
                 guard let inner = entry["hooks"] as? [Any] else {
                     // No inner hooks array to inspect — leave the entry as-is.
                     kept.append(entry)
@@ -412,12 +420,14 @@ enum PhanttomClaudeIntegration {
 
         for desired in desiredHooks {
             let existing = hooksObj[desired.event]
-            if existing != nil, asEntryArray(existing) == nil {
-                // Malformed (non-array) value for a desired event — leave it
-                // untouched rather than silently clobbering user data.
-                continue
-            }
-            var entries = asEntryArray(existing) ?? []
+            // Append to the ORIGINAL array so foreign entries (objects we don't
+            // own AND non-object elements) survive. A non-array value at a hooks
+            // event is invalid per Claude Code's schema and can't be merged;
+            // replacing it with a fresh array is the only way to install our
+            // dispatch. Skipping it (the old behavior) left `hasCompleteDispatch`
+            // permanently false, so install re-ran every launch and Settings was
+            // stuck showing "Update available".
+            var entries: [Any] = (existing as? [Any]) ?? []
             var entry: [String: Any] = [
                 "hooks": [
                     ["type": "command", "command": desired.command] as [String: Any],
@@ -739,11 +749,26 @@ enum PhanttomClaudeIntegration {
         do {
             settings = try readSettings(at: paths.settings)
         } catch {
+            // settings.json won't parse, so we can't safely rewrite it — but a
+            // Remove must never leave our own artifacts behind. Clean up the
+            // script/state (and any legacy statusline script) first, THEN
+            // surface the corruption to the user.
+            try? fm.removeItem(at: paths.script)
+            try? fm.removeItem(at: paths.state)
+            removeLegacyStatuslineScript(paths: paths)
             throw ActionError.settingsCorrupt
         }
         try backupSettings(at: paths.settings)
 
-        let next = uninstall(from: settings)
+        // A legacy hand-installed user who clicks Remove without ever migrating
+        // via Set Up has no stash, and their statusLine.command is our wrapper
+        // (statusline-phanttom.sh) chaining to statusline-command.sh. Seed the
+        // stash first — exactly as applyInstall does — so uninstall restores
+        // their real chained statusline instead of deleting the key entirely
+        // (matching the Remove alert's "restores your previous statusline"
+        // promise). A no-op when a stash already exists or there's no wrapper.
+        let prepared = prepareLegacyStatuslineStash(settings, paths: paths)
+        let next = uninstall(from: prepared)
         try writeSettings(next, to: paths.settings)
         try? fm.removeItem(at: paths.script)
         try? fm.removeItem(at: paths.state)

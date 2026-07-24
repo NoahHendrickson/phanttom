@@ -39,7 +39,7 @@ enum SidebarTabGroup: Identifiable {
         var byRoot: [String: [SidebarTabManager.TabItem]] = [:]
         var pending: [SidebarTabManager.TabItem] = []
         for tab in tabs {
-            if let root = tab.git?.projectRoot ?? tab.directory {
+            if let root = projectKey(for: tab) {
                 if byRoot[root] == nil { appearance.append(root) }
                 byRoot[root, default: []].append(tab)
             } else {
@@ -49,7 +49,10 @@ enum SidebarTabGroup: Identifiable {
         let orderedRoots = ProjectGroupOrderStore.merge(
             order: preferringOrder,
             appearing: appearance)
-        let home = NSHomeDirectory()
+        // Canonicalize home the same way keys are so trailing-slash / `.`
+        // / `..` variants compare equal (falls back to the raw path, which
+        // never happens for a real home directory).
+        let home = normalizedRoot(NSHomeDirectory()) ?? NSHomeDirectory()
         var groups = orderedRoots.map { root in
             SidebarTabGroup.project(
                 id: root,
@@ -66,7 +69,21 @@ enum SidebarTabGroup: Identifiable {
     /// Project-group key for same-group tab drag constraints: repo root
     /// when known, else pwd. nil only for the header-less pending bucket.
     static func projectKey(for tab: SidebarTabManager.TabItem) -> String? {
-        tab.git?.projectRoot ?? tab.directory
+        normalizedRoot(tab.git?.projectRoot ?? tab.directory)
+    }
+
+    /// Canonicalize a pwd for use as a grouping key/id. Trims whitespace and
+    /// treats an empty (or whitespace-only) path as nil so such tabs fall into
+    /// the header-less pending bucket instead of forming a bogus empty group.
+    /// Standardizes the path (removes `.`/`..` and any trailing slash) so
+    /// trailing-slash variants of one project don't split into two groups.
+    /// Symlinks are intentionally left unresolved to match how pwd is reported
+    /// elsewhere; already-clean absolute paths are returned unchanged.
+    private static func normalizedRoot(_ path: String?) -> String? {
+        guard let path else { return nil }
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
     }
 }
 

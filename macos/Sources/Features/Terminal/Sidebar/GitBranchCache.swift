@@ -99,24 +99,33 @@ final class GitBranchCache {
                             .split(separator: "\n")
                             .first(where: { $0.hasPrefix("gitdir: ") }) {
                     let gitdir = String(gitdirLine.dropFirst("gitdir: ".count))
-                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
                     let gitdirResolved = (gitdir as NSString).isAbsolutePath
                         ? gitdir
                         : (dir as NSString).appendingPathComponent(gitdir)
                     headPath = (gitdirResolved as NSString).appendingPathComponent("HEAD")
+                    // Normalize the resolved gitdir once (`..`/`.` folded, no
+                    // filesystem touch) so the worktree verdict below and the
+                    // projectRoot strip read the *same* string and can't
+                    // disagree — otherwise a `.`/`..` segment could leave the
+                    // verdict lexical but the projectRoot unnormalized.
+                    let normalizedGitdir = NSString.path(
+                        withComponents: lexicallyNormalizedPathComponents(gitdirResolved))
                     // A linked worktree's gitdir lives at
                     // <repo>/.git/worktrees/<name>; its project is <repo>,
                     // so worktree tabs group with the repository they came
                     // from. Anything else (e.g. a submodule's
-                    // .git/modules/<name>) keeps the worktree dir itself.
-                    // Detection is lexical (`..`/`.` folded) so a gitdir
-                    // that merely routes *through* a worktrees path doesn't
-                    // count — and the same verdict gates the projectRoot
-                    // strip so the two fields can't disagree.
-                    isWorktree = isLinkedWorktreeGitdir(gitdirResolved)
+                    // .git/modules/<name>) keeps the worktree dir itself. A
+                    // gitdir that merely routes *through* a worktrees path
+                    // doesn't count (the fold above collapses it).
+                    isWorktree = isLinkedWorktreeGitdir(normalizedGitdir)
                     if isWorktree,
-                       let range = gitdirResolved.range(of: "/.git/worktrees/") {
-                        projectRoot = String(gitdirResolved[..<range.lowerBound])
+                       let range = normalizedGitdir.range(of: "/.git/worktrees/") {
+                        // Standardize so this string-equals the parent repo's
+                        // pwd used for project grouping.
+                        projectRoot = URL(
+                            fileURLWithPath: String(normalizedGitdir[..<range.lowerBound])
+                        ).standardizedFileURL.path
                     }
                 } else {
                     return Resolved()

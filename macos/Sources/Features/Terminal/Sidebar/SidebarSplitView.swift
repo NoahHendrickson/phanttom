@@ -158,9 +158,35 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
             setSidebarCollapsed(collapsed, animated: false)
             return
         }
-        guard !isSidebarCollapsed, toggleAnimationTimer == nil else { return }
+        guard !isSidebarCollapsed else { return }
+        // This window's own collapse/expand slide owns the divider right now
+        // (its target was captured from the pre-broadcast saved width), so we
+        // can't reposition mid-slide. Ignore the sync here; the slide always
+        // converges to the current fittedWidth(savedSidebarWidth) on
+        // completion, and the sibling already persisted that width to
+        // UserDefaults before broadcasting — so a broadcast landing
+        // mid-animation isn't lost.
+        guard toggleAnimationTimer == nil else { return }
         let width = fittedWidth(savedSidebarWidth)
         guard abs(sidebar.frame.width - width) > 0.5 else { return }
+        setPosition(width, ofDividerAt: 0)
+        layoutSubtreeIfNeeded()
+        onSidebarWidthChange?(currentSidebarWidth)
+    }
+
+    /// Converge to the current shared width when a collapse/expand slide ends.
+    /// The slide animates toward a target captured when it started; if a
+    /// sibling persisted a new width mid-slide, re-read and apply it now so
+    /// widths don't diverge until the next activation. A no-op when already at
+    /// the saved width (the common case). See `syncSharedSidebarState`.
+    private func applySharedWidthAfterSlide() {
+        guard !isSidebarCollapsed else { return }
+        let width = fittedWidth(savedSidebarWidth)
+        guard abs(sidebar.frame.width - width) > 0.5 else { return }
+        // Programmatic reposition — flagged so the persistence guard can't
+        // mistake it for a user drag (see splitViewDidResizeSubviews).
+        isApplyingSharedState = true
+        defer { isApplyingSharedState = false }
         setPosition(width, ofDividerAt: 0)
         layoutSubtreeIfNeeded()
         onSidebarWidthChange?(currentSidebarWidth)
@@ -217,6 +243,7 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
             if t >= 1 {
                 timer.invalidate()
                 self.toggleAnimationTimer = nil
+                self.applySharedWidthAfterSlide()
             }
         }
         toggleAnimationTimer = timer
@@ -325,16 +352,39 @@ final class SidebarSplitView: NSSplitView, NSSplitViewDelegate {
         return proposedPosition
     }
 
+    /// Coalesces the width persist + cross-window broadcast to the end of a
+    /// divider drag. Firing them every frame made every sibling split in every
+    /// window run a setPosition + layoutSubtreeIfNeeded + titlebar re-sync per
+    /// frame; the dragged window still resizes live via `onSidebarWidthChange`
+    /// above, so only the persist/broadcast is deferred.
+    private var persistWidthWorkItem: DispatchWorkItem?
+
     func splitViewDidResizeSubviews(_ notification: Notification) {
         onSidebarWidthChange?(currentSidebarWidth)
         guard didRestoreWidth, !isSidebarCollapsed, sidebar.frame.width >= Self.minWidth else { return }
         // Only a divider drag persists its width. Every other resize source
         // is transient — the collapse/expand slide, window live-resize, and
         // programmatic frame changes (fullscreen transitions, zoom, Stage
-        // Manager / Split View tiling) where autolayout can squeeze the
-        // sidebar — and must not overwrite the user's chosen width.
-        guard isDraggingDivider, toggleAnimationTimer == nil else { return }
-        UserDefaults.standard.set(sidebar.frame.width, forKey: Self.widthDefaultsKey)
-        NotificationCenter.default.post(name: Self.stateDidChange, object: self)
+        // Manager / Split View tiling, and our own shared-state apply) where
+        // autolayout can squeeze the sidebar — and must not overwrite the
+        // user's chosen width. `isApplyingSharedState` also defends the case
+        // where a programmatic setPosition ever routes through
+        // constrainSplitPosition (which sets isDraggingDivider).
+        guard isDraggingDivider, !isApplyingSharedState, toggleAnimationTimer == nil else { return }
+        // Debounce to the end of the drag: capture this frame's width and
+        // (re)schedule the persist/broadcast, cancelling any earlier pending
+        // one, so the cross-window sync fires once after the drag settles
+        // rather than every frame. Continuous dragging reschedules faster than
+        // the delay, so the work item only runs when the drag pauses or ends.
+        let width = sidebar.frame.width
+        persistWidthWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.persistWidthWorkItem = nil
+            UserDefaults.standard.set(width, forKey: Self.widthDefaultsKey)
+            NotificationCenter.default.post(name: Self.stateDidChange, object: self)
+        }
+        persistWidthWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
     }
 }

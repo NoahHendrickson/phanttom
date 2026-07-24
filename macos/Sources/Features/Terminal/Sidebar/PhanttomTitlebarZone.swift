@@ -160,13 +160,19 @@ extension TerminalWindow {
         if let button = titlebarView.subviews
             .compactMap({ $0 as? PhanttomGroupingButton }).first {
             let size: CGFloat = 20
+            let buttonX = max(dividerX - size - 6, 0)
             button.frame = NSRect(
-                x: max(dividerX - size - 6, 0),
+                x: buttonX,
                 y: (bounds.height - size) / 2,
                 width: size, height: size)
-            // Gone (not squished against the traffic lights) while the
-            // sidebar is collapsed or dragged very narrow.
-            button.isHidden = width < 60
+            // Gone (not squished against the traffic lights) while the sidebar
+            // is collapsed or dragged very narrow. Hidden until the button's
+            // left edge clears the traffic lights + the sidebar-toggle
+            // accessory, which together extend to ~x=97; below that the button
+            // would draw over them — a band the expand animation sweeps through
+            // transiently. Settled widths are always >= minWidth (160), so this
+            // gate only ever matters mid-animation.
+            button.isHidden = buttonX < 100
         }
     }
 

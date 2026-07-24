@@ -102,6 +102,31 @@ final class PhanttomSettings: ObservableObject {
         static let fontSize = "PhanttomFontSize"
         static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
         static let restoreWindowsOnQuit = "PhanttomRestoreWindowsOnQuit"
+        /// Explicit lifecycle of the managed `config-file = ?phanttom.conf`
+        /// include, persisted as an `IncludeState` raw value. Replaces the
+        /// earlier inference from the notice flag plus include-absence, which
+        /// could misread a never-installed setup (e.g. an older build that
+        /// burned the notice before a failed apply) as a deliberate opt-out.
+        static let includeState = "PhanttomIncludeState"
+    }
+
+    /// Lifecycle of the managed include line.
+    /// - `unset`: never successfully added — the next apply adds it.
+    /// - `installed`: added and observed present; if it later goes missing the
+    ///   user removed it, so we transition to `optedOut`.
+    /// - `optedOut`: the user deleted the include — the documented escape
+    ///   hatch, honored permanently (never re-added).
+    private enum IncludeState: String {
+        case unset, installed, optedOut
+    }
+
+    private var includeState: IncludeState {
+        get {
+            IncludeState(
+                rawValue: UserDefaults.standard.string(forKey: Keys.includeState) ?? ""
+            ) ?? .unset
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Keys.includeState) }
     }
 
     private var loaded = false
@@ -148,7 +173,13 @@ final class PhanttomSettings: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
 
-    func apply() {
+    /// Write the managed fragment and ensure the include, then reload config
+    /// if anything actually changed. Returns `true` when the config is in its
+    /// desired state (whether or not a write was needed) and `false` when the
+    /// attempt failed (no config path, or a write threw) — callers gate the
+    /// one-time notice flag on this so a failed apply is retried next launch.
+    @discardableResult
+    func apply() -> Bool {
         // ghostty_config_open_path returns an empty string on failure; bail
         // rather than resolving config paths relative to the process cwd.
         // Snapshot once so every step below operates on the exact path the
@@ -156,23 +187,35 @@ final class PhanttomSettings: ObservableObject {
         let mainConfigPath = self.mainConfigPath
         guard !mainConfigPath.isEmpty else {
             Ghostty.logger.warning("phanttom settings: no config path available; not applying")
-            return
+            return false
         }
+        let changed: Bool
         do {
-            try writeFragment(mainConfigPath: mainConfigPath)
-            try ensureIncluded(mainConfigPath: mainConfigPath)
+            // Evaluate both writers (don't short-circuit): the fragment and the
+            // include are independent, and either changing warrants a reload.
+            let fragmentChanged = try writeFragment(mainConfigPath: mainConfigPath)
+            let includeChanged = try ensureIncluded(mainConfigPath: mainConfigPath)
+            changed = fragmentChanged || includeChanged
         } catch {
             Ghostty.logger.warning("phanttom settings: failed to write config fragment: \(error)")
-            return
+            return false
         }
-        ghosttyApp?.reloadConfig()
+        // Skip the reload when nothing changed — the silent apply runs every
+        // launch and would otherwise reload config on identical content.
+        if changed {
+            ghosttyApp?.reloadConfig()
+        }
+        return true
     }
 
     private var mainConfigPath: String {
         Ghostty.AllocatedString(ghostty_config_open_path()).string
     }
 
-    private func writeFragment(mainConfigPath: String) throws {
+    /// Write the managed `phanttom.conf`. Returns `true` if the file was
+    /// (re)written and `false` if it was already byte-identical to the
+    /// intended content and left untouched.
+    private func writeFragment(mainConfigPath: String) throws -> Bool {
         let configDirectory = URL(fileURLWithPath: mainConfigPath)
             .deletingLastPathComponent()
         var lines = [
@@ -190,13 +233,21 @@ final class PhanttomSettings: ObservableObject {
         if restoreWindowsOnQuit {
             lines.append("window-save-state = always")
         }
+        let contents = lines.joined(separator: "\n") + "\n"
+        let fragmentURL = configDirectory.appendingPathComponent("phanttom.conf")
+
+        // Content-diff before writing: the silent apply runs every launch, so
+        // skip the atomic write (and report "no change") when the on-disk
+        // fragment already matches the intended bytes exactly.
+        if let existing = try? String(contentsOf: fragmentURL, encoding: .utf8),
+            existing == contents {
+            return false
+        }
+
         try FileManager.default.createDirectory(
             at: configDirectory, withIntermediateDirectories: true)
-        try (lines.joined(separator: "\n") + "\n")
-            .write(
-                to: configDirectory.appendingPathComponent("phanttom.conf"),
-                atomically: true,
-                encoding: .utf8)
+        try contents.write(to: fragmentURL, atomically: true, encoding: .utf8)
+        return true
     }
 
     /// Ensure the user's main config includes our fragment (optional include,
@@ -210,7 +261,14 @@ final class PhanttomSettings: ObservableObject {
     /// The read-then-append dedup check races a concurrent external writer
     /// (no file locking); accepted, since the worst case is a duplicate
     /// include that Ghostty flags as a cycle diagnostic rather than breaking.
-    private func ensureIncluded(mainConfigPath: String) throws {
+    /// Returns `true` if the include line was appended this call, `false`
+    /// otherwise (already present, opted out, or intentionally not re-added).
+    private func ensureIncluded(mainConfigPath: String) throws -> Bool {
+        // Opted out: the user deleted the include (the documented escape
+        // hatch). Never read or touch their config for this again — this is
+        // what makes opt-out stick across launches and font-size changes.
+        if includeState == .optedOut { return false }
+
         let mainURL = URL(fileURLWithPath: mainConfigPath).resolvingSymlinksInPath()
         let exists = FileManager.default.fileExists(atPath: mainURL.path)
 
@@ -218,7 +276,32 @@ final class PhanttomSettings: ObservableObject {
         if exists {
             existing = try String(contentsOf: mainURL, encoding: .utf8)
         }
-        guard !existing.contains("phanttom.conf") else { return }
+
+        // Only an *active* (uncommented) include directive counts as "already
+        // present". A commented-out or otherwise textual mention of
+        // phanttom.conf must not be mistaken for a live include (which would
+        // wrongly suppress a real one), so parse line-by-line and ignore
+        // comment lines rather than doing a blanket substring match.
+        let present = hasActiveInclude(existing)
+
+        if includeState == .installed {
+            // We added the include before and observed it present. If it's
+            // still there, nothing to do; if it's gone the user removed it, so
+            // record the durable opt-out and never re-add.
+            if !present { includeState = .optedOut }
+            return false
+        }
+
+        // includeState == .unset: never successfully installed. If the include
+        // is already present (added out-of-band, or a config carried over from
+        // an older build), adopt it as installed without rewriting. Otherwise
+        // append it now. Because the default is `unset`, a stale setup that
+        // never actually wrote the include is treated as a first-ever install
+        // rather than a phantom opt-out.
+        if present {
+            includeState = .installed
+            return false
+        }
 
         let separator = existing.isEmpty || existing.hasSuffix("\n")
             ? "" : "\n"
@@ -242,5 +325,19 @@ final class PhanttomSettings: ObservableObject {
         } else {
             try addition.write(to: mainURL, atomically: true, encoding: .utf8)
         }
+        includeState = .installed
+        return true
+    }
+
+    /// True when `contents` has a live (uncommented) include of our fragment.
+    /// Lines whose first non-whitespace character is `#` are comments and are
+    /// ignored, so a commented-out reference never blocks a real include.
+    private func hasActiveInclude(_ contents: String) -> Bool {
+        for rawLine in contents.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#") { continue }
+            if line.contains("phanttom.conf") { return true }
+        }
+        return false
     }
 }

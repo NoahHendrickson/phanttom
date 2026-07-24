@@ -81,19 +81,38 @@ final class PRStatusCache {
         guard let gh = ghPath else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gh)
-        process.arguments = ["pr", "view", branch, "--json", "state", "-q", ".state"]
+        // Query by head branch, not `pr view <branch>` — the latter treats a
+        // purely-numeric branch name (e.g. "42") as PR #42. `pr list` returns
+        // a JSON array; `.[0].state` reads the first (only) match's state and
+        // yields an empty string when there's no PR for the branch.
+        process.arguments = [
+            "pr", "list", "--head", branch, "--state", "all",
+            "--json", "state", "--limit", "1", "-q", ".[0].state",
+        ]
         process.currentDirectoryURL = URL(fileURLWithPath: pwd, isDirectory: true)
         let out = Pipe()
         process.standardOutput = out
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
         // gh talks to the network; don't let a hung call pin this key's
-        // in-flight slot forever.
-        let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15, execute: watchdog)
-        let data = out.fileHandleForReading.readDataToEndOfFile()
+        // in-flight slot forever. Read stdout on its own thread so that a
+        // grandchild inheriting (and never closing) the pipe can't wedge
+        // readDataToEndOfFile past the deadline: if the read hasn't finished
+        // by then we terminate gh and give up, so this function always
+        // returns and the detached Task always clears the in-flight key.
+        var data = Data()
+        let readComplete = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            let d = out.fileHandleForReading.readDataToEndOfFile()
+            data = d
+            readComplete.signal()
+        }
+        if readComplete.wait(timeout: .now() + 15) == .timedOut {
+            if process.isRunning { process.terminate() }
+            return nil
+        }
+        // EOF was reached, so gh has closed stdout and is exiting.
         process.waitUntilExit()
-        watchdog.cancel()
         guard process.terminationStatus == 0,
               let raw = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)

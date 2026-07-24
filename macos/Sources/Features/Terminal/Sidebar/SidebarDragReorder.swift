@@ -119,8 +119,12 @@ enum SidebarDragReorder {
         }) else { return false }
 
         provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
-            guard let data, let string = String(data: data, encoding: .utf8), !string.isEmpty
-            else { return }
+            // Always deliver — even on a failed load (nil / non-UTF8 / empty).
+            // We already returned `true` (the drag was accepted), so a silent
+            // early return would leave the caller treating a payload that
+            // never arrives as handled. An empty string is a harmless no-op
+            // for callers, which validate it.
+            let string = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             deliver(string, completion: completion)
         }
         return true
