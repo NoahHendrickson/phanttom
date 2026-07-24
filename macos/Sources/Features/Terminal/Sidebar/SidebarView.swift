@@ -415,9 +415,9 @@ struct SidebarTabRow: View {
         case .working:
             PixelSparkleView()
         case .done:
-            statusDot(Color(red: 0x3A / 255, green: 0x89 / 255, blue: 0xD8 / 255))
+            statusDot(PhanttomSettings.doneStatusColor)
         case .attention:
-            statusDot(Color(red: 0xF5 / 255, green: 0xCC / 255, blue: 0x64 / 255))
+            statusDot(PhanttomSettings.attentionStatusColor)
         }
     }
 

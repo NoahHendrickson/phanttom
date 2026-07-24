@@ -166,7 +166,8 @@ struct ProjectHeader: View {
 
 /// Home-group "open from ~/Developer" control. Uses AppKit so the glyph
 /// stays at 65% white (SwiftUI `Menu` always paints its label opaque) and
-/// the popup can use Inter at sidebar-readable size.
+/// the popup can use Inter at sidebar-readable size. Directory listing is
+/// capped and loaded off the main thread (cache shared across windows).
 private struct DeveloperFoldersButton: NSViewRepresentable {
     var onOpen: (String) -> Void
 
@@ -191,30 +192,13 @@ private struct DeveloperFoldersButton: NSViewRepresentable {
         button.idleAlpha = 0.65
         button.hoverAlpha = 0.95
         button.contentTintColor = NSColor.white.withAlphaComponent(button.idleAlpha)
+        // Warm the cache so the first click rarely waits on disk.
+        DeveloperFoldersCache.shared.prefetch()
         return button
     }
 
     func updateNSView(_ button: HoverTintButton, context: Context) {
         context.coordinator.onOpen = onOpen
-    }
-
-    /// Top-level directories under `~/Developer`, A–Z.
-    static func developerFolders() -> [String] {
-        let root = (NSHomeDirectory() as NSString)
-            .appendingPathComponent("Developer")
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: URL(fileURLWithPath: root, isDirectory: true),
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-        return urls.compactMap { url -> String? in
-            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
-                .isDirectory == true
-            return isDir ? url.path : nil
-        }
-        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     final class Coordinator: NSObject {
@@ -225,6 +209,16 @@ private struct DeveloperFoldersButton: NSViewRepresentable {
         }
 
         @objc func showMenu(_ sender: NSButton) {
+            // NSButton actions aren't MainActor-isolated; hop so we can
+            // touch the cache and pop the menu on the UI thread.
+            Task { @MainActor in
+                DeveloperFoldersCache.shared.paths { items in
+                    self.popMenu(items, from: sender)
+                }
+            }
+        }
+
+        private func popMenu(_ items: [String], from sender: NSButton) {
             let menu = NSMenu()
             // Match sidebar chrome; system menu 13pt reads tiny next to
             // Inter 12pt headers, so bump to 14.
@@ -232,7 +226,6 @@ private struct DeveloperFoldersButton: NSViewRepresentable {
                 ?? NSFont(name: "Inter Variable", size: 14)
                 ?? .systemFont(ofSize: 14)
 
-            let items = DeveloperFoldersButton.developerFolders()
             if items.isEmpty {
                 let empty = NSMenuItem(
                     title: "No folders in ~/Developer",
@@ -266,6 +259,72 @@ private struct DeveloperFoldersButton: NSViewRepresentable {
             guard let path = sender.representedObject as? String else { return }
             onOpen(path)
         }
+    }
+}
+
+/// Off-main listing of top-level `~/Developer` folders. Caps entries so a
+/// huge or network-mounted tree can't blow up the menu or hang the UI.
+@MainActor
+private final class DeveloperFoldersCache {
+    static let shared = DeveloperFoldersCache()
+    static let maxCount = 50
+    /// Re-read from disk after this age so new folders show up without a
+    /// dedicated refresh control.
+    private static let staleAfter: TimeInterval = 30
+
+    private var cached: [String]?
+    private var cachedAt: Date?
+    private var inFlight: [( [String]) -> Void] = []
+    private var loading = false
+
+    func prefetch() {
+        paths { _ in }
+    }
+
+    /// Delivers paths on the main actor. Uses cache when fresh; otherwise
+    /// loads on a background queue (coalescing concurrent callers).
+    func paths(completion: @escaping ([String]) -> Void) {
+        if let cached, let cachedAt,
+           Date().timeIntervalSince(cachedAt) < Self.staleAfter {
+            completion(cached)
+            return
+        }
+        inFlight.append(completion)
+        guard !loading else { return }
+        loading = true
+        let root = (NSHomeDirectory() as NSString)
+            .appendingPathComponent("Developer")
+        let limit = Self.maxCount
+        DispatchQueue.global(qos: .userInitiated).async {
+            let paths = Self.load(root: root, limit: limit)
+            DispatchQueue.main.async {
+                self.cached = paths
+                self.cachedAt = Date()
+                self.loading = false
+                let waiters = self.inFlight
+                self.inFlight = []
+                for waiter in waiters { waiter(paths) }
+            }
+        }
+    }
+
+    /// Top-level directories under `root`, A–Z, at most `limit`.
+    nonisolated private static func load(root: String, limit: Int) -> [String] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: root, isDirectory: true),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return urls.compactMap { url -> String? in
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                .isDirectory == true
+            return isDir ? url.path : nil
+        }
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        .prefix(limit)
+        .map { $0 }
     }
 }
 

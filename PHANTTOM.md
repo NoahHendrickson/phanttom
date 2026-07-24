@@ -134,14 +134,19 @@ accessory view controller, and we hide the accessory as it's added
 
 ### Locked chrome (Figma)
 
-Sidebar and terminal pane colors are opinionated and not user-configurable:
+Sidebar and terminal pane colors are opinionated and not user-configurable.
+Tokens live in one place (`PhanttomSettings.Chrome`) and feed SwiftUI,
+AppKit, and the config fragment:
 
 - Sidebar / titlebar left: `#161917`
-- Terminal / titlebar right: `#101211` (always written into `phanttom.conf`
-  as `background` / opacity `1` / blur `0`)
+- Terminal / titlebar right: `#101211` (written into `phanttom.conf` as
+  `background` / opacity `1` / blur `0`)
 - Divider: `#2D2E2E`
+- Working / done / attention status: `#24FE8A` / `#3A89D8` / `#F5CC64`
 - Selected row: `white @ 4%`, corner radius 12; hover: `white @ 4%`, radius 8
 
+First launch shows a one-time notice before writing `phanttom.conf` (and
+appending the optional include). Later launches re-apply silently.
 Escape hatch: remove the `config-file = ?phanttom.conf` include from the
 user's Ghostty config. Phanttom Settings no longer exposes chrome controls.
 
