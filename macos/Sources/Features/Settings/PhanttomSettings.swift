@@ -6,9 +6,9 @@ import GhosttyKit
 ///
 /// Terminal background is opinionated (Figma `#101211`): written into a
 /// managed config fragment (`phanttom.conf`) after a one-time notice on
-/// first launch, then reloaded via libghostty. Font-size override remains
-/// optional. Sidebar grouping is the only sidebar preference — appearance
-/// is hardcoded from `Chrome` below.
+/// first launch, then reloaded via libghostty. Font-size override and
+/// quit→reopen window restore remain optional. Sidebar grouping is the
+/// only sidebar preference — appearance is hardcoded from `Chrome` below.
 @MainActor
 final class PhanttomSettings: ObservableObject {
     static let shared = PhanttomSettings()
@@ -84,12 +84,24 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    // MARK: - Session restore (via config fragment)
+
+    /// When on, writes `window-save-state = always` into `phanttom.conf` so
+    /// intentional quit (Cmd-Q) keeps window layout for the next launch.
+    /// Off (default) omits the key so Ghostty's `default` applies — crash /
+    /// force-quit still restore; normal quit usually does not. Opt-in only;
+    /// does not change the fork's shipped Ghostty default.
+    @Published var restoreWindowsOnQuit: Bool {
+        didSet { persist(); scheduleApply() }
+    }
+
     // MARK: - Persistence
 
     private enum Keys {
         static let overrideFontSize = "PhanttomOverrideFontSize"
         static let fontSize = "PhanttomFontSize"
         static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
+        static let restoreWindowsOnQuit = "PhanttomRestoreWindowsOnQuit"
         /// One-time notice before the first locked-chrome write.
         static let lockedChromeNoticeShown = "PhanttomLockedChromeNoticeShown"
     }
@@ -101,6 +113,7 @@ final class PhanttomSettings: ObservableObject {
         overrideFontSize = defaults.bool(forKey: Keys.overrideFontSize)
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 13
         sidebarGroupByProject = defaults.object(forKey: Keys.sidebarGroupByProject) as? Bool ?? true
+        restoreWindowsOnQuit = defaults.bool(forKey: Keys.restoreWindowsOnQuit)
         loaded = true
     }
 
@@ -149,6 +162,7 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(overrideFontSize, forKey: Keys.overrideFontSize)
         defaults.set(fontSize, forKey: Keys.fontSize)
         defaults.set(sidebarGroupByProject, forKey: Keys.sidebarGroupByProject)
+        defaults.set(restoreWindowsOnQuit, forKey: Keys.restoreWindowsOnQuit)
     }
 
     // MARK: - Applying terminal settings
@@ -200,6 +214,11 @@ final class PhanttomSettings: ObservableObject {
         ]
         if overrideFontSize {
             lines.append("font-size = \(String(format: "%g", fontSize))")
+        }
+        // Omit the key when off so a user's own window-save-state in the
+        // main config is not overridden by phanttom.conf.
+        if restoreWindowsOnQuit {
+            lines.append("window-save-state = always")
         }
         try FileManager.default.createDirectory(
             at: configDirectory, withIntermediateDirectories: true)

@@ -316,8 +316,78 @@ Chrome is locked; only a few preferences remain:
   one-time optional include (`config-file = ?phanttom.conf`). Never write
   the user's own config beyond that line.
 - **Font size override** (optional) also flows through that fragment.
+- **Restore windows on quit** (`restoreWindowsOnQuit`, default off) writes
+  `window-save-state = always` into the same fragment when enabled; when
+  off the key is omitted so a user's own `window-save-state` is not
+  overridden. Exposed in **Phanttom Settings → Windows**.
 - **Sidebar grouping** (`sidebarGroupByProject`) is UserDefaults-only and
   applies instantly through SwiftUI.
+
+## Session restore (layout, not agent resume)
+
+Upstream Ghostty already restores **window layout** on macOS via AppKit
+restorable state (`NSWindowRestoration`), gated by `window-save-state`.
+Phanttom uses that path unchanged — Debug and prod share the same code;
+they only differ by bundle ID (separate saved-state stores under
+`~/Library/Saved Application State/`).
+
+**What “bring sessions back” means today:**
+
+| Survives restore | Does **not** survive |
+|---|---|
+| Windows / tab groups | Running processes (Claude Code, servers, shells mid-command) |
+| Splits | Scrollback / buffer contents |
+| Working directory per surface | Agent status (working / done / attention) |
+| Manual tab rename (`titleOverride`) | Auto-name, agent kind, model label (`PhanttomTabState`) |
+| Tab color, focused surface, fullscreen | Live mid-conversation agent session |
+| Quick terminal layout | Surfaces launched with a custom `command` |
+
+Restore opens a **fresh PTY in the saved directory**. Realistic deliverable:
+layout + cwd + manual names — not “close app → Claude resumes mid-conversation.”
+
+Sidebar width/collapse, project-group order/collapse, Phanttom settings, and
+last window frame survive separately via UserDefaults even when window
+restore does not run.
+
+**When it saves:**
+
+| `window-save-state` | Behavior |
+|---|---|
+| `default` (shipped) | Save only on **forced termination** (crash, force quit, Xcode Stop), or if macOS Settings keeps windows on quit |
+| `always` | Save whenever the app exits (including intentional Cmd-Q) |
+| `never` | Never save / restore |
+
+That is why Debug “comes back after a crash” feels special: Xcode Stop is
+forced termination, which saves under `default`. Intentional Cmd-Q of prod
+does not restore unless you opt in.
+
+**Opt in for quit → reopen restore** (preferred): **Phanttom Settings →
+Windows → Restore windows on quit**. That writes `window-save-state =
+always` into `phanttom.conf` and reloads config. Equivalent manual config:
+
+```ini
+window-save-state = always
+```
+
+Mapped in `AppDelegate.ghosttyConfigDidChange` to `NSQuitAlwaysKeepsWindows`.
+Encode path: `TerminalController.window(_:willEncodeRestorableState:)` →
+`TerminalRestorableState` (currently version 7, minimum 5). Decode path:
+`TerminalWindowRestoration` in `TerminalRestorable.swift`.
+
+**Product guidance (do not “just flip” these):**
+
+- The Settings toggle is the productized opt-in. Do **not** change the fork
+  default to `always` — that is a user-visible divergence from upstream
+  (every Cmd-Q reopens windows; some users dislike that) that every rebase
+  must consciously preserve.
+- Encoding `PhanttomTabState` into restorable state is real work (`final`
+  class, not currently `Codable`; restorable state is versioned — bump +
+  migrate) and buys only cosmetic survival (name/kind), not a live session.
+- Scrollback restore is a large Zig/core effort; upstream deferred it.
+  Separate from layout restore.
+
+Sparkle update relaunches can skip save/restore in some cases (upstream
+limitation).
 
 ## Gotchas for agents
 
