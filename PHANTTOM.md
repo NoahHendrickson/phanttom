@@ -68,7 +68,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Settings model (UserDefaults + locked chrome fragment) | `Features/Settings/PhanttomSettings.swift` |
 | Settings UI | `Features/Settings/PhanttomSettingsView.swift` |
 | Settings window host | `Features/Settings/SettingsWindowController.swift` |
-| Claude Code hook installer (consent, launch re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
+| Claude Code hook installer (launch auto-install/re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
 | Claude/Codex icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset` |
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
@@ -91,8 +91,8 @@ Touches to upstream files are deliberately tiny and greppable — search
   `AppDelegate+Phanttom.swift`; inserts "Phanttom Settings…" ⌘⇧, and
   "Toggle Sidebar" ⌘B programmatically — MainMenu.xib is untouched),
   `PhanttomSettings.shared.setupOnLaunch(ghostty:)` (writes locked chrome
-  into `phanttom.conf`), and `maybePromptClaudeIntegrationSetup()`
-  (Claude Code hook install/re-sync; see the hooks protocol section).
+  into `phanttom.conf`), and `autoSyncClaudeIntegration()`
+  (Claude Code hook auto-install/re-sync; see the hooks protocol section).
 - Sidebar is disabled when `macos-titlebar-style = tabs` (that style
   relocates the tab bar into the titlebar and fights the accessory hiding);
   the window falls back to plain upstream behavior. This is decided once per
@@ -226,9 +226,17 @@ same one isn't immediately re-captured).
 
 ## Claude Code integration (hooks protocol)
 
-Installed from **Phanttom Settings → Claude Code** (`Set Up` / `Update` /
-`Remove…`), or via the one-time first-launch prompt when `~/.claude` exists
-but Phanttom's hooks are missing. Implementation:
+**Zero-touch:** hooks install (and repair / update) automatically on every
+launch whenever `~/.claude` exists — no prompt, no consent dialog
+(`autoSyncClaudeIntegration` in `AppDelegate+Phanttom.swift`). The only off
+switch is **Phanttom Settings → Claude Code → Remove…**, which sets the
+`PhanttomClaudeAutoInstallDisabled` default so removal sticks across
+launches; `Set Up` clears it and auto-sync resumes. A missing `~/.claude`
+or corrupt `settings.json` is silently retried next launch. The two
+pre-auto-install consent defaults (`PhanttomClaudeSetupPrompted`, PR #15
+`PhanttomClaudeHooks`) are migrated once via `migrateConsent`: a prior
+decline / Remove becomes the opt-out; installed users keep syncing.
+Installer implementation:
 `macos/Sources/Features/Settings/PhanttomClaudeIntegration.swift`.
 
 **Architecture.** One versioned helper script at

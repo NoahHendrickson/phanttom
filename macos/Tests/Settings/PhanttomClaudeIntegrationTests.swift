@@ -305,15 +305,49 @@ struct PhanttomClaudeIntegrationTests {
         }
     }
 
-    @Test func legacyEnabledConsentDoesNotReinstallAfterRemove() {
-        #expect(!PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
-            status: .notInstalled))
-        #expect(!PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
-            status: .installedCurrent))
-        #expect(PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
-            status: .installedOutdated(installedVersion: 1)))
-        #expect(PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
-            status: .legacyInline))
+    @Test func consentMigrationFreshUserAutoInstalls() {
+        // No old keys → nothing to migrate, auto-install proceeds.
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: nil, promptedKeySet: false,
+            status: .notInstalled, statusError: nil) == .autoInstall)
+    }
+
+    @Test func consentMigrationHonorsPriorDeclineOrRemove() {
+        // Prompted + notInstalled = declined "Not Now" or removed → opt-out.
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: nil, promptedKeySet: true,
+            status: .notInstalled, statusError: nil) == .disableAutoInstall)
+        // PR #15 explicit disable is an opt-out regardless of status.
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: "disabled", promptedKeySet: false,
+            status: .installedCurrent, statusError: nil) == .disableAutoInstall)
+        // PR #15 "enabled" never reinstalled after an explicit Remove.
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: "enabled", promptedKeySet: false,
+            status: .notInstalled, statusError: nil) == .disableAutoInstall)
+    }
+
+    @Test func consentMigrationKeepsSyncingInstalledUsers() {
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: nil, promptedKeySet: true,
+            status: .installedCurrent, statusError: nil) == .autoInstall)
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: nil, promptedKeySet: true,
+            status: .installedOutdated(installedVersion: 1),
+            statusError: nil) == .autoInstall)
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: "enabled", promptedKeySet: false,
+            status: .legacyInline, statusError: nil) == .autoInstall)
+    }
+
+    @Test func consentMigrationRetriesWhenStatusUnreadable() {
+        // Can't tell decline from breakage → keep keys, decide next launch.
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: nil, promptedKeySet: true,
+            status: .notInstalled, statusError: .claudeNotFound) == .retryLater)
+        #expect(PhanttomClaudeIntegration.migrateConsent(
+            legacyValue: "enabled", promptedKeySet: false,
+            status: .notInstalled, statusError: .settingsCorrupt) == .retryLater)
     }
 
     // MARK: - File I/O (temp base dir)

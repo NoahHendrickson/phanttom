@@ -47,108 +47,62 @@ extension AppDelegate {
         SettingsWindowController.shared.show(ghostty: ghostty)
     }
 
-    /// One-time prompt when Claude Code is present but Phanttom's hooks are
-    /// not installed (or only the legacy hand-installed form remains). Also
-    /// honors the PR #15 `PhanttomClaudeHooks` consent key and re-syncs an
-    /// outdated payload on launch.
+    /// Zero-touch Claude Code integration: on every launch, silently install
+    /// (or repair / update) Phanttom's hooks whenever `~/.claude` exists —
+    /// no consent prompt. The only off switch is an explicit Remove… in
+    /// Settings, which sets `autoInstallDisabledKey`; Set Up re-enables it.
+    /// Failures are log-only here (Settings surfaces them on demand); a
+    /// missing `~/.claude` or corrupt settings.json just retries next launch.
     @MainActor
-    func maybePromptClaudeIntegrationSetup() {
-        // Ghostty.app is the XCTest host — never prompt (or install) there.
+    func autoSyncClaudeIntegration() {
+        // Ghostty.app is the XCTest host — never install there.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return
         }
 
-        let key = PhanttomClaudeIntegration.setupPromptedKey
-        let legacyKey = PhanttomClaudeIntegration.legacyConsentKey
+        let defaults = UserDefaults.standard
+        let status = PhanttomClaudeIntegration.currentStatus()
 
-        // PR #15 used an enable/disable string; map it once, clear the legacy
-        // key, and never re-ask. Without clearing, every launch would see
-        // `enabled` + `.notInstalled` after Remove and silently reinstall.
-        if let legacy = UserDefaults.standard.string(forKey: legacyKey) {
-            UserDefaults.standard.set(true, forKey: key)
-            UserDefaults.standard.removeObject(forKey: legacyKey)
-            if legacy == "enabled" {
-                let st = PhanttomClaudeIntegration.currentStatus()
-                if st.error == nil,
-                   PhanttomClaudeIntegration.shouldRepairAfterLegacyEnabled(
-                    status: st.status)
-                {
-                    _ = PhanttomClaudeIntegration.performInstall()
-                }
+        // One-shot migration of the pre-auto-install consent keys, so a user
+        // who declined the old prompt (or removed via Settings before the
+        // opt-out key existed) isn't force-reinstalled.
+        let legacyValue = defaults.string(
+            forKey: PhanttomClaudeIntegration.legacyConsentKey)
+        let promptedKeySet = defaults.bool(
+            forKey: PhanttomClaudeIntegration.setupPromptedKey)
+        if legacyValue != nil || promptedKeySet {
+            switch PhanttomClaudeIntegration.migrateConsent(
+                legacyValue: legacyValue,
+                promptedKeySet: promptedKeySet,
+                status: status.status,
+                statusError: status.error
+            ) {
+            case .disableAutoInstall:
+                defaults.set(
+                    true, forKey: PhanttomClaudeIntegration.autoInstallDisabledKey)
+                fallthrough
+            case .autoInstall:
+                defaults.removeObject(
+                    forKey: PhanttomClaudeIntegration.legacyConsentKey)
+                defaults.removeObject(
+                    forKey: PhanttomClaudeIntegration.setupPromptedKey)
+            case .retryLater:
+                return
             }
-            return
         }
 
-        if UserDefaults.standard.bool(forKey: key) {
-            // Already decided — quietly repair outdated / legacy installs.
-            let st = PhanttomClaudeIntegration.currentStatus()
-            switch st.status {
-            case .installedOutdated, .legacyInline:
-                _ = PhanttomClaudeIntegration.performInstall()
-            case .notInstalled, .installedCurrent:
-                break
-            }
-            return
-        }
+        guard !defaults.bool(
+            forKey: PhanttomClaudeIntegration.autoInstallDisabledKey)
+        else { return }
+        // claudeNotFound / settingsCorrupt: nothing safe to do — retry next
+        // launch (once ~/.claude appears or settings.json parses again).
+        guard status.error == nil else { return }
 
-        let result = PhanttomClaudeIntegration.currentStatus()
-        if result.error == .claudeNotFound {
-            return
-        }
-        if result.error == .settingsCorrupt {
-            // Can't safely offer "Set Up" against an unparseable settings.json
-            // (the install would abort). Stay quiet — without setting the
-            // prompted key — so the prompt reappears once it's valid again.
-            return
-        }
-        switch result.status {
-        case .notInstalled, .legacyInline:
-            break
-        case .installedCurrent:
-            UserDefaults.standard.set(true, forKey: key)
-            return
-        case .installedOutdated:
-            UserDefaults.standard.set(true, forKey: key)
+        switch status.status {
+        case .notInstalled, .installedOutdated, .legacyInline:
             _ = PhanttomClaudeIntegration.performInstall()
-            return
-        }
-
-        // Set regardless of choice — one prompt, ever.
-        UserDefaults.standard.set(true, forKey: key)
-
-        let alert = NSAlert()
-        alert.messageText = "Set Up Claude Code Integration?"
-        alert.informativeText =
-            "Phanttom can install hooks so Claude Code tabs get pixel rain, " +
-            "auto-naming, agent directory tracking, and a model label. " +
-            "This writes ~/.claude/settings.json (with a backup)."
-        alert.addButton(withTitle: "Set Up")
-        alert.addButton(withTitle: "Open Settings")
-        alert.addButton(withTitle: "Not Now")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            presentClaudeInstallFailure(PhanttomClaudeIntegration.performInstall())
-        case .alertSecondButtonReturn:
-            SettingsWindowController.shared.show(ghostty: ghostty)
-        default:
+        case .installedCurrent:
             break
         }
-    }
-
-    /// Surface an install failure the user explicitly triggered (the first-launch
-    /// "Set Up" button). Silent background repairs stay log-only; a failure the
-    /// user asked for must not be swallowed.
-    @MainActor
-    private func presentClaudeInstallFailure(
-        _ result: PhanttomClaudeIntegration.ActionResult
-    ) {
-        guard result.error != nil else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Couldn’t Set Up Claude Code Integration"
-        alert.informativeText = result.message
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 }
