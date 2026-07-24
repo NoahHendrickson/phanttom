@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The vertical tab sidebar: compact rows for plain terminal tabs, two-line
 /// cards for agent tabs (Claude/Codex). Both row styles lead with the status
@@ -18,14 +17,12 @@ struct SidebarView: View {
     @ObservedObject private var collapseStore = ProjectCollapseStore.shared
     @ObservedObject private var groupOrderStore = ProjectGroupOrderStore.shared
     @ObservedObject private var dragHover = SidebarDragHover.shared
-    /// Insertion-line target while a tab/group reorder drag is active.
-    @State private var dropHighlight: SidebarDragReorder.Highlight?
-    /// Shared across row drop delegates so `performDrop` can stop the
-    /// post-drop `dropUpdated` from resurrecting the insertion line.
-    @State private var dropGate = SidebarDropGate()
-    /// Mouse-up after a drop also fires the row's simultaneous tap; ignore
-    /// select briefly so the drop target doesn't steal selection.
-    @State private var ignoreSelectUntil: Date?
+    /// Owns the live reorder drag. Held as `@State` rather than
+    /// `@StateObject` deliberately: `@State` stores the reference without
+    /// subscribing to it, so a drag re-renders only the per-row slot
+    /// wrappers that do observe it — never this body, which would re-run the
+    /// project partition and rebuild every row on each mouse move.
+    @State private var reorder = SidebarReorderController()
 
     /// Create a new tab in the given working directory. The second argument
     /// is the window to insert the new tab before in the native tab order —
@@ -107,6 +104,27 @@ struct SidebarView: View {
                 // site (SidebarTabManager.refresh): removals and single-row
                 // inserts animate; bulk population and Reduce Motion stay
                 // instant.
+                //
+                // Reorder geometry lives in this space: rows report their
+                // frames here and the drag gesture reports its location
+                // here, so the two are directly comparable. Declared on the
+                // content (not the ScrollView) so scrolling moves rows and
+                // cursor together.
+                .coordinateSpace(name: SidebarReorderSpace.name)
+                .background(
+                    SidebarScrollViewProbe { scrollView in
+                        reorder.scrollView = scrollView
+                    }
+                )
+                .onPreferenceChange(SidebarSlotsKey.self) { slots in
+                    // The closure is non-isolated under the Xcode 16+ SDK;
+                    // preferences are delivered on the main thread (same
+                    // pattern as the notification observers in
+                    // SidebarTabManager).
+                    MainActor.assumeIsolated {
+                        reorder.replaceSlots(slots)
+                    }
+                }
             }
 
             // UpdatePill renders nothing when idle; the outer `if` also drops
@@ -126,6 +144,20 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PhanttomSettings.sidebarBackground.ignoresSafeArea())
+        // A tab closing (or its project emptying) while the mouse is still
+        // down would otherwise leave the drag anchored to a row that no
+        // longer exists. Keyed on identity, not on the whole list, so an
+        // ordinary title or progress update doesn't abandon a live drag.
+        .onChange(of: tabManager.tabs) { newTabs in
+            var present = Set<SidebarReorderGeometry.SlotID>()
+            for tab in newTabs {
+                present.insert(.tab(windowNumber: tab.window.windowNumber))
+                if let key = SidebarTabGroup.projectKey(for: tab) {
+                    present.insert(.group(id: key))
+                }
+            }
+            reorder.cancelIfDraggedIsMissing(among: present)
+        }
     }
 
     /// Window to insert a new Sessions-header tab before: first tab of that
@@ -161,33 +193,30 @@ struct SidebarView: View {
                 onNewTab: {
                     collapseStore.expand(id)
                     onNewTab(id, groupTabs.first?.window)
-                }
-            )
-            .onDrag {
-                SidebarDragReorder.groupProvider(projectRoot: id)
-            }
-            .modifier(SidebarReorderDropChrome(
-                type: .phanttomSidebarGroup,
-                fallbackHeight: 16,
-                gate: dropGate,
-                highlight: $dropHighlight,
-                edgeInHighlight: { highlight in
-                    if case .group(let highlightID, let edge) = highlight,
-                       highlightID == id {
-                        return edge
-                    }
-                    return nil
                 },
-                makeHighlight: { .group(id: id, edge: $0) },
-                onPerform: { provider, edge in
-                    noteDropEnded()
-                    return handleGroupDrop(
-                        [provider],
-                        onto: id,
-                        edge: edge,
-                        visibleIDs: visibleProjectIDs)
-                }
-            ))
+                reorder: SidebarReorderHandle(
+                    id: .group(id: id),
+                    controller: reorder,
+                    // Group order is global; there is nothing to constrain to.
+                    constrainToProject: false,
+                    onCommit: { commit in
+                        applyGroupReorder(commit, visibleIDs: visibleProjectIDs)
+                    },
+                    canStep: { up in
+                        stepTarget(for: id, up: up, in: visibleProjectIDs) != nil
+                    },
+                    step: { up in
+                        guard let target = stepTarget(
+                            for: id, up: up, in: visibleProjectIDs) else { return }
+                        withAnimation(SidebarDragReorder.settleAnimation) {
+                            groupOrderStore.move(
+                                id,
+                                relativeTo: target,
+                                edge: up ? .before : .after,
+                                visibleIDs: visibleProjectIDs)
+                        }
+                    })
+            )
             .transition(.phanttomTabRow)
             if !collapseStore.isCollapsed(id) {
                 VStack(spacing: 4) {
@@ -197,6 +226,18 @@ struct SidebarView: View {
                 }
             }
         }
+        // The group's slot is the whole block, not just its header. Dragging
+        // a project moves the header and its tabs together, and the gap that
+        // opens for it is the height of everything being moved — a header
+        // sliding out from over its own stationary tabs reads as broken.
+        // Collapsed, the block is just the header, so the slot shrinks with
+        // it for free. The tab rows keep their own slots nested inside for
+        // tab drags; a group drag filters those out, so their offsets stay
+        // zero and they simply travel with the block.
+        .modifier(SidebarReorderSlot(
+            id: .group(id: id),
+            group: nil,
+            controller: reorder))
     }
 
     /// One tab row — shared between the flat and the grouped layout so the
@@ -212,149 +253,139 @@ struct SidebarView: View {
         return SidebarTabRow(
             tab: tab,
             hoverEnabled: !dragHover.suppressesHover,
-            onSelect: { selectUnlessPostDrop(tab) },
+            onSelect: { selectUnlessDragging(tab) },
             onClose: { tabManager.close(tab) },
-            onRename: { tabManager.rename(tab, to: $0) }
+            onRename: { tabManager.rename(tab, to: $0) },
+            reorder: SidebarReorderHandle(
+                id: .tab(windowNumber: windowNumber),
+                controller: reorder,
+                constrainToProject: constrainToProject,
+                onCommit: applyTabReorder,
+                canStep: { up in
+                    canMoveTab(tab, up: up, constrainToProject: constrainToProject)
+                },
+                step: { up in
+                    moveTab(tab, up: up, constrainToProject: constrainToProject)
+                })
         )
-        .onDrag {
-            SidebarDragReorder.tabProvider(windowNumber: windowNumber)
-        }
-        .modifier(SidebarReorderDropChrome(
-            type: .phanttomSidebarTab,
-            fallbackHeight: 32,
-            gate: dropGate,
-            highlight: $dropHighlight,
-            edgeInHighlight: { highlight in
-                if case .tab(let highlightNumber, let edge) = highlight,
-                   highlightNumber == windowNumber {
-                    return edge
-                }
-                return nil
-            },
-            makeHighlight: { .tab(windowNumber: windowNumber, edge: $0) },
-            onPerform: { provider, edge in
-                noteDropEnded()
-                return handleTabDrop(
-                    [provider],
-                    onto: tab,
-                    edge: edge,
-                    constrainToProject: constrainToProject)
-            }
-        ))
+        .modifier(SidebarReorderSlot(
+            id: .tab(windowNumber: windowNumber),
+            // Grouping follows cwd/git root, so a drop can never reassign a
+            // tab's project — this key is what keeps a drag from offering a
+            // target in someone else's group.
+            group: SidebarTabGroup.projectKey(for: tab),
+            controller: reorder))
         .transition(.phanttomTabRow)
     }
 
-    private func selectUnlessPostDrop(_ tab: SidebarTabManager.TabItem) {
-        if let until = ignoreSelectUntil, Date() < until { return }
+    /// The neighbouring group one step up or down, or nil at either end.
+    private func stepTarget(
+        for id: String,
+        up: Bool,
+        in visibleIDs: [String]
+    ) -> String? {
+        guard let index = visibleIDs.firstIndex(of: id) else { return nil }
+        let target = up ? index - 1 : index + 1
+        guard visibleIDs.indices.contains(target) else { return nil }
+        return visibleIDs[target]
+    }
+
+    /// Step a tab one slot within the list it can actually move in. Backs the
+    /// row's Move Up/Down menu items, which are the only reorder path
+    /// reachable without a mouse — SwiftUI's `.onDrag`/`.onDrop` never
+    /// offered VoiceOver drag on macOS, so this closes a gap the old
+    /// implementation had too.
+    private func moveTab(
+        _ tab: SidebarTabManager.TabItem,
+        up: Bool,
+        constrainToProject: Bool
+    ) {
+        let key = SidebarTabGroup.projectKey(for: tab)
+        let siblings = constrainToProject
+            ? tabManager.tabs.filter { SidebarTabGroup.projectKey(for: $0) == key }
+            : tabManager.tabs
+        guard let index = siblings.firstIndex(where: { $0.id == tab.id }) else { return }
+        let target = up ? index - 1 : index + 1
+        guard siblings.indices.contains(target) else { return }
+        tabManager.reorder(
+            tab, relativeTo: siblings[target], edge: up ? .before : .after)
+    }
+
+    private func canMoveTab(
+        _ tab: SidebarTabManager.TabItem,
+        up: Bool,
+        constrainToProject: Bool
+    ) -> Bool {
+        let key = SidebarTabGroup.projectKey(for: tab)
+        let siblings = constrainToProject
+            ? tabManager.tabs.filter { SidebarTabGroup.projectKey(for: $0) == key }
+            : tabManager.tabs
+        guard let index = siblings.firstIndex(where: { $0.id == tab.id }) else { return false }
+        return siblings.indices.contains(up ? index - 1 : index + 1)
+    }
+
+    /// The mouse-up that ends a drag also fires the row's simultaneous select
+    /// tap. `didDrag` is raised on a mouse-*moved* event, so it is reliably
+    /// set by the time this runs — no timed window needed.
+    private func selectUnlessDragging(_ tab: SidebarTabManager.TabItem) {
+        guard !reorder.didDrag else { return }
         tabManager.select(tab)
     }
 
-    private func noteDropEnded() {
-        dropHighlight = nil
-        dropGate.isLive = false
-        // Cover the mouse-up → simultaneous tap that follows a drop.
-        ignoreSelectUntil = Date().addingTimeInterval(0.35)
-        // Keep row hover off while the list settles under the cursor.
-        dragHover.endAfterSettle()
-    }
-
-    private func handleTabDrop(
-        _ providers: [NSItemProvider],
-        onto target: SidebarTabManager.TabItem,
-        edge: SidebarDragReorder.Edge,
-        constrainToProject: Bool
-    ) -> Bool {
-        SidebarDragReorder.loadString(from: providers, type: .phanttomSidebarTab) { payload in
-            dropHighlight = nil
-            guard let windowNumber = Int(payload),
-                  let source = tabManager.tabs.first(where: {
-                      $0.window.windowNumber == windowNumber
-                  })
-            else { return }
-            if constrainToProject {
-                let sourceKey = SidebarTabGroup.projectKey(for: source)
-                let targetKey = SidebarTabGroup.projectKey(for: target)
-                guard sourceKey == targetKey else { return }
-            }
-            // Mutate the native tab group, then refresh immediately — the
-            // usual relabelTabs → async → scheduleRefresh chain would leave
-            // the list stale for a couple of runloop turns after release.
-            tabManager.reorder(source, relativeTo: target, edge: edge)
-            tabManager.refresh()
+    /// Returns whether the reorder was applied. The anchor comes from the
+    /// slot list frozen at drag start, so it can name a tab that has since
+    /// closed — reporting that honestly lets the drop glide home instead of
+    /// into a slot the list never took.
+    @discardableResult
+    private func applyTabReorder(_ commit: SidebarReorderController.Commit) -> Bool {
+        guard case .tab(let sourceNumber) = commit.dragged,
+              case .tab(let anchorNumber) = commit.anchor,
+              let source = tabManager.tabs.first(where: {
+                  $0.window.windowNumber == sourceNumber
+              }),
+              let anchor = tabManager.tabs.first(where: {
+                  $0.window.windowNumber == anchorNumber
+              })
+        else { return false }
+        // No animation: the rows already parted to show this exact
+        // arrangement while dragging, so the commit only has to swap the
+        // real order in underneath. Animating here is what used to read as
+        // the row floating before it settled.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            // reorder() posts .phanttomSidebarReorderDidFinish as it unwinds,
+            // which refreshes every window's sidebar once, synchronously — so
+            // the list is current before this returns without needing an
+            // explicit refresh here.
+            tabManager.reorder(
+                source, relativeTo: anchor, edge: commit.edge, animated: false)
         }
+        return true
     }
 
-    private func handleGroupDrop(
-        _ providers: [NSItemProvider],
-        onto targetID: String,
-        edge: SidebarDragReorder.Edge,
+    /// Returns whether the reorder was applied — see `applyTabReorder`. A
+    /// group's last tab can close mid-drag, taking the anchor with it.
+    @discardableResult
+    private func applyGroupReorder(
+        _ commit: SidebarReorderController.Commit,
         visibleIDs: [String]
     ) -> Bool {
-        SidebarDragReorder.loadString(from: providers, type: .phanttomSidebarGroup) { sourceID in
-            dropHighlight = nil
-            withAnimation(SidebarDragReorder.settleAnimation) {
-                groupOrderStore.move(
-                    sourceID,
-                    relativeTo: targetID,
-                    edge: edge,
-                    visibleIDs: visibleIDs)
-            }
+        guard case .group(let sourceID) = commit.dragged,
+              case .group(let anchorID) = commit.anchor,
+              visibleIDs.contains(sourceID),
+              visibleIDs.contains(anchorID)
+        else { return false }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            groupOrderStore.move(
+                sourceID,
+                relativeTo: anchorID,
+                edge: commit.edge,
+                visibleIDs: visibleIDs)
         }
-    }
-}
-
-/// Drop chrome for one sidebar row: measures height, proposes `.move` (no
-/// green "+"), and draws the before/after insertion line.
-private struct SidebarReorderDropChrome: ViewModifier {
-    let type: UTType
-    let fallbackHeight: CGFloat
-    let gate: SidebarDropGate
-    @Binding var highlight: SidebarDragReorder.Highlight?
-    let edgeInHighlight: (SidebarDragReorder.Highlight) -> SidebarDragReorder.Edge?
-    let makeHighlight: (SidebarDragReorder.Edge) -> SidebarDragReorder.Highlight
-    let onPerform: (NSItemProvider, SidebarDragReorder.Edge) -> Bool
-
-    @State private var height: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { height = max(proxy.size.height, 1) }
-                        .onChange(of: proxy.size.height) { newHeight in
-                            height = max(newHeight, 1)
-                        }
-                }
-            )
-            .onDrop(
-                of: [type],
-                delegate: SidebarReorderDropDelegate(
-                    type: type,
-                    rowHeight: height > 0 ? height : fallbackHeight,
-                    gate: gate,
-                    onHighlight: { edge in
-                        highlight = edge.map(makeHighlight)
-                    },
-                    onPerform: onPerform
-                )
-            )
-            .overlay(alignment: insertionAlignment) {
-                if insertionEdge != nil {
-                    SidebarInsertionLine()
-                        .padding(.horizontal, SidebarLeadingColumn.padding)
-                        .allowsHitTesting(false)
-                }
-            }
-    }
-
-    private var insertionEdge: SidebarDragReorder.Edge? {
-        guard let highlight else { return nil }
-        return edgeInHighlight(highlight)
-    }
-
-    private var insertionAlignment: Alignment {
-        insertionEdge == .before ? .top : .bottom
+        return true
     }
 }
 
@@ -426,6 +457,9 @@ struct SidebarTabRow: View {
     let onSelect: () -> Void
     let onClose: () -> Void
     let onRename: (String?) -> Void
+    /// Reorder drag. Lives on the row rather than at the call site so it can
+    /// stand down while the inline rename field has focus.
+    let reorder: SidebarReorderHandle
 
     private let titleSize: Double = 12
     private let subtitleSize: Double = 10
@@ -511,10 +545,18 @@ struct SidebarTabRow: View {
             if tab.customTitle != nil || tab.autoTitle != nil {
                 Button("Reset Name") { onRename(nil) }
             }
+            if reorder.canStep(true) || reorder.canStep(false) {
+                Divider()
+                Button("Move Up") { reorder.step(true) }
+                    .disabled(!reorder.canStep(true))
+                Button("Move Down") { reorder.step(false) }
+                    .disabled(!reorder.canStep(false))
+            }
             Divider()
             Button("Close Tab", action: onClose)
         }
         .help(tab.directory ?? tab.title)
+        .sidebarReorderDrag(reorder, isEnabled: !isEditing)
     }
 
     private func startRename() {

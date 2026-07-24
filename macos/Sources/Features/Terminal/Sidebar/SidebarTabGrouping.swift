@@ -119,6 +119,8 @@ struct ProjectHeader: View {
     var hoverEnabled: Bool = true
     let onToggle: () -> Void
     let onNewTab: () -> Void
+    /// Reorder drag for the whole group.
+    let reorder: SidebarReorderHandle
 
     @State private var isHovering = false
     @State private var isHoveringToggle = false
@@ -199,7 +201,21 @@ struct ProjectHeader: View {
         .padding(.leading, SidebarLeadingColumn.padding)
         .padding(.trailing, SidebarTrailingColumn.padding)
         .frame(height: 16)
+        // A 16pt strip is a thin thing to grab. The padding pair cancels out
+        // in layout — the header still occupies 16pt and nothing shifts —
+        // but the content shape in between is 24pt, so starting a group drag
+        // doesn't demand a pixel hunt. 4pt stays inside the 8pt gap to the
+        // rows below, so it can't poach a tab row's own drag.
+        .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .padding(.vertical, -4)
+        .sidebarReorderDrag(reorder)
+        .contextMenu {
+            Button("Move Up") { reorder.step(true) }
+                .disabled(!reorder.canStep(true))
+            Button("Move Down") { reorder.step(false) }
+                .disabled(!reorder.canStep(false))
+        }
         .onHover { hovering in
             guard hoverEnabled else {
                 isHovering = false
