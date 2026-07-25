@@ -328,8 +328,19 @@ enum PhanttomIntegrationSupport {
             options: []
         ) else { return }
         for url in items where url.lastPathComponent.hasPrefix(prefix) {
+            guard isRegularFile(url) else { continue }
             try? fm.removeItem(at: url)
         }
+    }
+
+    /// Every deletion in this file is name-matched inside the user's agent
+    /// directory, and `removeItem` deletes a directory *and its contents*. A
+    /// directory can't get that name by our own hand, but the cost of being
+    /// wrong is someone's data, so nothing but a regular file is ever removed.
+    nonisolated private static func isRegularFile(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            && !isDir.boolValue
     }
 
     nonisolated static func pruneBackups(
@@ -357,6 +368,7 @@ enum PhanttomIntegrationSupport {
         // snapshot is the pristine pre-Phanttom copy and must never be pruned.
         let oldest = backups.last
         for url in backups.dropFirst(max) where url != oldest {
+            guard isRegularFile(url) else { continue }
             try? fm.removeItem(at: url)
         }
     }

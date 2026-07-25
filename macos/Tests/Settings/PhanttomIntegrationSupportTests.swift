@@ -84,6 +84,28 @@ struct PhanttomIntegrationSupportTests {
             atPath: dir.appendingPathComponent("settings.json.bak-mine").path))
     }
 
+    @Test func backupCleanupNeverDeletesDirectories() throws {
+        // `removeItem` on a directory takes its contents with it. Our own
+        // backups are always regular files, so anything else wearing the
+        // prefix is someone else's data and is left alone.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let prefix = "settings.json.bak-phanttom-"
+        let impostor = dir.appendingPathComponent("\(prefix)a-directory")
+        try FileManager.default.createDirectory(
+            at: impostor, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: impostor.appendingPathComponent("inside.txt"))
+        try Data("{}".utf8).write(
+            to: dir.appendingPathComponent("\(prefix)20260101-120000"))
+
+        PhanttomIntegrationSupport.removeBackups(in: dir, prefix: prefix)
+        PhanttomIntegrationSupport.pruneBackups(in: dir, prefix: prefix, keeping: 0)
+
+        #expect(FileManager.default.fileExists(
+            atPath: impostor.appendingPathComponent("inside.txt").path))
+        #expect(try names(in: dir, prefix: prefix) == ["\(prefix)a-directory"])
+    }
+
     // MARK: - Shared hook prelude
 
     @Test func hookPreludeIsTheSameGuardForEveryAgent() {
