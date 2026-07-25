@@ -291,19 +291,28 @@ final class PhanttomTabState {
     static func modelDisplayName(_ id: String) -> String {
         // Split the bracketed suffix off before tokenizing: it hangs off the
         // last token ("5[1m]"), which would otherwise fail the all-digits
-        // test and swallow the version number with it.
+        // test and swallow the version number with it. Matched from the LAST
+        // "[" so the peel is genuinely trailing, as the docs above promise —
+        // from the first, any earlier bracket would swallow everything after
+        // it into the qualifier. An empty "[]" peels but adds no suffix.
         var suffix = ""
-        var id = Substring(id)
-        if let open = id.firstIndex(of: "["), id.hasSuffix("]") {
-            let inner = id[id.index(after: open)..<id.index(before: id.endIndex)]
+        var base = Substring(id)
+        if base.hasSuffix("]"), let open = base.lastIndex(of: "[") {
+            let inner = base[base.index(after: open)..<base.index(before: base.endIndex)]
             if !inner.isEmpty { suffix = " (\(inner.uppercased()))" }
-            id = id[id.startIndex..<open]
+            base = base[base.startIndex..<open]
         }
+        // One composition point: every exit inside `baseDisplayName` returns
+        // the bare name, so no return path can forget the qualifier.
+        return baseDisplayName(base) + suffix
+    }
 
+    /// `modelDisplayName` with any bracketed qualifier already peeled off.
+    private static func baseDisplayName(_ id: Substring) -> String {
         let tokens = id.split(separator: "-")
         guard let familyIdx = tokens.firstIndex(where: {
             $0.allSatisfy(\.isLetter) && $0.lowercased() != "claude"
-        }) else { return String(id) + suffix }
+        }) else { return String(id) }
         let family = tokens[familyIdx]
         var before: [Substring] = []
         var i = familyIdx
@@ -323,6 +332,6 @@ final class PhanttomTabState {
         }
         let version = (before + after).joined(separator: ".")
         let name = family.prefix(1).uppercased() + family.dropFirst()
-        return version.isEmpty ? name + suffix : "\(name) \(version)\(suffix)"
+        return version.isEmpty ? name : "\(name) \(version)"
     }
 }
