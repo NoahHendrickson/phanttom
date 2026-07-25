@@ -1,5 +1,29 @@
+import Foundation
 import Testing
 @testable import Ghostty
+
+/// The window-level shorthand most of these tests are written against: the
+/// tab has one split, which carries the whole window's working flag. That is
+/// exactly the degenerate case of the per-surface API — and exactly what the
+/// sidebar used to pass before status went per split — so every single-split
+/// expectation below still exercises the real state machine. Scenarios with
+/// two agents in one tab use `update(titles:surfaces:isWatched:)` directly
+/// with distinct surface ids.
+extension PhanttomTabState {
+    /// Stand-in identity for a tab's only split.
+    static let soleSurface = SurfaceID()
+
+    func update(titles: [String], isWorking: Bool, isWatched: Bool) {
+        update(
+            titles: titles,
+            surfaces: [.init(id: Self.soleSurface, isWorking: isWorking)],
+            isWatched: isWatched)
+    }
+
+    func noteBell() {
+        noteBell(surface: Self.soleSurface)
+    }
+}
 
 /// Tests for the Phanttom per-tab state machine: agent-kind detection,
 /// first-prompt auto-naming (and its re-arm semantics), and the
@@ -479,6 +503,209 @@ struct PhanttomTabStateTests {
         #expect(state.status == .attention)
         state.update(titles: ["zsh"], isWorking: false, isWatched: true)
         #expect(state.status == .idle)
+    }
+
+    // MARK: - Two agents in one tab
+    //
+    // Status used to collapse the whole window to one bool — an OR across
+    // every split's progress report — so both the rising edge that clears an
+    // unread bell and the deferral that judges a bell were answered by
+    // whatever ANY split happened to be doing. With two agents in one tab
+    // that is the wrong question twice over, and both ways it failed hid a
+    // blocked agent, which is the one thing the sidebar exists to show.
+
+    /// Titles for a two-split tab; identity is judged from all of them, and
+    /// none of these cases is about identity.
+    private let twoAgents = ["claude", "claude"]
+
+    /// Snapshot helper: `[a: true, b: false]` reads like the tab looks.
+    private func splits(
+        _ a: PhanttomTabState.SurfaceID, _ aWorking: Bool,
+        _ b: PhanttomTabState.SurfaceID, _ bWorking: Bool
+    ) -> [PhanttomTabState.SurfaceProgress] {
+        [.init(id: a, isWorking: aWorking), .init(id: b, isWorking: bWorking)]
+    }
+
+    /// The headline case. Split A's agent blocks for input and takes the
+    /// yellow dot; split B then starts work (a subagent spawning, or a Stop
+    /// with background tasks still in flight, both of which re-arm OSC 9;4).
+    /// The window-level rising edge used to read that as "the tab resumed"
+    /// and clear A's unread dot, leaving a blocked agent showing the sparkle.
+    /// Only A resuming may take the slot back.
+    @Test func secondAgentStartingKeepsFirstAgentsAttention() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, false), isWatched: false)
+        #expect(state.status == .working)
+
+        // A's notification hook: BEL against its own live report, then the
+        // clear it raced.
+        state.noteBell(surface: a)
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, false), isWatched: false)
+        #expect(state.status == .attention)
+
+        // B starts. A is still waiting on the user.
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        #expect(state.status == .attention)
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        #expect(state.status == .attention)
+
+        // A itself resuming is the agent unblocking, and does take the slot.
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, true), isWatched: false)
+        #expect(state.status == .working)
+    }
+
+    /// The same pair in the other order: B is already working when A blocks.
+    /// A's bell arrives against a quiet split of its own, so there is no race
+    /// to settle and the dot is taken immediately — B's report is not
+    /// evidence about A.
+    @Test func bellInAQuietSplitIsTakenWhileAnotherSplitWorks() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, true), isWatched: false)
+        #expect(state.status == .working)
+
+        // A's progress-clear is processed first, then its bell.
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        #expect(state.status == .working, "B is still running, so the tab is not done")
+        state.noteBell(surface: a)
+        #expect(state.status == .attention)
+
+        // And it stands while B keeps working.
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        #expect(state.status == .attention)
+    }
+
+    /// Bell first, while A's own report is still live — the deferred path.
+    /// The deferral used to be answered by the window: it found B's report
+    /// still live, called A's bell incidental, and dropped it. A blocked
+    /// agent got no dot at all. The next refresh must judge A's bell against
+    /// A's report only.
+    @Test func deferredBellIsJudgedByItsOwnSplitNotTheWindow() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, true), isWatched: false)
+        state.noteBell(surface: a)
+
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        #expect(state.status == .attention)
+        // Idempotent across the several managers stepping this state.
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        #expect(state.status == .attention)
+    }
+
+    /// The stray-BEL rule is unchanged, only narrowed: a bell whose own split
+    /// keeps working is still incidental, even with a busy neighbor, and must
+    /// not outlive the refresh that judged it.
+    @Test func strayBellInAStillWorkingSplitIsStillIgnored() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, true), isWatched: false)
+        state.noteBell(surface: a)
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, true), isWatched: false)
+        #expect(state.status == .working)
+
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, false), isWatched: false)
+        #expect(state.status == .done, "the discarded bell must not resurface as attention")
+    }
+
+    /// One split going quiet is not the tab finishing: `.done` is the last
+    /// report in the window ending, not the first.
+    @Test func oneSplitFinishingWhileAnotherWorksIsNotDone() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, true), isWatched: false)
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, false), isWatched: false)
+        #expect(state.status == .working)
+
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, false), isWatched: false)
+        #expect(state.status == .done)
+    }
+
+    /// Two blocked agents own the one yellow dot jointly: it survives until
+    /// both are answered, so the first one resuming cannot speak for the
+    /// second.
+    @Test func twoBlockedSplitsBothHoldTheAttention() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, false), isWatched: false)
+        state.noteBell(surface: a)
+        state.noteBell(surface: b)
+        #expect(state.status == .attention)
+
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, false), isWatched: false)
+        #expect(state.status == .attention, "B is still blocked")
+
+        state.update(titles: twoAgents, surfaces: splits(a, true, b, true), isWatched: false)
+        #expect(state.status == .working)
+    }
+
+    /// Watching the tab acknowledges every split's dot at once — but hands
+    /// the slot back to the sparkle when another split is still running,
+    /// rather than stranding a working tab on the gray idle dot.
+    @Test func watchingClearsAttentionButKeepsAnotherSplitWorking() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        state.noteBell(surface: a)
+        #expect(state.status == .attention)
+
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: true)
+        #expect(state.status == .working)
+
+        // Acknowledged for good: going away again does not bring it back.
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, true), isWatched: false)
+        #expect(state.status == .working)
+    }
+
+    /// Every per-surface record is keyed on a split that must still exist.
+    /// Closing the blocked split takes its dot with it (there is nothing left
+    /// to attend to) — and, more importantly, leaves nothing behind: the
+    /// bookkeeping is pruned from the live list on every pass, so it cannot
+    /// grow for the life of the window.
+    @Test func closingTheBlockedSplitDropsItsAttention() {
+        let a = PhanttomTabState.SurfaceID()
+        let b = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: twoAgents, surfaces: splits(a, false, b, false), isWatched: false)
+        state.noteBell(surface: a)
+        #expect(state.status == .attention)
+
+        // A closes; only B is left.
+        state.update(titles: ["claude"], surfaces: [.init(id: b, isWorking: false)],
+                     isWatched: false)
+        #expect(state.status == .idle)
+    }
+
+    /// A window mid-teardown (or a non-terminal window falling back to its
+    /// own title) reports no splits at all. That is not "every split closed"
+    /// and must not quietly eat an unread dot.
+    @Test func anEmptySurfaceListDoesNotEatAnUnreadDot() {
+        let a = PhanttomTabState.SurfaceID()
+        let state = PhanttomTabState()
+
+        state.update(titles: ["claude"], surfaces: [.init(id: a, isWorking: false)],
+                     isWatched: false)
+        state.noteBell(surface: a)
+        #expect(state.status == .attention)
+
+        state.update(titles: ["claude"], surfaces: [], isWatched: false)
+        #expect(state.status == .attention)
     }
 
     // MARK: - Watched vs merely selected

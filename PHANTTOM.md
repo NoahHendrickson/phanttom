@@ -126,6 +126,8 @@ cross-window state must live **on the window** (see
 - title/pwd via KVO on each window; selection via key-window notifications
 - per-surface Combine subscriptions to `$progressReport` and
   `$backgroundColor`
+- bells via `.ghosttyBellDidRing`, which carries the surface that rang (see
+  the status contract below for why the aggregated window bell won't do)
 
 ### Native tab bar suppression — DO NOT "fix" this differently
 
@@ -206,32 +208,53 @@ background split keeps its identity — and stored sticky on the window
   to Ghostty leaves a yellow dot on the tab you're staring at. Resign-active is
   deliberately *not* observed: going unwatched cannot change any status.
 - **Precedence is `attention > working > done > idle`**, and `updateStatus`
-  works on *edges* of `isWorking`, not levels, to enforce it. This is load
+  works on *edges* of progress, not levels, to enforce it. This is load
   bearing, not stylistic: the Notification hook clears the progress report and
   rings the BEL in the same breath, so the sidebar sees the clear-refresh and
   the bell in an order it does not control. Level-based logic lost the bell in
   **both** orderings — `noteBell` used to bail unless `status == .idle`, which
   by then was either `.working` (bell first) or the `.done` the clear had just
   produced — and a tab *blocked waiting for input* rendered blue "done". Only a
-  rising edge of `isWorking` may take the slot back from `.attention`; a report
-  that is merely still live may not.
-  **Known limit, deliberate:** `isWorking` is an OR across every surface in the
-  window, so that rising edge says *some* split started work — not that the
-  split which rang the bell resumed. In a tab running two agents, the second one
-  starting clears the first one's unread yellow dot. Do not "fix" it by dropping
-  the rising edge; that restores the double-drop regression above. Closing it
-  properly needs per-surface progress, which a window-level report cannot
-  express — and the same root cause bounds the deferral rule below.
-- **A bell rung against a live progress report is deferred one refresh, not
-  taken.** At bell time the hook's own BEL (racing the clear printed beside it)
-  and a stray BEL from the running program (test runner, build tool, readline)
-  are indistinguishable. The next refresh separates them: report gone → that was
-  the hook, take `.attention`; report still live → incidental, the sparkle
-  stands. Taking it unconditionally stranded any stray BEL as a permanent yellow
-  dot on a *running* tab, since the rising edge cannot re-fire for a report that
-  never went away and the falling edge yields to attention. One refresh is the
-  width of the race being settled — the hook writes clear and BEL together, so
-  they parse microseconds apart while a refresh costs a runloop turn.
+  rising edge may take the slot back from `.attention`; a report that is merely
+  still live may not.
+- **Every edge is judged per split, never window-wide.** `PhanttomTabState`
+  is stepped with the window's whole live split list (`SurfaceProgress`:
+  `Ghostty.SurfaceView.ID` + that split's own progress flag), not one OR
+  across them, and it remembers which split owns an unread `.attention`. So
+  a rising edge only takes the yellow dot back when *the split that rang*
+  resumes — a second agent in the same tab starting (a subagent, or a Stop
+  with background tasks in flight, both of which re-arm OSC 9;4) leaves the
+  first agent's dot standing. `.done` still needs the *last* live report in
+  the window to end; one split of several going quiet is not the tab
+  finishing. All of it stays idempotent across the several
+  `SidebarTabManager`s that step the same window state, and every
+  per-surface record is pruned against the live list on each pass, so
+  nothing keyed on a split outlives it.
+- **A bell rung against its own split's live progress report is deferred one
+  refresh, not taken.** At bell time the hook's own BEL (racing the clear
+  printed beside it) and a stray BEL from the running program (test runner,
+  build tool, readline) are indistinguishable. The next refresh separates
+  them: *that split's* report gone → that was the hook, take `.attention`;
+  still live → incidental, the sparkle stands. Taking it unconditionally
+  stranded any stray BEL as a permanent yellow dot on a *running* tab, since
+  the rising edge cannot re-fire for a report that never went away and the
+  falling edge yields to attention. One refresh is the width of the race being
+  settled — the hook writes clear and BEL together, so they parse microseconds
+  apart while a refresh costs a runloop turn. The race is two writes to one
+  tty, so only the ringing split's own report can be part of it: asking the
+  window instead (what this used to do) dropped the bell outright whenever
+  some *other* split happened to be busy, and a blocked agent got no dot at
+  all.
+- **The bell arrives as a per-surface event, not as window state.** The
+  sidebar listens to upstream's `.ghosttyBellDidRing` (posted with the
+  `SurfaceView` that rang), not to the aggregated
+  `terminalWindowBellDidChangeNotification`. The aggregate cannot say which
+  split rang, and it is a `.removeDuplicates()` over `surface.bell` — a flag
+  cleared only by focus or a keystroke *on that surface*, so a background
+  split that already rang stays latched at `true`, the aggregate never
+  changes again, and its second bell is swallowed. Upstream's `bell` flag
+  keeps its own uses (the 🔔 title decoration, which is still stale for a
+  latched background split); the sidebar simply does not read it.
 - watching a tab clears done/attention; it never clears `.working`, which is a
   fact about the process rather than an unread notice
 - otherwise-idle tabs show their branch's GitHub PR state via
