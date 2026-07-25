@@ -48,8 +48,20 @@ struct PhanttomSettingsView: View {
                 .foregroundStyle(.secondary)
             }
 
-            Section("Sidebar") {
+            Section {
                 Toggle("Group tabs by project", isOn: $settings.sidebarGroupByProject)
+                Toggle("Show pull request status", isOn: $settings.showPullRequestStatus)
+            } header: {
+                Text("Sidebar")
+            } footer: {
+                Text(
+                    "Pull request status asks the gh CLI about the branch in "
+                        + "each idle tab, roughly once a minute per branch. "
+                        + "That is an authenticated request to GitHub from "
+                        + "your machine, so it stays off until you turn it on."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             ClaudeCodeIntegrationSection()
@@ -182,18 +194,25 @@ private struct ClaudeCodeIntegrationSection: View {
         AgentIntegrationSection(
             title: "Claude Code",
             footer: "Phanttom hooks (pixel rain, tab auto-naming, agent pwd " +
-                "tracking, model label) install automatically on launch when " +
-                "~/.claude exists, writing ~/.claude/settings.json with a " +
-                "timestamped backup. Remove turns this off until you set up " +
+                "tracking, model label) are set up once you agree, then " +
+                "repaired and updated on launch, writing " +
+                "~/.claude/settings.json with a timestamped backup. They run " +
+                "in every Claude Code session on this Mac but only emit " +
+                "inside Phanttom. Remove turns this off until you set up " +
                 "again.",
             removeAlertTitle: "Remove Claude Code Integration?",
-            removeAlertMessage: "Restores your previous statusline (if any) and removes Phanttom's hooks and helper script. Automatic setup on launch stays off until you set up again.",
+            removeAlertMessage: "Restores your previous statusline (if any) and removes Phanttom's hooks, helper script, and the config backups it made. Automatic setup on launch stays off until you set up again.",
             load: { .init(PhanttomClaudeIntegration.currentStatus()) },
             install: {
+                // Setting up here IS the answer to the launch-time consent
+                // question, so record it: launch must never re-ask something
+                // the user has already decided in Settings.
+                PhanttomClaudeIntegration.setAskedAutoInstall(true)
                 PhanttomClaudeIntegration.setAutoInstallDisabled(false)
                 return .init(PhanttomClaudeIntegration.performInstall())
             },
             uninstall: {
+                PhanttomClaudeIntegration.setAskedAutoInstall(true)
                 PhanttomClaudeIntegration.setAutoInstallDisabled(true)
                 return .init(PhanttomClaudeIntegration.performUninstall())
             }
@@ -207,18 +226,22 @@ private struct CursorAgentIntegrationSection: View {
         AgentIntegrationSection(
             title: "Cursor Agent",
             footer: "Phanttom hooks (pixel rain, the model label, agent pwd " +
-                "tracking) install automatically on launch when ~/.cursor " +
-                "exists, writing ~/.cursor/hooks.json and " +
-                "~/.cursor/cli-config.json with timestamped backups. Remove " +
-                "turns this off until you set up again.",
+                "tracking) are set up once you agree, then repaired and " +
+                "updated on launch, writing ~/.cursor/hooks.json and " +
+                "~/.cursor/cli-config.json with timestamped backups. They " +
+                "run in every Cursor Agent session on this Mac but only emit " +
+                "inside Phanttom. Remove turns this off until you set up " +
+                "again.",
             removeAlertTitle: "Remove Cursor Agent Integration?",
-            removeAlertMessage: "Restores your previous statusline (if any) and removes Phanttom's hooks and helper script. Automatic setup on launch stays off until you set up again.",
+            removeAlertMessage: "Restores your previous statusline (if any) and removes Phanttom's hooks, helper script, and the config backups it made. Automatic setup on launch stays off until you set up again.",
             load: { .init(PhanttomCursorIntegration.currentStatus()) },
             install: {
+                PhanttomCursorIntegration.setAskedAutoInstall(true)
                 PhanttomCursorIntegration.setAutoInstallDisabled(false)
                 return .init(PhanttomCursorIntegration.performInstall())
             },
             uninstall: {
+                PhanttomCursorIntegration.setAskedAutoInstall(true)
                 PhanttomCursorIntegration.setAutoInstallDisabled(true)
                 return .init(PhanttomCursorIntegration.performUninstall())
             }

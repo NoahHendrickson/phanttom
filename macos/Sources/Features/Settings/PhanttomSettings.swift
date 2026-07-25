@@ -84,6 +84,19 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// Show each idle tab's branch as a GitHub PR dot (open / merged).
+    ///
+    /// Off by default and a deliberate opt-in: resolving it shells out to the
+    /// `gh` CLI with the user's GitHub credentials, from the tab's own working
+    /// directory, and revalidates every 60s per (directory, branch) — an
+    /// authenticated request to GitHub that says which branches you have open,
+    /// made by a terminal emulator that was never asked to talk to the
+    /// network. `PRStatusCache` narrows it further (idle rows, GitHub remotes
+    /// only), but the decision to make the requests at all is the user's.
+    @Published var showPullRequestStatus: Bool {
+        didSet { persist() }
+    }
+
     // MARK: - Session restore (via config fragment)
 
     /// When on, writes `window-save-state = always` into `phanttom.conf` so
@@ -101,6 +114,7 @@ final class PhanttomSettings: ObservableObject {
         static let overrideFontSize = "PhanttomOverrideFontSize"
         static let fontSize = "PhanttomFontSize"
         static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
+        static let showPullRequestStatus = "PhanttomShowPullRequestStatus"
         static let restoreWindowsOnQuit = "PhanttomRestoreWindowsOnQuit"
         /// Explicit lifecycle of the managed `config-file = ?phanttom.conf`
         /// include, persisted as an `IncludeState` raw value. Replaces the
@@ -136,6 +150,7 @@ final class PhanttomSettings: ObservableObject {
         overrideFontSize = defaults.bool(forKey: Keys.overrideFontSize)
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 13
         sidebarGroupByProject = defaults.object(forKey: Keys.sidebarGroupByProject) as? Bool ?? true
+        showPullRequestStatus = defaults.bool(forKey: Keys.showPullRequestStatus)
         restoreWindowsOnQuit = defaults.bool(forKey: Keys.restoreWindowsOnQuit)
         loaded = true
     }
@@ -157,6 +172,7 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(overrideFontSize, forKey: Keys.overrideFontSize)
         defaults.set(fontSize, forKey: Keys.fontSize)
         defaults.set(sidebarGroupByProject, forKey: Keys.sidebarGroupByProject)
+        defaults.set(showPullRequestStatus, forKey: Keys.showPullRequestStatus)
         defaults.set(restoreWindowsOnQuit, forKey: Keys.restoreWindowsOnQuit)
     }
 

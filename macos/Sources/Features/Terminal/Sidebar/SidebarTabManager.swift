@@ -503,8 +503,18 @@ final class SidebarTabManager: ObservableObject {
                 state.lastGitMetadata = freshMeta
             }
             let gitMeta = state?.lastGitMetadata ?? freshMeta
+            let status = state?.status ?? .idle
+            // Every condition here is a reason NOT to talk to GitHub. The
+            // lookup spawns `gh` in the tab's own directory and makes an
+            // authenticated request, so it is opt-in (`showPullRequestStatus`),
+            // limited to rows that would actually render the dot (only `.idle`
+            // shows PR state — see `SidebarView.statusIndicator`), and skipped
+            // for repositories that have no GitHub remote to ask about.
             var prState: PRStatusCache.PRState?
-            if let pwd, let branch = gitMeta?.branch {
+            if PhanttomSettings.shared.showPullRequestStatus,
+               status == .idle,
+               gitMeta?.hasGitHubRemote == true,
+               let pwd, let branch = gitMeta?.branch {
                 prState = PRStatusCache.shared.state(at: pwd, branch: branch)
             }
 
@@ -519,7 +529,7 @@ final class SidebarTabManager: ObservableObject {
                 kind: state?.kind ?? .terminal,
                 model: state?.model.map { PhanttomTabState.modelDisplayName($0) },
                 titleFallback: state?.titleFallback,
-                status: state?.status ?? .idle,
+                status: status,
                 isSelected: isSelected,
                 window: w
             ))

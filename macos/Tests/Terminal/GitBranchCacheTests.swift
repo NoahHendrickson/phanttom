@@ -211,6 +211,66 @@ struct GitBranchCacheTests {
         return url.path
     }
 
+    // MARK: - GitHub remote detection (gates the gh-backed PR lookup)
+
+    @Test func gitHubRemoteIsDetectedFromConfigText() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try write(at: root, relative: ".git/HEAD", contents: "ref: refs/heads/main\n")
+        try write(at: root, relative: ".git/config", contents: """
+            [core]
+            \tbare = false
+            [remote "origin"]
+            \turl = git@github.com:me/repo.git
+            \tfetch = +refs/heads/*:refs/remotes/origin/*
+            """)
+
+        #expect(GitBranchCache.readMetadata(at: root).hasGitHubRemote)
+    }
+
+    @Test func nonGitHubRemotesDoNotQualify() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try write(at: root, relative: ".git/HEAD", contents: "ref: refs/heads/main\n")
+        try write(at: root, relative: ".git/config", contents: """
+            [remote "origin"]
+            \turl = https://gitlab.com/me/repo.git
+            [remote "mirror"]
+            \turl = https://evil-github.com/me/repo.git
+            """)
+
+        #expect(!GitBranchCache.readMetadata(at: root).hasGitHubRemote)
+        // A github.com URL outside any [remote] section is not a remote.
+        #expect(!GitBranchCache.isGitHubRemote("https://github.com.example.net/x"))
+        #expect(GitBranchCache.isGitHubRemote("ssh://git@github.com:22/me/repo.git"))
+        #expect(GitBranchCache.isGitHubRemote("github.com:me/repo.git"))
+    }
+
+    @Test func worktreeReadsTheParentRepoConfig() throws {
+        // A linked worktree has no config of its own — its remotes live in
+        // the common dir it shares with the repository.
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let repo = (root as NSString).appendingPathComponent("repo")
+        let worktree = (root as NSString).appendingPathComponent("wt-feature")
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
+
+        let gitdir = (repo as NSString)
+            .appendingPathComponent(".git/worktrees/wt-feature")
+        try write(at: gitdir, relative: "HEAD", contents: "ref: refs/heads/feature\n")
+        try write(at: worktree, relative: ".git", contents: "gitdir: \(gitdir)\n")
+        try write(at: repo, relative: ".git/config", contents: """
+            [remote "origin"]
+            \turl = https://github.com/me/repo.git
+            """)
+
+        #expect(GitBranchCache.readMetadata(at: worktree).hasGitHubRemote)
+    }
+
     private func write(at root: String, relative: String, contents: String) throws {
         let path = (root as NSString).appendingPathComponent(relative)
         let dir = (path as NSString).deletingLastPathComponent

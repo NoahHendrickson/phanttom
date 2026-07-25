@@ -121,6 +121,40 @@ struct PhanttomTabStateTests {
         #expect(state.autoTitle == "add dark mode")
     }
 
+    // MARK: - Forged / malformed markers
+
+    @Test func separatorInsidePromptStaysInTheName() {
+        // Nothing stops a prompt (or a hostile title) from containing U+2063
+        // itself — the hook strips control bytes, and this is not one. The
+        // extra fields must stay in the name rather than letting the prompt's
+        // tail be read as the model id.
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker).claude\u{2063}ship it\u{2063}now\u{2063}claude-opus-5"],
+            isWorking: false, isWatched: true)
+        #expect(state.autoTitle == "ship it now")
+        #expect(state.model == "claude-opus-5")
+
+        let legacy = PhanttomTabState()
+        legacy.update(
+            titles: ["\(marker)ship it\u{2063}now\u{2063}claude-opus-5"],
+            isWorking: false, isWatched: true)
+        #expect(legacy.autoTitle == "ship it now")
+        #expect(legacy.model == "claude-opus-5")
+    }
+
+    @Test func forgedMarkerFieldsAreClamped() {
+        // The marker is an ordinary terminal title: anything writing to the
+        // tty can forge one. Presentation-only, but bounded.
+        let long = String(repeating: "a", count: 4_000)
+        let state = PhanttomTabState()
+        state.update(
+            titles: ["\(marker).claude\u{2063}\(long)\u{2063}\(long)"],
+            isWorking: false, isWatched: true)
+        #expect(state.autoTitle?.count == PhanttomTabState.maxMarkerFieldLength)
+        #expect(state.model?.count == PhanttomTabState.maxMarkerFieldLength)
+    }
+
     // MARK: - Model reporting
 
     @Test func markerModelSuffixSetsModelAndStaysSticky() {

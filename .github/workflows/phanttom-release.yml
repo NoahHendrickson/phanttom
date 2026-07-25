@@ -114,7 +114,12 @@ jobs:
       #     are individually content-addressed (target is part of each
       #     manifest hash), and a universal cache is a strict superset of a
       #     native one, so cross-flavor restore is safe and useful.
+      # Skipped for tag builds: a release artifact is signed here and then
+      # auto-installed by every user, so its inputs should be the checkout and
+      # the toolchain — not a cache blob any earlier run on the default branch
+      # could have written. Costs a cold build (~20 min vs ~8).
       - name: Cache Zig build artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/cache@v4
         with:
           path: .zig-cache
@@ -131,6 +136,7 @@ jobs:
       # by build flavor: a universal OBJROOT is never restored into a native
       # (ONLY_ACTIVE_ARCH) build or vice versa.
       - name: Cache Xcode intermediates
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/cache@v4
         with:
           path: macos/build-intermediates
@@ -263,9 +269,17 @@ jobs:
             "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
           mkdir sparkle-dist && tar -xJf sparkle.tar.xz -C sparkle-dist
 
-          echo "$SPARKLE_PRIVATE_KEY" > signing.key
-          SIGN_OUTPUT=$(./sparkle-dist/bin/sign_update -f signing.key "$ZIP_NAME")
-          rm signing.key
+          # Keep the private key out of $GITHUB_WORKSPACE (cached, uploaded,
+          # and archived by other steps) and remove it on any exit path, not
+          # just the happy one.
+          KEY_FILE=$(mktemp "${RUNNER_TEMP}/sparkle-key.XXXXXX")
+          trap 'rm -f "$KEY_FILE"' EXIT
+          chmod 600 "$KEY_FILE"
+          # Trailing newline preserved (this was `echo` before) so the key
+          # file's bytes are byte-for-byte what sign_update already accepted.
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$KEY_FILE"
+          SIGN_OUTPUT=$(./sparkle-dist/bin/sign_update -f "$KEY_FILE" "$ZIP_NAME")
+          rm -f "$KEY_FILE"
           echo "sign_update: $SIGN_OUTPUT"
           ED_SIG=$(echo "$SIGN_OUTPUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
           LENGTH=$(echo "$SIGN_OUTPUT" | sed -E 's/.*length="([^"]+)".*/\1/')

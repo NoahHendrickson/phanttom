@@ -156,7 +156,34 @@ final class PhanttomTabState {
     /// The Claude Code hook marks auto-name titles with "❯" followed by
     /// U+2063 (INVISIBLE SEPARATOR) — collision-proof against shells whose
     /// title templates lead with a bare "❯" prompt char (starship, pure...).
+    ///
+    /// Collision-proof is not the same as authentic: the marker is an
+    /// ordinary terminal title, so any program that can write to the tty can
+    /// forge one. Everything parsed out of it is presentation only (row name,
+    /// kind icon, model badge) — never let it gate an action.
     static let autoNameMarker = "❯\u{2063}"
+
+    /// Upper bound on any single marker field we keep. The hook sends at most
+    /// 56 characters of prompt and a model id; this is only a guard against a
+    /// forged title, so it is generous rather than exact.
+    static let maxMarkerFieldLength = 128
+
+    /// The prompt field of a marker, given the fields between the kind token
+    /// and the trailing model field.
+    ///
+    /// The hook strips control bytes from the prompt but not U+2063 itself,
+    /// so a prompt containing one splits into extra fields. Rejoining them
+    /// keeps that text in the *name*, where it came from, instead of letting
+    /// its tail be read as the model id.
+    private static func markerPrompt(_ fields: ArraySlice<Substring>) -> String {
+        // The trailing field is the model when there is more than one; a lone
+        // field is all prompt (a legacy marker with no model).
+        let promptFields = fields.count > 1 ? fields.dropLast() : fields
+        let prompt = promptFields
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return String(prompt.prefix(maxMarkerFieldLength))
+    }
 
     /// Step the state for one sidebar refresh pass: status transitions from
     /// the window's progress reports and whether the user is watching,
@@ -326,17 +353,28 @@ final class PhanttomTabState {
             if let token = fields.first.map({ $0.trimmingCharacters(in: .whitespaces) }),
                let kind = Self.kind(fromMarkerToken: token) {
                 parsedKind = kind
-                auto = fields.count > 1
-                    ? fields[1].trimmingCharacters(in: .whitespaces) : ""
+                auto = Self.markerPrompt(fields.dropFirst())
                 modelField = fields.count > 2
-                    ? fields[2].trimmingCharacters(in: .whitespaces) : nil
+                    ? fields[fields.index(before: fields.endIndex)]
+                        .trimmingCharacters(in: .whitespaces)
+                    : nil
             } else {
                 parsedKind = .claude
-                auto = (fields.first ?? "").trimmingCharacters(in: .whitespaces)
+                auto = Self.markerPrompt(fields[...])
                 modelField = fields.count > 1
-                    ? fields[1].trimmingCharacters(in: .whitespaces) : nil
+                    ? fields[fields.index(before: fields.endIndex)]
+                        .trimmingCharacters(in: .whitespaces)
+                    : nil
             }
-            if let id = modelField, !id.isEmpty { model = id }
+            // Anything that can write to the tty can write this title — a
+            // `cat` of a crafted file, a remote ssh session, any program the
+            // user runs. The hook keeps prompts to 56 characters; both fields
+            // are clamped (see `markerPrompt`) so a forged title can't push a
+            // row's name or model badge to an absurd length. They stay
+            // presentation-only either way.
+            if let id = modelField, !id.isEmpty {
+                model = String(id.prefix(Self.maxMarkerFieldLength))
+            }
             if !auto.isEmpty, autoTitle == nil, markerTitle != lastResetTitle {
                 autoTitle = auto
             }

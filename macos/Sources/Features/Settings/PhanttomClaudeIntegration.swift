@@ -19,11 +19,30 @@ enum PhanttomClaudeIntegration {
     /// stray text landed in whatever was reading the tty. Now split into two
     /// printfs so no BEL escape ever sits next to the ST backslash.
     /// Existing installs see Settings "Update available" / silent launch repair.
-    static let payloadVersion = 6
+    /// v7 (privacy hardening, three changes):
+    /// - The hooks live in `~/.claude`, which EVERY Claude Code session on the
+    ///   machine reads, so they used to write the marker title — carrying the
+    ///   user's prompt text — into iTerm / VS Code / tmux titles too. Emitting
+    ///   is now gated on the session actually running in a Ghostty/Phanttom
+    ///   terminal.
+    /// - Only the FIRST prompt of a session is put in the title. The app only
+    ///   ever consumed the first one (auto-name locks); every later emission
+    ///   was prompt text in the macOS window title — visible to screen
+    ///   recording, Accessibility clients, and screenshots — for nothing.
+    /// - Per-session scratch state moved from `${TMPDIR:-/tmp}` to a 0700
+    ///   directory under `~/.claude`. With `TMPDIR` unset the old path was
+    ///   world-writable and guessable, so a pre-planted symlink could redirect
+    ///   the write into any file the user could write.
+    static let payloadVersion = 7
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
     static let settingsFileName = "settings.json"
+    /// Per-session scratch the hook script keeps (last model emitted, whether
+    /// the tab has already spent its one naming prompt). Created 0700 by the
+    /// script; deliberately under `~/.claude` rather than `$TMPDIR`/`/tmp`,
+    /// which is world-writable and guessable when `TMPDIR` is unset.
+    static let sessionStateDirName = ".phanttom-sessions"
     static let originalStatusLineKey = "phanttomOriginalStatusLine"
     /// Full original `statusLine` object (not just its `command`), stashed so
     /// sibling keys like `padding` survive a Set Up → Remove round-trip. The
@@ -122,6 +141,37 @@ enum PhanttomClaudeIntegration {
         # No `set -e`: hook processes must never fail the Claude Code call.
 
         STATE="${HOME}/.claude/phanttom-integration.json"
+        SESSION_DIR="${HOME}/.claude/.phanttom-sessions"
+
+        # Phanttom's hooks live in ~/.claude, so they run for EVERY Claude Code
+        # session on this machine — including ones started from other
+        # terminals. Only Phanttom/Ghostty understands these sequences, and the
+        # marker title carries prompt text, so stay silent everywhere else
+        # rather than rewriting a foreign terminal's window title.
+        phanttom_terminal() {
+          [ "${TERM_PROGRAM:-}" = "ghostty" ] || [ -n "${GHOSTTY_RESOURCES_DIR:-}" ]
+        }
+
+        # Private per-session scratch (model last emitted, whether the tab has
+        # been named). Under $HOME at 0700, never $TMPDIR/tmp: with TMPDIR
+        # unset the old /tmp path was world-writable and its name guessable,
+        # so a planted symlink could redirect these writes. Prints nothing
+        # when the directory can't be created; callers treat that as "no
+        # cache" and simply re-emit.
+        session_dir() {
+          if [ ! -d "$SESSION_DIR" ]; then
+            mkdir -p "$SESSION_DIR" 2>/dev/null || return 0
+            chmod 700 "$SESSION_DIR" 2>/dev/null || true
+          fi
+          printf "%s" "$SESSION_DIR"
+        }
+
+        # Sessions end without telling us, so sweep week-old scratch files.
+        prune_sessions() {
+          sdir=$(session_dir)
+          [ -n "$sdir" ] || return 0
+          find "$sdir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null || true
+        }
 
         resolve_tty() {
           # Some `ps` variants report a bare `?` (not `??`) for no tty.
@@ -213,11 +263,26 @@ enum PhanttomClaudeIntegration {
 
         emit_prompt_title() {
           j="$1"
+          sid=$(printf "%s" "$j" | json_get session_id)
+          # Distinct variable name on purpose: sh has no locals, and `d` is the
+          # agent cwd in the emit_osc7 path.
+          sdir=$(session_dir)
+          named=""
+          [ -n "$sdir" ] && named="$sdir/named-${sid:-unknown}-${CLAUDE_PID:-$PPID}"
           # Strip control bytes (ESC/BEL/etc.) so a crafted prompt can't inject
           # escape sequences into the OSC 2 title written below. Newlines first
           # become spaces; LC_ALL=C keeps multibyte UTF-8 (0x80+) intact.
           p=$(printf "%s" "$j" | json_get prompt | tr "\\n" " " |
               LC_ALL=C tr -d "[:cntrl:]" | cut -c1-56)
+          # Only the session's FIRST prompt names the tab, and only the name is
+          # ever consumed — so once a name has been sent, send the marker with
+          # an empty prompt field. It still carries kind and model (which is
+          # what keeps the row an agent row), and no further prompt text
+          # reaches the window title, where screen recording, Accessibility
+          # clients, and screenshots can all read it.
+          if [ -z "$named" ] || [ -f "$named" ]; then
+            p=""
+          fi
           tp=$(printf "%s" "$j" | json_get transcript_path)
           m=""
           if [ -n "$tp" ] && [ -f "$tp" ]; then
@@ -241,11 +306,19 @@ enum PhanttomClaudeIntegration {
               ' 2>/dev/null || true)
             fi
           fi
-          [ -n "$p" ] || return 0
           m=$(printf "%s" "$m" | LC_ALL=C tr -d "[:cntrl:]")
           t=$(resolve_tty)
-          # Kind-aware marker: ❯⁣.claude⁣<prompt>⁣<model>
+          # Kind-aware marker: ❯⁣.claude⁣<prompt>⁣<model>. An empty prompt
+          # field is the model-only form — kind and model still arrive, and
+          # the tab keeps the name it already has.
           printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3.claude\\xe2\\x81\\xa3%s\\xe2\\x81\\xa3%s\\007" "$p" "$m" > "$t" 2>/dev/null || true
+          # Remember that this session has spent its one naming prompt. The
+          # explicit `return 0` matters: a failed touch (or a false guard)
+          # must never become the hook's exit status.
+          if [ -n "$p" ] && [ -n "$named" ]; then
+            : > "$named" 2>/dev/null || true
+          fi
+          return 0
         }
 
         emit_model_sideband() {
@@ -256,9 +329,13 @@ enum PhanttomClaudeIntegration {
           fi
           m=$(printf "%s" "$m" | LC_ALL=C tr -d "[:cntrl:]")
           sid=$(printf "%s" "$j" | json_get session_id)
-          c="${TMPDIR:-/tmp}/phanttom-model-${sid:-unknown}-${CLAUDE_PID:-$PPID}"
+          sdir=$(session_dir)
+          # No private cache dir → no dedup, just emit every time. Falling back
+          # to a shared /tmp path is the symlink hazard this replaced.
+          c=""
+          [ -n "$sdir" ] && c="$sdir/model-${sid:-unknown}-${CLAUDE_PID:-$PPID}"
           if [ -n "$m" ] && [ "$(cat "$c" 2>/dev/null || true)" != "$m" ]; then
-            printf "%s" "$m" > "$c" 2>/dev/null || true
+            [ -n "$c" ] && { printf "%s" "$m" > "$c" 2>/dev/null || true; }
             t=$(resolve_tty)
             # Model-only marker: ❯⁣.claude⁣⁣<model>
             printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3.claude\\xe2\\x81\\xa3\\xe2\\x81\\xa3%s\\007" "$m" > "$t" 2>/dev/null || true
@@ -296,7 +373,30 @@ enum PhanttomClaudeIntegration {
           fi
         }
 
+        # Chain to the statusline command we replaced (or a minimal default).
+        run_statusline_chain() {
+          orig=$(read_original_statusline)
+          if [ -n "$orig" ]; then
+            printf "%s" "$1" | sh -c "$orig"
+          else
+            default_statusline "$1"
+          fi
+        }
+
         cmd="${1:-}"
+
+        # Every Claude Code session on this machine runs these hooks, not just
+        # the ones in Phanttom. Elsewhere the OSC sequences are noise at best
+        # and a prompt-text leak into a foreign window title at worst, so emit
+        # nothing — but still produce a statusline, since we replaced the
+        # user's own command with this dispatch.
+        if ! phanttom_terminal; then
+          case "$cmd" in
+            statusline) run_statusline_chain "$(cat)" ;;
+          esac
+          exit 0
+        fi
+
         case "$cmd" in
           prompt-submit)
             j=$(cat)
@@ -304,7 +404,12 @@ enum PhanttomClaudeIntegration {
             emit_prompt_title "$j"
             printf "%s" "$j" | emit_osc7
             ;;
-          session-start|post-tool-use)
+          session-start)
+            j=$(cat)
+            prune_sessions
+            printf "%s" "$j" | emit_osc7
+            ;;
+          post-tool-use)
             j=$(cat)
             printf "%s" "$j" | emit_osc7
             ;;
@@ -335,12 +440,7 @@ enum PhanttomClaudeIntegration {
           statusline)
             j=$(cat)
             emit_model_sideband "$j"
-            orig=$(read_original_statusline)
-            if [ -n "$orig" ]; then
-              printf "%s" "$j" | sh -c "$orig"
-            else
-              default_statusline "$j"
-            fi
+            run_statusline_chain "$j"
             ;;
           *)
             echo "phanttom-hook: unknown command: $cmd" >&2
@@ -565,6 +665,9 @@ enum PhanttomClaudeIntegration {
         var settings: URL { baseDir.appendingPathComponent(settingsFileName) }
         var script: URL { baseDir.appendingPathComponent(hookScriptName) }
         var state: URL { baseDir.appendingPathComponent(stateFileName) }
+        /// The hook script's private 0700 scratch directory — see
+        /// `sessionStateDirName`.
+        var sessionState: URL { baseDir.appendingPathComponent(sessionStateDirName) }
 
         static var `default`: Paths {
             Paths(baseDir: FileManager.default.homeDirectoryForCurrentUser
@@ -596,6 +699,21 @@ enum PhanttomClaudeIntegration {
         paths: Paths = .default
     ) {
         PhanttomIntegrationSupport.setAutoInstallDisabled(disabled, in: paths.baseDir)
+    }
+
+    /// Whether the user has already answered the "install these hooks?"
+    /// question for this `~/.claude`. Shared across builds, like the opt-out
+    /// — see `PhanttomIntegrationSupport.consentFileName`.
+    nonisolated static func hasAskedAutoInstall(paths: Paths = .default) -> Bool {
+        PhanttomIntegrationSupport.hasAskedAutoInstall(in: paths.baseDir)
+    }
+
+    /// Record that the question has been answered (either way).
+    nonisolated static func setAskedAutoInstall(
+        _ asked: Bool,
+        paths: Paths = .default
+    ) {
+        PhanttomIntegrationSupport.setAskedAutoInstall(asked, in: paths.baseDir)
     }
 
     /// One-shot move of the pre-marker UserDefaults opt-out into the shared
@@ -772,6 +890,8 @@ enum PhanttomClaudeIntegration {
             try? fm.removeItem(at: paths.script)
             try? fm.removeItem(at: paths.state)
             removeLegacyStatuslineScript(paths: paths)
+            removeSessionState(paths: paths)
+            removeBackups(paths: paths)
             return currentStatus(paths: paths)
         }
 
@@ -804,8 +924,27 @@ enum PhanttomClaudeIntegration {
         try? fm.removeItem(at: paths.script)
         try? fm.removeItem(at: paths.state)
         removeLegacyStatuslineScript(paths: paths)
+        removeSessionState(paths: paths)
+        // Only after the settings write succeeded: settings.json is back to
+        // its pre-Phanttom shape, so the snapshots have done their job — and
+        // keeping them means a credential the user has since removed from
+        // settings.json survives indefinitely in a file we created without
+        // telling them.
+        removeBackups(paths: paths)
 
         return currentStatus(paths: paths)
+    }
+
+    /// Drop the hook script's private per-session scratch directory
+    /// (`~/.claude/.phanttom-sessions`). Nothing else reads it, and it names
+    /// the sessions that ran.
+    nonisolated private static func removeSessionState(paths: Paths) {
+        try? FileManager.default.removeItem(at: paths.sessionState)
+    }
+
+    nonisolated private static func removeBackups(paths: Paths) {
+        PhanttomIntegrationSupport.removeBackups(
+            in: paths.baseDir, prefix: backupPrefix)
     }
 
     /// If the current statusline is the legacy phanttom wrapper, and we don't

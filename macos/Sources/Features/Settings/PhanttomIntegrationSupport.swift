@@ -68,6 +68,40 @@ enum PhanttomIntegrationSupport {
         }
     }
 
+    // MARK: - Consent marker
+
+    /// Written once the user has been asked whether to install this agent's
+    /// hooks (or has been grandfathered in because the hooks were already
+    /// installed). While it is absent, launch-time sync must ask before
+    /// touching the agent's config.
+    ///
+    /// A file beside the config it governs for the same reason as
+    /// `optOutFileName`: the answer is about `~/.claude` / `~/.cursor`, which
+    /// every build shares, while `UserDefaults` is per bundle identifier. It
+    /// is deliberately separate from the opt-out marker — "asked and said no"
+    /// and "asked and said yes" must be distinguishable from "never asked",
+    /// and Set Up (which clears the opt-out) must not un-ask the question.
+    static let consentFileName = ".phanttom-autoinstall-asked"
+
+    /// Whether the user has already answered the install question for the
+    /// agent rooted at `directory`.
+    nonisolated static func hasAskedAutoInstall(in directory: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(consentFileName).path)
+    }
+
+    /// Record that the question has been answered. Best-effort, like the
+    /// opt-out: a missing agent directory means there was nothing to install
+    /// into, and the question is asked again once it exists.
+    nonisolated static func setAskedAutoInstall(_ asked: Bool, in directory: URL) {
+        let marker = directory.appendingPathComponent(consentFileName)
+        if asked {
+            try? Data().write(to: marker)
+        } else {
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
     // MARK: - Directories
 
     nonisolated static func directoryExists(at url: URL) -> Bool {
@@ -99,10 +133,18 @@ enum PhanttomIntegrationSupport {
     /// Serialize and write atomically. The re-parse check is deliberate: a
     /// dictionary carrying a non-JSON value serializes lazily and would
     /// otherwise land as a truncated config file.
+    ///
+    /// An atomic write replaces the file rather than rewriting it in place,
+    /// so the existing mode is captured first and re-applied afterwards: these
+    /// are agent config files that can carry credentials (`env` blocks,
+    /// `apiKeyHelper`), and a user who chmodded `settings.json` to 0600 must
+    /// not silently get a 0644 copy back because Phanttom rewrote it.
     nonisolated static func writeJSONObject(
         _ object: [String: Any],
         to url: URL
     ) throws {
+        let priorMode = (try? FileManager.default.attributesOfItem(atPath: url.path))
+            .flatMap { $0[.posixPermissions] as? NSNumber }
         let data: Data
         do {
             data = try JSONSerialization.data(
@@ -123,6 +165,10 @@ enum PhanttomIntegrationSupport {
             try payload.write(to: url, options: .atomic)
         } catch {
             throw IOError.writeFailed(error.localizedDescription)
+        }
+        if let priorMode {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: priorMode], ofItemAtPath: url.path)
         }
     }
 
@@ -201,7 +247,30 @@ enum PhanttomIntegrationSupport {
             n += 1
         }
         try fm.copyItem(at: url, to: backupURL)
+        // `copyItem` inherits the source mode, which for a world-readable
+        // settings.json means a world-readable snapshot of a file that can
+        // contain credentials. Nothing but this process and the user ever
+        // reads a backup, so tighten it unconditionally.
+        try? fm.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
         pruneBackups(in: dir, prefix: prefix, keeping: 5)
+    }
+
+    /// Delete every backup we made with `prefix`. Called after a *successful*
+    /// uninstall, once the agent's config is back to its pre-Phanttom shape:
+    /// keeping the snapshots past that point means a credential the user has
+    /// since deleted from `settings.json` lives on indefinitely, in plaintext,
+    /// in a file they never knew we created.
+    nonisolated static func removeBackups(in directory: URL, prefix: String) {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else { return }
+        for url in items where url.lastPathComponent.hasPrefix(prefix) {
+            try? fm.removeItem(at: url)
+        }
     }
 
     nonisolated static func pruneBackups(

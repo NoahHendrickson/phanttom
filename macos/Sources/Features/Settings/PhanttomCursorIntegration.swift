@@ -15,12 +15,24 @@ import GhosttyKit
 enum PhanttomCursorIntegration {
     /// Bump on any change to `hookScript` text or `desiredHooks` /
     /// `desiredStatusLine`. Drives the Settings "Update available" state.
-    static let payloadVersion = 1
+    /// v2 (privacy hardening, mirroring Claude's v7): emit only when the
+    /// session is running in a Ghostty/Phanttom terminal — `~/.cursor/hooks.json`
+    /// is read by every Cursor Agent session on the machine — and move the
+    /// per-session model cache out of `${TMPDIR:-/tmp}` (world-writable and
+    /// guessable with TMPDIR unset) into a 0700 directory under `~/.cursor`.
+    static let payloadVersion = 2
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
     static let hooksFileName = "hooks.json"
     static let cliConfigFileName = "cli-config.json"
+    /// Per-session scratch the hook script keeps (last model emitted).
+    /// Created 0700 by the script; under `~/.cursor` rather than
+    /// `$TMPDIR`/`/tmp`, which is world-writable and guessable when `TMPDIR`
+    /// is unset.
+    static let sessionStateDirName = ".phanttom-sessions"
+    static let hooksBackupPrefix = "hooks.json.bak-phanttom-"
+    static let cliConfigBackupPrefix = "cli-config.json.bak-phanttom-"
 
     // MARK: - Status
 
@@ -72,15 +84,37 @@ enum PhanttomCursorIntegration {
         # No `set -e`: hook processes must never fail the Cursor Agent call.
 
         STATE="${HOME}/.cursor/phanttom-integration.json"
+        SESSION_DIR="${HOME}/.cursor/.phanttom-sessions"
 
-        # IDE Agent Chat shares ~/.cursor/hooks.json but does not set this.
-        if [ "${CURSOR_AGENT:-}" != "1" ]; then
-          case "${1:-}" in
-            session-start) printf '%s\\n' '{}' ;;
-            *) printf '%s\\n' '{}' ;;
-          esac
-          exit 0
-        fi
+        # ~/.cursor/hooks.json is read by every Cursor Agent session on this
+        # machine, so stay silent unless this one is running inside a
+        # Phanttom/Ghostty terminal — nothing else understands these sequences,
+        # and writing them into a foreign terminal rewrites its window title.
+        # (The CURSOR_AGENT check below is separate: IDE Agent Chat shares the
+        # same hooks.json but is not a terminal session at all.)
+        phanttom_terminal() {
+          [ "${TERM_PROGRAM:-}" = "ghostty" ] || [ -n "${GHOSTTY_RESOURCES_DIR:-}" ]
+        }
+
+        # Private per-session scratch (last model emitted). Under $HOME at
+        # 0700, never $TMPDIR/tmp: with TMPDIR unset the old /tmp path was
+        # world-writable and its name guessable, so a planted symlink could
+        # redirect the write. Prints nothing when it can't be created; callers
+        # treat that as "no cache" and re-emit.
+        session_dir() {
+          if [ ! -d "$SESSION_DIR" ]; then
+            mkdir -p "$SESSION_DIR" 2>/dev/null || return 0
+            chmod 700 "$SESSION_DIR" 2>/dev/null || true
+          fi
+          printf "%s" "$SESSION_DIR"
+        }
+
+        # Sessions end without telling us, so sweep week-old scratch files.
+        prune_sessions() {
+          sdir=$(session_dir)
+          [ -n "$sdir" ] || return 0
+          find "$sdir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null || true
+        }
 
         resolve_tty() {
           # Prefer path stashed by session-start (env injection).
@@ -221,12 +255,21 @@ enum PhanttomCursorIntegration {
           m="$1"
           [ -n "$m" ] || return 0
           sid="$2"
-          c="${TMPDIR:-/tmp}/phanttom-cursor-model-${sid:-unknown}-$$"
-          # Prefer stable cache key when session id is known.
-          if [ -n "$sid" ]; then
-            c="${TMPDIR:-/tmp}/phanttom-cursor-model-${sid}"
+          # Distinct variable name on purpose: sh has no locals, and callers of
+          # this function hold the agent cwd in `d`.
+          sdir=$(session_dir)
+          # No private cache dir → no dedup, just emit every time. Falling back
+          # to a shared /tmp path is the symlink hazard this replaced.
+          c=""
+          if [ -n "$sdir" ]; then
+            # Prefer a stable cache key when the session id is known.
+            if [ -n "$sid" ]; then
+              c="$sdir/model-${sid}"
+            else
+              c="$sdir/model-unknown-$$"
+            fi
           fi
-          if [ "$(cat "$c" 2>/dev/null || true)" = "$m" ]; then
+          if [ -n "$c" ] && [ "$(cat "$c" 2>/dev/null || true)" = "$m" ]; then
             return 0
           fi
           # Resolve the tty BEFORE recording the model as emitted. Caching
@@ -235,8 +278,9 @@ enum PhanttomCursorIntegration {
           # the badge would never appear for the rest of the session.
           t=$(resolve_tty)
           [ -n "$t" ] || return 0
-          printf "%s" "$m" > "$c" 2>/dev/null || true
+          [ -n "$c" ] && { printf "%s" "$m" > "$c" 2>/dev/null || true; }
           printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3.cursor\\xe2\\x81\\xa3\\xe2\\x81\\xa3%s\\007" "$m" > "$t" 2>/dev/null || true
+          return 0
         }
 
         read_original_statusline() {
@@ -269,10 +313,34 @@ enum PhanttomCursorIntegration {
 
         respond_empty() { printf '%s\\n' '{}'; }
 
+        # Chain to the statusline command we replaced (or a minimal default).
+        run_statusline_chain() {
+          orig=$(read_original_statusline)
+          if [ -n "$orig" ]; then
+            printf "%s" "$1" | sh -c "$orig"
+          else
+            default_statusline "$1"
+          fi
+        }
+
         cmd="${1:-}"
+
+        # Not a Cursor Agent CLI session (IDE Agent Chat shares this
+        # hooks.json), or not running in a Phanttom/Ghostty terminal: emit
+        # nothing. The statusline still has to produce the user's own
+        # statusline, since we replaced their command with this dispatch.
+        if [ "${CURSOR_AGENT:-}" != "1" ] || ! phanttom_terminal; then
+          case "$cmd" in
+            statusline) run_statusline_chain "$(cat)" ;;
+            *) respond_empty ;;
+          esac
+          exit 0
+        fi
+
         case "$cmd" in
           session-start)
             j=$(cat)
+            prune_sessions
             m=$(pick_model "$j")
             sid=$(printf "%s" "$j" | json_get session_id)
             d=$(resolve_cwd "$j")
@@ -321,12 +389,7 @@ enum PhanttomCursorIntegration {
             m=$(pick_model "$j")
             sid=$(printf "%s" "$j" | json_get session_id)
             emit_model_marker "$m" "$sid"
-            orig=$(read_original_statusline)
-            if [ -n "$orig" ]; then
-              printf "%s" "$j" | sh -c "$orig"
-            else
-              default_statusline "$j"
-            fi
+            run_statusline_chain "$j"
             ;;
           *)
             echo "phanttom-hook: unknown command: $cmd" >&2
@@ -533,6 +596,9 @@ enum PhanttomCursorIntegration {
         var cliConfig: URL { baseDir.appendingPathComponent(cliConfigFileName) }
         var script: URL { baseDir.appendingPathComponent(hookScriptName) }
         var state: URL { baseDir.appendingPathComponent(stateFileName) }
+        /// The hook script's private 0700 scratch directory — see
+        /// `sessionStateDirName`.
+        var sessionState: URL { baseDir.appendingPathComponent(sessionStateDirName) }
 
         static var `default`: Paths {
             Paths(baseDir: FileManager.default.homeDirectoryForCurrentUser
@@ -563,6 +629,21 @@ enum PhanttomCursorIntegration {
         paths: Paths = .default
     ) {
         PhanttomIntegrationSupport.setAutoInstallDisabled(disabled, in: paths.baseDir)
+    }
+
+    /// Whether the user has already answered the "install these hooks?"
+    /// question for this `~/.cursor`. Shared across builds, like the opt-out
+    /// — see `PhanttomIntegrationSupport.consentFileName`.
+    nonisolated static func hasAskedAutoInstall(paths: Paths = .default) -> Bool {
+        PhanttomIntegrationSupport.hasAskedAutoInstall(in: paths.baseDir)
+    }
+
+    /// Record that the question has been answered (either way).
+    nonisolated static func setAskedAutoInstall(
+        _ asked: Bool,
+        paths: Paths = .default
+    ) {
+        PhanttomIntegrationSupport.setAskedAutoInstall(asked, in: paths.baseDir)
     }
 
     nonisolated static func cursorDirectoryExists(paths: Paths = .default) -> Bool {
@@ -721,13 +802,13 @@ enum PhanttomCursorIntegration {
 
         if !hooksExists || !jsonEqual(nextHooks, onDiskHooks) {
             if hooksExists {
-                try backupFile(at: paths.hooks, prefix: "hooks.json.bak-phanttom-")
+                try backupFile(at: paths.hooks, prefix: hooksBackupPrefix)
             }
             try writeJSONObject(nextHooks, to: paths.hooks)
         }
         if !cliExists || !jsonEqual(plan.cliConfig, onDiskCli) {
             if cliExists {
-                try backupFile(at: paths.cliConfig, prefix: "cli-config.json.bak-phanttom-")
+                try backupFile(at: paths.cliConfig, prefix: cliConfigBackupPrefix)
             }
             try writeJSONObject(plan.cliConfig, to: paths.cliConfig)
         }
@@ -752,7 +833,7 @@ enum PhanttomCursorIntegration {
             } catch {
                 throw ActionError.hooksCorrupt
             }
-            try backupFile(at: paths.hooks, prefix: "hooks.json.bak-phanttom-")
+            try backupFile(at: paths.hooks, prefix: hooksBackupPrefix)
             let next = uninstallHooks(from: hooksDoc)
             try writeJSONObject(next, to: paths.hooks)
         }
@@ -764,7 +845,7 @@ enum PhanttomCursorIntegration {
             } catch {
                 throw ActionError.cliConfigCorrupt
             }
-            try backupFile(at: paths.cliConfig, prefix: "cli-config.json.bak-phanttom-")
+            try backupFile(at: paths.cliConfig, prefix: cliConfigBackupPrefix)
             let next = uninstallStatusLine(
                 from: cliConfig,
                 originalCommand: originalCmd,
@@ -775,6 +856,17 @@ enum PhanttomCursorIntegration {
 
         try? fm.removeItem(at: paths.script)
         try? fm.removeItem(at: paths.state)
+        // Private per-session scratch: nothing else reads it, and it names the
+        // sessions that ran.
+        try? fm.removeItem(at: paths.sessionState)
+        // Only now that both configs are back to their pre-Phanttom shape:
+        // keeping the snapshots past that point means a credential the user
+        // has since deleted survives in a file we created without telling
+        // them.
+        PhanttomIntegrationSupport.removeBackups(
+            in: paths.baseDir, prefix: hooksBackupPrefix)
+        PhanttomIntegrationSupport.removeBackups(
+            in: paths.baseDir, prefix: cliConfigBackupPrefix)
 
         return currentStatus(paths: paths)
     }

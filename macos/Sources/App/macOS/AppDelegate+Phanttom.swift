@@ -47,11 +47,43 @@ extension AppDelegate {
         SettingsWindowController.shared.show(ghostty: ghostty)
     }
 
-    /// Zero-touch Claude Code integration: on every launch, silently install
-    /// (or repair / update) Phanttom's hooks whenever `~/.claude` exists —
-    /// no consent prompt. The only off switch is an explicit Remove… in
-    /// Settings, which writes the shared opt-out marker beside
-    /// settings.json; Set Up removes it.
+    /// One-time consent for an agent hook install. Returns true when the user
+    /// wants the hooks.
+    ///
+    /// Asked once per agent directory (`~/.claude`, `~/.cursor`), never again
+    /// — the answer is recorded beside the config it governs so it is shared
+    /// by the Debug and release builds, which auto-install into the same
+    /// place. After the answer, launch-time repair/update stays silent: the
+    /// user is being asked whether Phanttom may modify another tool's
+    /// configuration, not to approve each write.
+    @MainActor
+    private func askAgentIntegrationConsent(
+        agent: String,
+        configPath: String,
+        details: String
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Set up Phanttom's \(agent) integration?"
+        alert.informativeText = """
+            \(details)
+
+            This writes \(configPath) and a helper script beside it (your \
+            current config is backed up first). The hooks run for every \
+            \(agent) session on this Mac, and stay silent outside Phanttom.
+
+            You can change this any time in Phanttom Settings.
+            """
+        alert.addButton(withTitle: "Set Up")
+        alert.addButton(withTitle: "Not Now")
+        alert.alertStyle = .informational
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Claude Code integration: install (or repair / update) Phanttom's hooks
+    /// whenever `~/.claude` exists. The first time — and only the first time —
+    /// this asks; after that, repair and update run silently on every launch.
+    /// The off switch is an explicit Remove… in Settings, which writes the
+    /// shared opt-out marker beside settings.json; Set Up removes it.
     /// Failures are log-only here (Settings surfaces them on demand); a
     /// missing `~/.claude` or corrupt settings.json just retries next launch.
     @MainActor
@@ -110,6 +142,32 @@ extension AppDelegate {
         // launch (once ~/.claude appears or settings.json parses again).
         guard status.error == nil else { return }
 
+        if !PhanttomClaudeIntegration.hasAskedAutoInstall() {
+            if status.status == .notInstalled {
+                let granted = askAgentIntegrationConsent(
+                    agent: "Claude Code",
+                    configPath: "~/.claude/settings.json",
+                    details: "Phanttom can show live agent status in the "
+                        + "sidebar — working / done / needs-you — plus the "
+                        + "agent's working directory and the model label. It "
+                        + "also names each tab after the first prompt of a "
+                        + "session, which puts that text in the window title."
+                )
+                // Record the answer before acting on it: an install that then
+                // fails must not re-ask on the next launch.
+                PhanttomClaudeIntegration.setAskedAutoInstall(true)
+                guard granted else {
+                    PhanttomClaudeIntegration.setAutoInstallDisabled(true)
+                    return
+                }
+            } else {
+                // Hooks are already here (an earlier build installed them, or
+                // they were set up by hand). The question is moot — record it
+                // as answered so it is never asked, and keep repairing.
+                PhanttomClaudeIntegration.setAskedAutoInstall(true)
+            }
+        }
+
         switch status.status {
         case .notInstalled, .installedOutdated, .legacyInline:
             _ = PhanttomClaudeIntegration.performInstall()
@@ -117,11 +175,11 @@ extension AppDelegate {
             break
         }
     }
-    /// Zero-touch Cursor Agent integration, mirroring
-    /// `autoSyncClaudeIntegration`: on every launch, silently install (or
-    /// repair / update) Phanttom's hooks whenever `~/.cursor` exists. The only
-    /// off switch is an explicit Remove… in Settings, which writes the shared
-    /// opt-out marker beside hooks.json; Set Up removes it.
+    /// Cursor Agent integration, mirroring `autoSyncClaudeIntegration`: asked
+    /// once, then installed / repaired / updated on every launch whenever
+    /// `~/.cursor` exists. The off switch is an explicit Remove… in Settings,
+    /// which writes the shared opt-out marker beside hooks.json; Set Up
+    /// removes it.
     ///
     /// No key migration here (unlike Claude): this integration has never
     /// shipped a prompt, nor a released defaults-backed opt-out, so there is
@@ -139,6 +197,26 @@ extension AppDelegate {
         // — retry next launch (once ~/.cursor appears or the JSON parses).
         let status = PhanttomCursorIntegration.currentStatus()
         guard status.error == nil else { return }
+
+        if !PhanttomCursorIntegration.hasAskedAutoInstall() {
+            if status.status == .notInstalled {
+                let granted = askAgentIntegrationConsent(
+                    agent: "Cursor Agent",
+                    configPath: "~/.cursor/hooks.json and "
+                        + "~/.cursor/cli-config.json",
+                    details: "Phanttom can show live agent status in the "
+                        + "sidebar — working / done — plus the agent's "
+                        + "working directory and the model label."
+                )
+                PhanttomCursorIntegration.setAskedAutoInstall(true)
+                guard granted else {
+                    PhanttomCursorIntegration.setAutoInstallDisabled(true)
+                    return
+                }
+            } else {
+                PhanttomCursorIntegration.setAskedAutoInstall(true)
+            }
+        }
 
         switch status.status {
         case .notInstalled, .installedOutdated:

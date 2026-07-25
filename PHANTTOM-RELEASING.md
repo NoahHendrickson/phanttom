@@ -16,6 +16,17 @@ Program membership. The pieces:
   that, updates are downloaded by Sparkle itself — no quarantine, no
   prompts — and verified against the fork's EdDSA key. Never ship an update
   signed with a different key: existing installs will reject it.
+  Know the limit of that: the EdDSA signature protects the *update channel*,
+  not the installed app. Ad-hoc signing means no Team ID and no library
+  validation, so anything already running as the user can modify
+  `Phanttom.app` (or inject a dylib) without breaking any check macOS makes
+  after the first approval. Notarization with a Developer ID is the fix and
+  changes nothing else about this pipeline — see the last section.
+- **Release builds skip the Actions cache** (the two `actions/cache` steps are
+  `if:`-gated off for `refs/tags/*`). A tag build is signed and then
+  auto-installed by every user, so its inputs stay the checkout plus the
+  toolchain rather than a cache blob written by an earlier run. Costs ~20 min
+  instead of ~8; dispatch/prerelease runs still use the cache.
 
 ## One-time setup (Sparkle keys)
 

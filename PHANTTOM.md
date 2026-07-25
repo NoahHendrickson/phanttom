@@ -237,7 +237,15 @@ background split keeps its identity — and stored sticky on the window
 - otherwise-idle tabs show their branch's GitHub PR state via
   `PhanttomGitPullRequestOpen` / `PhanttomGitPullRequestMerged` icons
   (`PRStatusCache`, gh-CLI-backed, 60s revalidate; silently absent without
-  gh/auth/PR); idle with no PR is a `white @ 30%` 8pt circle
+  gh/auth/PR); idle with no PR is a `white @ 30%` 8pt circle.
+  **Off by default** (Settings → Sidebar → "Show pull request status"):
+  resolving it runs `gh` with the user's credentials *in the tab's own
+  directory* and makes an authenticated request that discloses the branch,
+  which a terminal emulator should not do unasked. When on, the query is
+  further limited to `.idle` rows (the only ones that render the icon) and to
+  repositories whose config declares a github.com remote
+  (`GitBranchCache.hasGitHubRemote`, parsed from the config text — no git
+  subprocess runs in the repo to answer it)
 - status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
 **Project grouping** (settings toggle "Group tabs by project", default on;
@@ -281,13 +289,27 @@ same one isn't immediately re-captured).
 
 ## Claude Code integration (hooks protocol)
 
-**Zero-touch:** hooks install (and repair / update) automatically on every
-launch whenever `~/.claude` exists — no prompt, no consent dialog
-(`autoSyncClaudeIntegration` in `AppDelegate+Phanttom.swift`). The only off
-switch is **Phanttom Settings → Claude Code → Remove…**, which writes an
-empty `~/.claude/.phanttom-no-autoinstall` marker so removal sticks across
-launches; `Set Up` deletes it and auto-sync resumes. A missing `~/.claude`
-or corrupt `settings.json` is silently retried next launch.
+**Asked once, then zero-touch:** the first launch that finds a `~/.claude`
+without our hooks shows one dialog (`askAgentIntegrationConsent` in
+`AppDelegate+Phanttom.swift`). Say yes and the hooks install; after that they
+are repaired and updated silently on every launch, forever, with no further
+prompts. Say no and the opt-out marker is written. The answer is recorded as
+an empty `~/.claude/.phanttom-autoinstall-asked` file — beside the config it
+governs, for the same cross-build reason as the opt-out marker below — and a
+`~/.claude` that already has hooks (installed by an earlier build) is
+grandfathered as consented rather than re-asked. Setting up or removing from
+Settings also counts as answering.
+
+This is not ceremony: `~/.claude/settings.json` is *another tool's*
+configuration, the hooks we add run in every Claude Code session on the
+machine (not just Phanttom's), and one of them puts prompt text into a
+window title. That is a question, not a default.
+
+The off switch stays **Phanttom Settings → Claude Code → Remove…**, which
+writes an empty `~/.claude/.phanttom-no-autoinstall` marker so removal sticks
+across launches; `Set Up` deletes it and auto-sync resumes. Remove… also
+deletes the timestamped backups and the private session directory. A missing
+`~/.claude` or corrupt `settings.json` is silently retried next launch.
 
 **The opt-out is a file, not a UserDefaults key** — deliberately.
 `UserDefaults.standard` is scoped to the bundle identifier, so the Debug
@@ -329,10 +351,30 @@ sh "$HOME/.claude/phanttom-hook.sh" statusline
 | `settings.json.bak-phanttom-<yyyyMMdd-HHmmss>` | Timestamped backup before every write (keep ≤5)                              |
 | `phanttom-hook.sh`                             | Versioned payload (`chmod 0755`)                                             |
 | `phanttom-integration.json`                    | `{"version", "originalStatusLine"}` — statusline chains to the saved command |
+| `.phanttom-sessions/`                          | 0700 per-session scratch (model last emitted, "tab already named") — never `$TMPDIR`/`/tmp`, which is world-writable and guessable when `TMPDIR` is unset |
+| `.phanttom-autoinstall-asked`                  | The consent question has been answered (either way)                          |
 
 **Version bump rule.** Any change to the script text or the desired hook /
 statusline spec **must** bump `payloadVersion` — that's what drives
 Settings' "Update available".
+
+**Emit guard.** The hooks live in `~/.claude`, so they run for every Claude
+Code session on the machine — including ones started from iTerm, VS Code,
+tmux, or an ssh-in. Nothing but Phanttom/Ghostty understands these sequences,
+and the marker title carries prompt text, so the script emits nothing unless
+`TERM_PROGRAM=ghostty` (or `GHOSTTY_RESOURCES_DIR` is set). The statusline
+branch is the exception: it still chains to the user's own statusline
+everywhere, because we replaced that command with our dispatch.
+
+**One prompt per session.** `prompt-submit` puts prompt text in the title
+only for the session's *first* prompt; later ones send the marker with an
+empty prompt field (kind + model only). The app never consumed anything but
+the first — auto-naming locks — so every later emission was prompt text in
+the macOS window title, where screen recording, Accessibility clients, and
+screenshots can read it, for no gain. Consequence to know: **Reset Name**
+re-arms the app side, but the hook will not re-send a prompt for that
+session, so the row falls back to the "Claude" label until a new session
+starts. That is the intended trade.
 
 All hooks write escape sequences to the session tty (hook stdout is captured
 by Claude Code). Tty resolution is
@@ -355,15 +397,16 @@ JSON parsing prefers `jq` when present, else `/usr/bin/perl` + `JSON::PP`
 | `notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                              | → Attention if unselected                                                           |
 | `statusline`                                                                      | model-only marker `❯⁣.claude⁣⁣<model-id>` on change (cache file under `$TMPDIR`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
 
-Bumping `payloadVersion` (currently 5 for the `.claude` kind-token markers)
-shows every existing Claude-integrated user Settings' "Update available" and
-triggers silent launch repair — expected churn, not a regression.
+Bumping `payloadVersion` (currently 7: the emit guard, one-prompt-per-session,
+and the private session directory) shows every existing Claude-integrated user
+Settings' "Update available" and triggers silent launch repair — expected
+churn, not a regression.
 
 ## Cursor Agent CLI integration (hooks protocol)
 
-**Zero-touch**, exactly like the Claude integration above: hooks install
-(and repair / update) automatically on every launch whenever `~/.cursor`
-exists — no prompt, no consent dialog (`autoSyncCursorIntegration` in
+**Asked once, then zero-touch**, exactly like the Claude integration above:
+one dialog the first time a hook-less `~/.cursor` is found, then silent
+repair / update on every launch (`autoSyncCursorIntegration` in
 `AppDelegate+Phanttom.swift`). The only off switch is **Phanttom Settings →
 Cursor Agent → Remove…**, which writes an empty
 `~/.cursor/.phanttom-no-autoinstall` marker so removal sticks across launches;
@@ -395,12 +438,17 @@ sh "$HOME/.cursor/phanttom-hook.sh" statusline
 | `~/.cursor/cli-config.json` | `statusLine` command (absent file treated as empty `[:]`, not corrupt) |
 | `~/.cursor/phanttom-hook.sh` | Versioned payload (`chmod 0755`) |
 | `~/.cursor/phanttom-integration.json` | `{version, originalStatusLine, originalStatusLineObject?}` |
+| `~/.cursor/.phanttom-sessions/` | 0700 per-session scratch (last model emitted) |
+| `~/.cursor/.phanttom-autoinstall-asked` | The consent question has been answered |
 | `*.bak-phanttom-<stamp>` | Timestamped backups of hooks.json / cli-config.json (keep ≤5 + oldest) |
 
 **Emit guards.** Hooks only emit OSC when `CURSOR_AGENT=1` (Cursor Agent CLI
-sets this; IDE Agent Chat does not) **and** a real pty is found by walking
-ancestors from `$PPID` (or from `PHANTTOM_TTY` injected by `sessionStart`'s
-`env` response). There is no `CURSOR_PID` analog and **no** `/dev/tty`
+sets this; IDE Agent Chat does not), **and** the session is running in a
+Phanttom/Ghostty terminal (`TERM_PROGRAM=ghostty` / `GHOSTTY_RESOURCES_DIR` —
+`~/.cursor/hooks.json` is read by every Cursor Agent session on the machine),
+**and** a real pty is found by walking ancestors from `$PPID` (or from
+`PHANTTOM_TTY` injected by `sessionStart`'s `env` response). A gated-out
+`statusline` still chains to the user's own statusline. There is no `CURSOR_PID` analog and **no** `/dev/tty`
 fallback — bare `/dev/tty` is known-broken for hook processes.
 
 | Event / subcommand | Emits | Phanttom effect |
@@ -563,6 +611,65 @@ Encode path: `TerminalController.window(_:willEncodeRestorableState:)` →
 
 Sparkle update relaunches can skip save/restore in some cases (upstream
 limitation).
+
+## Security & privacy
+
+The fork adds two things upstream Ghostty does not do: it writes another
+tool's configuration, and it can reach the network. Both are worth keeping
+honest.
+
+**What leaves the machine.** Only the PR-status lookup, and only when the
+user turns it on (Settings → Sidebar). It runs `gh pr list --head <branch>`
+with the user's GitHub credentials, from the tab's working directory, at most
+once per 60s per (directory, branch). Nothing else in Phanttom talks to the
+network except Sparkle's update check. Prompts, titles, directories, and
+branch names are never logged (`Ghostty.logger` calls in Phanttom code carry
+no user content) and never persisted beyond the UserDefaults listed under
+"Session restore".
+
+**What lands in the window title.** The tab auto-name is the first 56
+characters of a session's first prompt, and the title is a real `NSWindow`
+title — readable by any app with Screen Recording permission
+(`CGWindowListCopyWindowInfo`), by Accessibility clients, and captured in
+screenshots, screen shares, and Mission Control. That is the cost of the
+feature; the hook keeps it to one prompt per session and emits nothing
+outside Phanttom (see the hooks sections above), and a user who wants none of
+it can Remove… the integration.
+
+**Marker titles are not authenticated.** `❯` + U+2063 makes the marker
+collision-proof against shell prompts, not forgery-proof: any program that
+can write to the tty — a `cat` of a crafted file, a remote ssh session — can
+emit one, and OSC 9;4 progress the same way. So a row's kind icon, model
+badge, name, and even its working/done/attention dot are all
+attacker-steerable in a tab running hostile output. They are presentation
+only, and must stay that way: **never gate an action on `PhanttomTabState`
+identity**. Fields are length-clamped (`maxMarkerFieldLength`) so a forged
+title can't blow up a row.
+
+**Untrusted directories.** A tab's pwd is arbitrary. Everything Phanttom does
+with it reads files (`GitBranchCache` walks `.git`, parses `HEAD` and the
+config as text) rather than running git there. The one exception is the
+PR-status lookup, which sets `gh`'s cwd to that directory — hence the opt-in
+and the GitHub-remote precondition. `gh` is invoked with an argument array,
+never a shell, so branch names containing `;`, `$`, or backticks (all legal
+in git refs) cannot inject.
+
+**Config writes.** Agent config is read-modify-written atomically, with a
+re-parse guard, unknown keys round-tripped, a timestamped backup first, and
+the file's prior mode re-applied afterwards (an atomic write replaces the
+file, and `settings.json` can hold credentials). Backups are 0600 and are
+deleted on Remove… — a snapshot of a file that once held a token should not
+outlive the integration.
+
+**Distribution.** Releases are ad-hoc signed and not notarized (no Apple
+Developer Program membership — see PHANTTOM-RELEASING.md), and the shipped
+`ReleaseLocal` configuration carries `com.apple.security.cs.disable-library-validation`.
+Sparkle protects the *update channel* (HTTPS appcast, EdDSA signature checked
+against `SUPublicEDKey`), but after the user's one-time "Open Anyway" nothing
+checks the installed bundle: any process running as the user can modify it or
+inject a dylib without breaking a signature. Users should know that before
+they install a terminal that also writes their agent config. Joining the
+Developer Program and notarizing is the fix, and it changes nothing else.
 
 ## Gotchas for agents
 
