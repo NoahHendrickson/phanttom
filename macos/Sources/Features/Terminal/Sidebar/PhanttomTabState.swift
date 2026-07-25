@@ -285,12 +285,25 @@ final class PhanttomTabState {
     /// short numeric tokens immediately before/after the family joined with
     /// dots, 8-digit date stamps and later qualifiers ("preview-2") dropped.
     /// Works for old ids with the family last ("claude-3-5-sonnet-…") too.
+    /// A bracketed context-window suffix is kept, parenthesized and upper
+    /// cased: "claude-opus-5[1m]" → "Opus 5 (1M)".
     /// An id with no recognizable family shows as-is rather than hiding.
     static func modelDisplayName(_ id: String) -> String {
+        // Split the bracketed suffix off before tokenizing: it hangs off the
+        // last token ("5[1m]"), which would otherwise fail the all-digits
+        // test and swallow the version number with it.
+        var suffix = ""
+        var id = Substring(id)
+        if let open = id.firstIndex(of: "["), id.hasSuffix("]") {
+            let inner = id[id.index(after: open)..<id.index(before: id.endIndex)]
+            if !inner.isEmpty { suffix = " (\(inner.uppercased()))" }
+            id = id[id.startIndex..<open]
+        }
+
         let tokens = id.split(separator: "-")
         guard let familyIdx = tokens.firstIndex(where: {
             $0.allSatisfy(\.isLetter) && $0.lowercased() != "claude"
-        }) else { return id }
+        }) else { return String(id) + suffix }
         let family = tokens[familyIdx]
         var before: [Substring] = []
         var i = familyIdx
@@ -310,6 +323,6 @@ final class PhanttomTabState {
         }
         let version = (before + after).joined(separator: ".")
         let name = family.prefix(1).uppercased() + family.dropFirst()
-        return version.isEmpty ? name : "\(name) \(version)"
+        return version.isEmpty ? name + suffix : "\(name) \(version)\(suffix)"
     }
 }
