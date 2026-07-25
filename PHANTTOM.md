@@ -202,8 +202,9 @@ background split keeps its identity — and stored sticky on the window
   side (`noteBell`) and the acknowledge side (`PhanttomTabState.update`) MUST
   ask this same question; if they diverge the indicator either never appears or
   never clears. `isWatched` reads `NSApp.isActive`, so the manager observes
-  `NSApplication.didBecomeActive`/`didResignActive` — without them the ack sits
-  stale and returning to Ghostty leaves a yellow dot on the tab you're staring at.
+  `NSApplication.didBecomeActive` — without it the ack sits stale and returning
+  to Ghostty leaves a yellow dot on the tab you're staring at. Resign-active is
+  deliberately *not* observed: going unwatched cannot change any status.
 - **Precedence is `attention > working > done > idle`**, and `updateStatus`
   works on *edges* of `isWorking`, not levels, to enforce it. This is load
   bearing, not stylistic: the Notification hook clears the progress report and

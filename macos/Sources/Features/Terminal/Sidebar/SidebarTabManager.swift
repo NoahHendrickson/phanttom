@@ -259,23 +259,23 @@ final class SidebarTabManager: ObservableObject {
             }
         })
 
-        // `isWatched` reads NSApp.isActive, so app activation changes what the
-        // status slot should show even though no window, title, or progress
-        // report moved. Without these the ack would sit stale until something
-        // unrelated happened to fire a refresh: switching back to Ghostty
-        // would leave a yellow dot standing on the tab you are now staring at.
-        for name: Notification.Name in [
-            NSApplication.didBecomeActiveNotification,
-            NSApplication.didResignActiveNotification,
-        ] {
-            notificationObservers.append(center.addObserver(
-                forName: name,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                DispatchQueue.main.async { self?.scheduleRefresh() }
-            })
-        }
+        // `isWatched` reads NSApp.isActive, so becoming active acknowledges
+        // indicators even though no window, title, or progress report moved.
+        // Without this the ack would sit stale until something unrelated
+        // happened to fire a refresh: switching back to Ghostty would leave a
+        // yellow dot standing on the tab you are now staring at.
+        //
+        // Only activation is observed. Losing active status cannot change any
+        // status: going unwatched never marks `.done` (that needs a falling
+        // `isWorking` edge) or `.attention` (that needs `noteBell`), and
+        // acknowledgement requires `isWatched` to be true.
+        notificationObservers.append(center.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.scheduleRefresh() }
+        })
 
         refresh()
     }

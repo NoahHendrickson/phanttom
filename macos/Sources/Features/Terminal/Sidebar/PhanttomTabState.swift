@@ -53,19 +53,20 @@ final class PhanttomTabState {
     ///
     /// Attention wins because it is the only state that is *about the user*:
     /// the agent has stopped and cannot continue without them. Working and
-    /// done are both merely reports on the agent. Selecting a tab
-    /// acknowledges attention and done; it cannot acknowledge working, which
-    /// is a fact about the process rather than an unread notice, so a
-    /// selected tab with live progress stays on `.working`.
+    /// done are both merely reports on the agent. Watching a tab
+    /// (`isWatched`, not mere selection) acknowledges attention and done; it
+    /// cannot acknowledge working, which is a fact about the process rather
+    /// than an unread notice, so a watched tab with live progress stays on
+    /// `.working`.
     enum Status: Equatable {
         /// Nothing to report — gray dot (or the branch's PR icon).
         case idle
         /// The tab's program reported progress (OSC 9;4) — animated sparkle.
         case working
-        /// Work finished while the tab was unselected — blue status dot.
+        /// Work finished while the user wasn't watching — blue status dot.
         case done
-        /// The agent needs the user: bell rang while the tab was unselected
-        /// — yellow status dot.
+        /// The agent needs the user: bell rang while the user wasn't
+        /// watching — yellow status dot.
         case attention
     }
 
@@ -175,15 +176,10 @@ final class PhanttomTabState {
     /// Attention outranks every other state. A bell is the agent explicitly
     /// asking for the user — Claude Code's Notification hook rings it for
     /// permission prompts and idle input waits — which is strictly more
-    /// urgent than "still running" or "finished".
-    ///
-    /// This used to be recorded only from `.idle`, which in practice meant
-    /// almost never: the hook clears the progress report and rings in the
-    /// same breath, so the guard always ran against `.working` (bell
-    /// delivered first) or the `.done` that the clear had just produced.
-    /// Either way the bell was dropped and a tab that was blocked waiting
-    /// for input rendered as finished — blue instead of yellow, the one
-    /// state it is least acceptable to get wrong. Cleared on selection like
+    /// urgent than "still running" or "finished". Unconditional for that
+    /// reason: the hook clears the progress report and rings in the same
+    /// breath, so any guard on the current status runs against a race the
+    /// sidebar does not control. Cleared when the user watches the tab, like
     /// every other indicator.
     func noteBell() {
         status = .attention
