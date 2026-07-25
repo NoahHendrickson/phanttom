@@ -215,6 +215,13 @@ background split keeps its identity — and stored sticky on the window
   produced — and a tab *blocked waiting for input* rendered blue "done". Only a
   rising edge of `isWorking` may take the slot back from `.attention`; a report
   that is merely still live may not.
+  **Known limit, deliberate:** `isWorking` is an OR across every surface in the
+  window, so that rising edge says *some* split started work — not that the
+  split which rang the bell resumed. In a tab running two agents, the second one
+  starting clears the first one's unread yellow dot. Do not "fix" it by dropping
+  the rising edge; that restores the double-drop regression above. Closing it
+  properly needs per-surface progress, which a window-level report cannot
+  express — and the same root cause bounds the deferral rule below.
 - **A bell rung against a live progress report is deferred one refresh, not
   taken.** At bell time the hook's own BEL (racing the clear printed beside it)
   and a stray BEL from the running program (test runner, build tool, readline)
