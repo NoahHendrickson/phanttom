@@ -86,13 +86,15 @@ final class PhanttomSettings: ObservableObject {
 
     /// Show each idle tab's branch as a GitHub PR dot (open / merged).
     ///
-    /// Off by default and a deliberate opt-in: resolving it shells out to the
-    /// `gh` CLI with the user's GitHub credentials, from the tab's own working
-    /// directory, and revalidates every 60s per (directory, branch) — an
-    /// authenticated request to GitHub that says which branches you have open,
-    /// made by a terminal emulator that was never asked to talk to the
-    /// network. `PRStatusCache` narrows it further (idle rows, GitHub remotes
-    /// only), but the decision to make the requests at all is the user's.
+    /// On by default — it is one of the reasons to run this fork — but it is
+    /// the only thing in Phanttom that talks to the network, so it must be
+    /// switchable and it must say so: resolving it shells out to the `gh` CLI
+    /// with the user's GitHub credentials, from the tab's own working
+    /// directory, and revalidates every 60s per (directory, branch). The
+    /// query is narrowed to rows that actually render the icon (`.idle`) and
+    /// to repositories with a github.com remote, so it is not made from
+    /// arbitrary directories, and the Settings footer states plainly what it
+    /// does.
     @Published var showPullRequestStatus: Bool {
         didSet { persist() }
     }
@@ -150,7 +152,8 @@ final class PhanttomSettings: ObservableObject {
         overrideFontSize = defaults.bool(forKey: Keys.overrideFontSize)
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 13
         sidebarGroupByProject = defaults.object(forKey: Keys.sidebarGroupByProject) as? Bool ?? true
-        showPullRequestStatus = defaults.bool(forKey: Keys.showPullRequestStatus)
+        showPullRequestStatus =
+            defaults.object(forKey: Keys.showPullRequestStatus) as? Bool ?? true
         restoreWindowsOnQuit = defaults.bool(forKey: Keys.restoreWindowsOnQuit)
         loaded = true
     }

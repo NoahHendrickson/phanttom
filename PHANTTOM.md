@@ -238,14 +238,15 @@ background split keeps its identity — and stored sticky on the window
   `PhanttomGitPullRequestOpen` / `PhanttomGitPullRequestMerged` icons
   (`PRStatusCache`, gh-CLI-backed, 60s revalidate; silently absent without
   gh/auth/PR); idle with no PR is a `white @ 30%` 8pt circle.
-  **Off by default** (Settings → Sidebar → "Show pull request status"):
-  resolving it runs `gh` with the user's credentials *in the tab's own
-  directory* and makes an authenticated request that discloses the branch,
-  which a terminal emulator should not do unasked. When on, the query is
-  further limited to `.idle` rows (the only ones that render the icon) and to
-  repositories whose config declares a github.com remote
-  (`GitBranchCache.hasGitHubRemote`, parsed from the config text — no git
-  subprocess runs in the repo to answer it)
+  On by default but switchable (Settings → Sidebar → "Show pull request
+  status") — this is the only thing in Phanttom that touches the network, so
+  it owes the user a switch and a plain description: resolving it runs `gh`
+  with the user's credentials *in the tab's own directory* and makes an
+  authenticated request that discloses the branch. The query is limited to
+  `.idle` rows (the only ones that render the icon) and to repositories whose
+  config declares a github.com remote (`GitBranchCache.hasGitHubRemote`,
+  parsed from the config text — no git subprocess runs in the repo to answer
+  it), so it is never made from an arbitrary directory
 - status lives on `TerminalWindow` (`phanttomTabState`), never in a manager
 
 **Project grouping** (settings toggle "Group tabs by project", default on;
@@ -618,8 +619,8 @@ The fork adds two things upstream Ghostty does not do: it writes another
 tool's configuration, and it can reach the network. Both are worth keeping
 honest.
 
-**What leaves the machine.** Only the PR-status lookup, and only when the
-user turns it on (Settings → Sidebar). It runs `gh pr list --head <branch>`
+**What leaves the machine.** Only the PR-status lookup, which is on by
+default and switchable off (Settings → Sidebar). It runs `gh pr list --head <branch>`
 with the user's GitHub credentials, from the tab's working directory, at most
 once per 60s per (directory, branch). Nothing else in Phanttom talks to the
 network except Sparkle's update check. Prompts, titles, directories, and

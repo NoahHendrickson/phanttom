@@ -56,9 +56,10 @@ struct PhanttomSettingsView: View {
             } footer: {
                 Text(
                     "Pull request status asks the gh CLI about the branch in "
-                        + "each idle tab, roughly once a minute per branch. "
-                        + "That is an authenticated request to GitHub from "
-                        + "your machine, so it stays off until you turn it on."
+                        + "each idle tab, roughly once a minute per branch — "
+                        + "an authenticated request to GitHub from your "
+                        + "machine. Turn it off to keep Phanttom entirely "
+                        + "off the network."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
