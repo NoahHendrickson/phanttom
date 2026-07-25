@@ -15,32 +15,32 @@ struct PhanttomTabStateTests {
 
     @Test func plainTitleResetsIdentity() {
         let state = PhanttomTabState()
-        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isSelected: true)
+        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
         #expect(state.autoTitle == "fix login bug")
 
-        state.update(titles: ["zsh"], isWorking: false, isSelected: true)
+        state.update(titles: ["zsh"], isWorking: false, isWatched: true)
         #expect(state.kind == .terminal)
         #expect(state.autoTitle == nil)
     }
 
     @Test func claudeCodexAndCursorTitlesSetKind() {
         let state = PhanttomTabState()
-        state.update(titles: ["claude"], isWorking: false, isSelected: true)
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
 
-        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        state.update(titles: ["codex exec"], isWorking: false, isWatched: true)
         #expect(state.kind == .codex)
 
-        state.update(titles: ["Cursor Agent"], isWorking: false, isSelected: true)
+        state.update(titles: ["Cursor Agent"], isWorking: false, isWatched: true)
         #expect(state.kind == .cursor)
 
-        state.update(titles: ["cursor-agent"], isWorking: false, isSelected: true)
+        state.update(titles: ["cursor-agent"], isWorking: false, isWatched: true)
         #expect(state.kind == .cursor)
 
         // Bare "agent" must not become a Cursor tab.
-        state.update(titles: ["zsh"], isWorking: false, isSelected: true)
-        state.update(titles: ["agent"], isWorking: false, isSelected: true)
+        state.update(titles: ["zsh"], isWorking: false, isWatched: true)
+        state.update(titles: ["agent"], isWorking: false, isWatched: true)
         #expect(state.kind == .terminal)
     }
 
@@ -51,15 +51,15 @@ struct PhanttomTabStateTests {
         // anchored at the start of the title, not a substring scan.
         for title in ["~/.cursor", "src/cursor.rs", "vim cursor.c", "nvim: cursor"] {
             let state = PhanttomTabState()
-            state.update(titles: [title], isWorking: false, isSelected: true)
+            state.update(titles: [title], isWorking: false, isWatched: true)
             #expect(state.kind == .terminal, "\(title) should not be a Cursor tab")
         }
     }
 
     @Test func decoratedTitleKeepsStickyKind() {
         let state = PhanttomTabState()
-        state.update(titles: ["claude"], isWorking: false, isSelected: true)
-        state.update(titles: ["✳ Compacting conversation"], isWorking: false, isSelected: true)
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
+        state.update(titles: ["✳ Compacting conversation"], isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
     }
 
@@ -67,7 +67,7 @@ struct PhanttomTabStateTests {
         // "❯" without U+2063 is the default prompt char of starship/pure —
         // it must be treated as a decorated title, never as our marker.
         let state = PhanttomTabState()
-        state.update(titles: ["❯ ~/dev"], isWorking: false, isSelected: true)
+        state.update(titles: ["❯ ~/dev"], isWorking: false, isWatched: true)
         #expect(state.kind == .terminal)
         #expect(state.autoTitle == nil)
     }
@@ -76,15 +76,15 @@ struct PhanttomTabStateTests {
         // The focused split's plain title must not wipe an idle agent
         // living in another split (identity is judged from every title).
         let state = PhanttomTabState()
-        state.update(titles: ["claude"], isWorking: false, isSelected: true)
-        state.update(titles: ["zsh", "✳ Waiting on your input"], isWorking: false, isSelected: true)
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
+        state.update(titles: ["zsh", "✳ Waiting on your input"], isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
     }
 
     @Test func workingPlainTitleKeepsIdentity() {
         let state = PhanttomTabState()
-        state.update(titles: ["claude"], isWorking: false, isSelected: true)
-        state.update(titles: ["zsh"], isWorking: true, isSelected: true)
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
+        state.update(titles: ["zsh"], isWorking: true, isWatched: true)
         #expect(state.kind == .claude)
     }
 
@@ -92,32 +92,32 @@ struct PhanttomTabStateTests {
 
     @Test func markerCapturesFirstPromptOnly() {
         let state = PhanttomTabState()
-        state.update(titles: ["\(marker) first prompt"], isWorking: false, isSelected: true)
+        state.update(titles: ["\(marker) first prompt"], isWorking: false, isWatched: true)
         #expect(state.autoTitle == "first prompt")
 
-        state.update(titles: ["\(marker) second prompt"], isWorking: false, isSelected: true)
+        state.update(titles: ["\(marker) second prompt"], isWorking: false, isWatched: true)
         #expect(state.autoTitle == "first prompt")
     }
 
     @Test func markerInBackgroundSplitCapturesName() {
         let state = PhanttomTabState()
-        state.update(titles: ["zsh", "\(marker) refactor the cache"], isWorking: false, isSelected: true)
+        state.update(titles: ["zsh", "\(marker) refactor the cache"], isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
         #expect(state.autoTitle == "refactor the cache")
     }
 
     @Test func rearmConsumesCurrentMarkerTitle() {
         let state = PhanttomTabState()
-        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isSelected: true)
+        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isWatched: true)
         state.rearmAutoTitle()
         #expect(state.autoTitle == nil)
 
         // The still-current marker title must not be re-captured...
-        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isSelected: true)
+        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isWatched: true)
         #expect(state.autoTitle == nil)
 
         // ...but a NEW prompt names the tab again.
-        state.update(titles: ["\(marker) add dark mode"], isWorking: false, isSelected: true)
+        state.update(titles: ["\(marker) add dark mode"], isWorking: false, isWatched: true)
         #expect(state.autoTitle == "add dark mode")
     }
 
@@ -127,7 +127,7 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.autoTitle == "fix login bug")
         // State stores the raw id; pretty-printing is a TabItem/view concern.
         #expect(state.model == "claude-fable-5")
@@ -137,14 +137,14 @@ struct PhanttomTabStateTests {
         // not yet written) keeps the last known model.
         state.update(
             titles: ["\(marker) another prompt\u{2063}"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.model == "claude-fable-5")
 
         // A model switch mid-session (e.g. /model) updates the id even
         // though the auto-name stays locked to the first prompt.
         state.update(
             titles: ["\(marker) another prompt\u{2063}claude-opus-4-8"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.autoTitle == "fix login bug")
         #expect(state.model == "claude-opus-4-8")
     }
@@ -154,7 +154,7 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker)\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
         #expect(state.model == "claude-fable-5")
         #expect(state.autoTitle == nil)
@@ -163,7 +163,7 @@ struct PhanttomTabStateTests {
         // The first real prompt still names the tab afterwards.
         state.update(
             titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.autoTitle == "fix login bug")
         #expect(state.titleFallback == "fix login bug")
     }
@@ -172,7 +172,7 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker).cursor\u{2063}\u{2063}grok-4.5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .cursor)
         #expect(state.model == "grok-4.5")
         #expect(state.autoTitle == nil)
@@ -180,7 +180,7 @@ struct PhanttomTabStateTests {
 
         state.update(
             titles: ["\(marker).cursor\u{2063}fix the sidebar\u{2063}grok-4.5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .cursor)
         #expect(state.autoTitle == "fix the sidebar")
         #expect(state.titleFallback == "fix the sidebar")
@@ -190,7 +190,7 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker).claude\u{2063}fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
         #expect(state.autoTitle == "fix login bug")
         #expect(state.model == "claude-fable-5")
@@ -202,7 +202,7 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker)cursor\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
         #expect(state.autoTitle == "cursor")
         #expect(state.model == "claude-fable-5")
@@ -210,19 +210,19 @@ struct PhanttomTabStateTests {
 
     @Test func cursorMarkerForcesKindBackFromCodex() {
         let state = PhanttomTabState()
-        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        state.update(titles: ["codex exec"], isWorking: false, isWatched: true)
         #expect(state.kind == .codex)
 
         state.update(
             titles: ["\(marker).cursor\u{2063}\u{2063}grok-4.5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .cursor)
         #expect(state.model == "grok-4.5")
     }
 
     @Test func markerWithoutModelSuffixLeavesModelNil() {
         let state = PhanttomTabState()
-        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isSelected: true)
+        state.update(titles: ["\(marker) fix login bug"], isWorking: false, isWatched: true)
         #expect(state.model == nil)
     }
 
@@ -230,8 +230,8 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
-        state.update(titles: ["zsh"], isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
+        state.update(titles: ["zsh"], isWorking: false, isWatched: true)
         #expect(state.kind == .terminal)
         #expect(state.model == nil)
         #expect(state.titleFallback == nil)
@@ -245,11 +245,11 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
         #expect(state.model == "claude-fable-5")
 
-        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        state.update(titles: ["codex exec"], isWorking: false, isWatched: true)
         #expect(state.kind == .codex)
         #expect(state.model == nil)
         #expect(state.titleFallback == nil)
@@ -259,12 +259,12 @@ struct PhanttomTabStateTests {
         // Codex first, then a Claude marker (no plain "claude" title): the
         // marker path must flip kind to .claude so the model badge can show.
         let state = PhanttomTabState()
-        state.update(titles: ["codex exec"], isWorking: false, isSelected: true)
+        state.update(titles: ["codex exec"], isWorking: false, isWatched: true)
         #expect(state.kind == .codex)
 
         state.update(
             titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.kind == .claude)
         #expect(state.model == "claude-fable-5")
         #expect(state.autoTitle == "fix login bug")
@@ -277,13 +277,13 @@ struct PhanttomTabStateTests {
         let state = PhanttomTabState()
         state.update(
             titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         state.rearmAutoTitle()
         #expect(state.autoTitle == nil)
 
         state.update(
             titles: ["\(marker) fix login bug\u{2063}claude-fable-5"],
-            isWorking: false, isSelected: true)
+            isWorking: false, isWatched: true)
         #expect(state.autoTitle == nil)
         #expect(state.titleFallback == "fix login bug")
     }
@@ -313,48 +313,173 @@ struct PhanttomTabStateTests {
 
     @Test func workingEndsUnselectedBecomesDone() {
         let state = PhanttomTabState()
-        state.update(titles: ["claude"], isWorking: true, isSelected: false)
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
         #expect(state.status == .working)
 
-        state.update(titles: ["claude"], isWorking: false, isSelected: false)
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
         #expect(state.status == .done)
 
         // Selection acknowledges.
-        state.update(titles: ["claude"], isWorking: false, isSelected: true)
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
         #expect(state.status == .idle)
     }
 
     @Test func workingEndsSelectedIsIdle() {
         let state = PhanttomTabState()
-        state.update(titles: ["claude"], isWorking: true, isSelected: true)
+        state.update(titles: ["claude"], isWorking: true, isWatched: true)
         #expect(state.status == .working)
 
-        state.update(titles: ["claude"], isWorking: false, isSelected: true)
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
         #expect(state.status == .idle)
     }
 
-    @Test func bellMarksAttentionOnlyFromIdle() {
+    @Test func bellOutranksWorkingAndDone() {
         let state = PhanttomTabState()
         state.noteBell()
         #expect(state.status == .attention)
 
-        // Working outranks attention; a bell mid-work is not recorded.
-        state.update(titles: ["claude"], isWorking: true, isSelected: false)
+        // A bell mid-work is the agent asking for input, which outranks
+        // the report that it is still running.
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
         state.noteBell()
+        #expect(state.status == .attention)
+
+        // And a still-live progress report must not re-assert .working over
+        // it on the next refresh pass.
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .attention)
+
+        // A bell after work finished replaces done: needing input outranks
+        // having finished.
+        let finished = PhanttomTabState()
+        finished.update(titles: ["claude"], isWorking: true, isWatched: false)
+        finished.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(finished.status == .done)
+        finished.noteBell()
+        #expect(finished.status == .attention)
+    }
+
+    /// The real Claude Code notification-hook sequence: the hook clears the
+    /// progress report and rings the BEL in the same breath, so the sidebar
+    /// sees a progress-clear refresh and a bell in an order it does not
+    /// control. Both orderings must land on attention — this is the
+    /// regression that made a blocked agent render blue "done".
+    @Test func notificationHookLandsOnAttentionEitherOrder() {
+        // Ordering A: the progress-clear refresh is processed first.
+        let clearFirst = PhanttomTabState()
+        clearFirst.update(titles: ["claude"], isWorking: true, isWatched: false)
+        clearFirst.update(titles: ["claude"], isWorking: false, isWatched: false)
+        clearFirst.noteBell()
+        #expect(clearFirst.status == .attention)
+        // A later refresh with no new work leaves it standing.
+        clearFirst.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(clearFirst.status == .attention)
+
+        // Ordering B: the bell is delivered first, while progress is live.
+        let bellFirst = PhanttomTabState()
+        bellFirst.update(titles: ["claude"], isWorking: true, isWatched: false)
+        bellFirst.noteBell()
+        bellFirst.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(bellFirst.status == .attention)
+    }
+
+    /// Acknowledging a tab whose agent is still running must not strand it
+    /// on the idle dot — the rising edge that set `.working` has already
+    /// been consumed and will not fire again for a live report.
+    @Test func selectingWorkingTabWithAttentionKeepsWorking() {
+        let state = PhanttomTabState()
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        state.noteBell()
+        #expect(state.status == .attention)
+
+        // User selects it while the progress report is still live.
+        state.update(titles: ["claude"], isWorking: true, isWatched: true)
+        #expect(state.status == .working)
+        state.update(titles: ["claude"], isWorking: true, isWatched: true)
         #expect(state.status == .working)
 
-        // And done outranks a later bell.
-        state.update(titles: ["claude"], isWorking: false, isSelected: false)
-        #expect(state.status == .done)
+        // And it still resolves to idle when the work actually ends.
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
+        #expect(state.status == .idle)
+    }
+
+    /// New work after an unacknowledged bell takes the slot back: a rising
+    /// edge means the agent genuinely started something, not that a stale
+    /// report is lingering.
+    @Test func newWorkAfterBellResumesWorking() {
+        let state = PhanttomTabState()
         state.noteBell()
+        #expect(state.status == .attention)
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
+    }
+
+    /// Several sidebars step the same window state each refresh; only the
+    /// first call may consume a transition.
+    @Test func repeatedUpdatesAreIdempotent() {
+        let state = PhanttomTabState()
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
+
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(state.status == .done)
+        // A second manager's pass over the same inputs must not re-run the
+        // falling edge or otherwise disturb the recorded result.
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
         #expect(state.status == .done)
     }
 
-    @Test func selectionClearsAttention() {
+    @Test func watchingClearsAttention() {
         let state = PhanttomTabState()
         state.noteBell()
         #expect(state.status == .attention)
-        state.update(titles: ["zsh"], isWorking: false, isSelected: true)
+        state.update(titles: ["zsh"], isWorking: false, isWatched: true)
+        #expect(state.status == .idle)
+    }
+
+    // MARK: - Watched vs merely selected
+    //
+    // `isWatched` is stricter than tab selection: frontmost in its group AND
+    // key window AND app active. These cases are the ones where the two
+    // disagree — the tab you left selected when you switched to another app.
+    // Judging by selection alone reported them as seen, which is how a
+    // blocked agent ended up showing the gray idle dot.
+
+    /// Work finishing in the tab you left selected, while you are off in
+    /// another app, owes you the blue dot exactly like a background tab.
+    @Test func workEndingWhileAwayIsDoneEvenOnTheSelectedTab() {
+        let state = PhanttomTabState()
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
+
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(state.status == .done)
+
+        // Coming back to the app acknowledges it.
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
+        #expect(state.status == .idle)
+    }
+
+    /// The headline case: the agent blocks for input in the tab you left
+    /// selected. This used to be dropped outright and rendered gray.
+    @Test func bellOnSelectedButUnwatchedTabMarksAttention() {
+        let state = PhanttomTabState()
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        // Notification hook: clear progress, then ring.
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
+        state.noteBell()
+        #expect(state.status == .attention)
+
+        // It must survive refreshes for as long as the user stays away —
+        // app-activation changes are what re-run this, so a stale pass must
+        // not quietly clear it.
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(state.status == .attention)
+
+        // Returning to Ghostty acknowledges it.
+        state.update(titles: ["claude"], isWorking: false, isWatched: true)
         #expect(state.status == .idle)
     }
 }

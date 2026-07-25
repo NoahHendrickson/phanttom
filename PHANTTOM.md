@@ -187,10 +187,36 @@ background split keeps its identity — and stored sticky on the window
   whole task and stops only on an explicit clear (Stop with no in-flight
   `background_tasks`, Notification, or surface close). A Stop that still has
   background work (e.g. subagents) re-arms rain instead of clearing.
-- `done` (blue `#3A89D8`, no glow) — work finished while the tab was unselected
-- `attention` (yellow `#F5CC64`, no glow) — bell rang while unselected
-  (judged against the bell window's own tab group)
-- selecting a tab clears done/attention
+- `done` (blue `#3A89D8`, no glow) — work finished while the user wasn't watching
+- `attention` (yellow `#F5CC64`, no glow) — bell rang while the user wasn't
+  watching (judged against the bell window's own tab group)
+- **"Watching" is `SidebarTabManager.isWatched`: frontmost tab of its own group
+  AND key window AND `NSApp.isActive`** — deliberately stricter than
+  `TabItem.isSelected`, which is tab order and drives only the row highlight.
+  Acknowledgement is a claim about the user, not about tab order. Judging it by
+  selection alone meant the tab you happened to leave selected when you
+  switched apps counted as "seen": an agent that blocked for input there showed
+  the *gray idle dot*, the one reading that actively misleads a sidebar scan,
+  since gray means "nothing to do here". Same for work that finished while you
+  were away — it now owes you the blue dot like any background tab. The mark
+  side (`noteBell`) and the acknowledge side (`PhanttomTabState.update`) MUST
+  ask this same question; if they diverge the indicator either never appears or
+  never clears. `isWatched` reads `NSApp.isActive`, so the manager observes
+  `NSApplication.didBecomeActive`/`didResignActive` — without them the ack sits
+  stale and returning to Ghostty leaves a yellow dot on the tab you're staring at.
+- **Precedence is `attention > working > done > idle`**, and `updateStatus`
+  works on *edges* of `isWorking`, not levels, to enforce it. This is load
+  bearing, not stylistic: the Notification hook clears the progress report and
+  rings the BEL in the same breath, so the sidebar sees the clear-refresh and
+  the bell in an order it does not control. Level-based logic lost the bell in
+  **both** orderings — `noteBell` used to bail unless `status == .idle`, which
+  by then was either `.working` (bell first) or the `.done` the clear had just
+  produced — and a tab *blocked waiting for input* rendered blue "done". Only a
+  rising edge of `isWorking` may take the slot back from `.attention`; a report
+  that is merely still live may not.
+- watching a tab clears done/attention — but acknowledges to `.working`, not
+  `.idle`, when a progress report is still live, or the consumed rising edge
+  would strand a running tab on the gray dot
 - otherwise-idle tabs show their branch's GitHub PR state via
   `PhanttomGitPullRequestOpen` / `PhanttomGitPullRequestMerged` icons
   (`PRStatusCache`, gh-CLI-backed, 60s revalidate; silently absent without

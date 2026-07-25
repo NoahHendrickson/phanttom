@@ -44,19 +44,38 @@ final class PhanttomTabState {
 
     /// Activity state shown in the leading status slot of the tab row. An
     /// explicit state machine: `update` and `noteBell` are the only
-    /// transitions, and selecting a tab always acknowledges back to `.idle`.
+    /// transitions.
+    ///
+    /// Precedence, most urgent first — the ordering the sidebar promises the
+    /// user, and the reason `updateStatus` works on edges:
+    ///
+    ///   attention > working > done > idle
+    ///
+    /// Attention wins because it is the only state that is *about the user*:
+    /// the agent has stopped and cannot continue without them. Working and
+    /// done are both merely reports on the agent. Selecting a tab
+    /// acknowledges attention and done; it cannot acknowledge working, which
+    /// is a fact about the process rather than an unread notice, so a
+    /// selected tab with live progress stays on `.working`.
     enum Status: Equatable {
-        /// Nothing to report.
+        /// Nothing to report — gray dot (or the branch's PR icon).
         case idle
         /// The tab's program reported progress (OSC 9;4) — animated sparkle.
         case working
         /// Work finished while the tab was unselected — blue status dot.
         case done
-        /// Bell rang while the tab was unselected — yellow square.
+        /// The agent needs the user: bell rang while the tab was unselected
+        /// — yellow status dot.
         case attention
     }
 
     private(set) var status: Status = .idle
+
+    /// The previous refresh's `isWorking`, so status transitions are judged
+    /// on edges rather than levels (see `updateStatus`). Idempotent across
+    /// the several `SidebarTabManager`s that each step this same window
+    /// state: the first call consumes the edge, the rest see none and agree.
+    private var wasWorking = false
 
     /// The working directory this tab was created into (sidebar group "+",
     /// Sessions header + / folder picker). Only a pwd fallback: the sidebar
@@ -133,23 +152,40 @@ final class PhanttomTabState {
     static let autoNameMarker = "❯\u{2063}"
 
     /// Step the state for one sidebar refresh pass: status transitions from
-    /// the window's progress reports and selection, identity (kind and
-    /// auto-name) from the current titles.
+    /// the window's progress reports and whether the user is watching,
+    /// identity (kind and auto-name) from the current titles.
     ///
     /// `titles` is every surface title in the window, not just the focused
     /// one: the window title only mirrors the FOCUSED split, so judging
     /// identity from it alone wipes an idle agent in a background split the
     /// moment a plain shell split takes focus.
-    func update(titles: [String], isWorking: Bool, isSelected: Bool) {
-        updateStatus(isWorking: isWorking, isSelected: isSelected)
+    ///
+    /// `isWatched` is the user's eyes being on this tab — frontmost in its
+    /// group, key window, app active (`SidebarTabManager.isWatched`) — not
+    /// merely tab selection. Only the strict form may acknowledge an
+    /// indicator; see the note there.
+    func update(titles: [String], isWorking: Bool, isWatched: Bool) {
+        updateStatus(isWorking: isWorking, isWatched: isWatched)
         updateIdentity(titles: titles, isWorking: isWorking)
     }
 
-    /// Bell rang while the tab was unselected. Only marks attention when
-    /// there is nothing more urgent to show: working and done both outrank
-    /// attention, and every indicator clears on selection anyway.
+    /// Bell rang while the user was not watching this tab (the caller checks
+    /// that, via `SidebarTabManager.isWatched`).
+    ///
+    /// Attention outranks every other state. A bell is the agent explicitly
+    /// asking for the user — Claude Code's Notification hook rings it for
+    /// permission prompts and idle input waits — which is strictly more
+    /// urgent than "still running" or "finished".
+    ///
+    /// This used to be recorded only from `.idle`, which in practice meant
+    /// almost never: the hook clears the progress report and rings in the
+    /// same breath, so the guard always ran against `.working` (bell
+    /// delivered first) or the `.done` that the clear had just produced.
+    /// Either way the bell was dropped and a tab that was blocked waiting
+    /// for input rendered as finished — blue instead of yellow, the one
+    /// state it is least acceptable to get wrong. Cleared on selection like
+    /// every other indicator.
     func noteBell() {
-        guard status == .idle else { return }
         status = .attention
     }
 
@@ -162,17 +198,33 @@ final class PhanttomTabState {
         lastResetTitle = lastMarkerTitle
     }
 
-    private func updateStatus(isWorking: Bool, isSelected: Bool) {
-        if isWorking {
+    private func updateStatus(isWorking: Bool, isWatched: Bool) {
+        if isWorking, !wasWorking {
+            // Rising edge only. Re-asserting `.working` on every refresh
+            // while a report merely stays live would stomp the attention a
+            // bell had just set — the agent can ask for input with a
+            // subagent's progress still in flight. An edge means the agent
+            // really did start something new, which does take the slot back.
             status = .working
-        } else if status == .working {
-            // Progress just ended: done if it finished in the background,
-            // nothing to report if the user was watching.
-            status = isSelected ? .idle : .done
+        } else if !isWorking, wasWorking, status != .attention {
+            // Progress just ended: nothing to report if the user was actually
+            // watching it happen, otherwise done. Judged on `isWatched`, not
+            // tab order — work that finishes in the selected tab while you are
+            // off in another app has not been seen, and owes you a blue dot
+            // exactly like work that finishes in a background tab. A bell that
+            // landed alongside the clear keeps attention — needing input
+            // outranks merely having finished.
+            status = isWatched ? .idle : .done
         }
-        // Selecting a tab acknowledges any indicator.
-        if isSelected, status == .done || status == .attention {
-            status = .idle
+        wasWorking = isWorking
+
+        // Looking at a tab acknowledges its indicator. Acknowledging
+        // unconditionally to `.idle` would strand a still-running tab on the
+        // gray dot: the rising-edge rule above will not fire again for a
+        // report that is already live, so a working tab acknowledges back to
+        // `.working` instead.
+        if isWatched, status == .done || status == .attention {
+            status = isWorking ? .working : .idle
         }
     }
 

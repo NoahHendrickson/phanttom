@@ -131,6 +131,27 @@ final class SidebarTabManager: ObservableObject {
         }
     }
 
+    /// True when the user is actually looking at `w` right now: it is the
+    /// frontmost tab of its own group, its window is key, and Ghostty is the
+    /// active app.
+    ///
+    /// This is deliberately NOT the same thing as `TabItem.isSelected`, which
+    /// stays true for the frontmost tab of a buried window and drives the row
+    /// highlight. Status acknowledgement needs the stricter question, because
+    /// "you have seen this" is a claim about the user, not about tab order:
+    /// judging it by selection alone meant an agent that got blocked in the
+    /// tab you happened to leave selected showed the gray idle dot — the one
+    /// reading that actively misleads a sidebar scan, since gray means
+    /// "nothing to do here".
+    ///
+    /// Both the mark side (`noteBell`) and the acknowledge side
+    /// (`PhanttomTabState.update`) MUST ask this same question. If they ever
+    /// diverge the indicator either never appears or never clears.
+    static func isWatched(_ w: NSWindow) -> Bool {
+        guard w === (w.tabGroup?.selectedWindow ?? w) else { return false }
+        return w.isKeyWindow && NSApp.isActive
+    }
+
     init(window: NSWindow) {
         self.window = window
 
@@ -214,10 +235,10 @@ final class SidebarTabManager: ObservableObject {
             })
         }
 
-        // Bell while unselected marks attention — stored on the window,
-        // judged against the bell window's OWN group (a bell in a visible
-        // selected tab was already seen, even if that tab is in another
-        // group).
+        // Bell while the user isn't watching marks attention — stored on the
+        // window, judged against the bell window's OWN group (a bell in a tab
+        // the user is looking at was already seen, even if that tab is in
+        // another group).
         notificationObservers.append(center.addObserver(
             forName: .terminalWindowBellDidChangeNotification,
             object: nil,
@@ -230,13 +251,31 @@ final class SidebarTabManager: ObservableObject {
                 guard let self, let bellWindow = controller?.window else { return }
                 if hasBell,
                    let bellTerminal = bellWindow as? TerminalWindow,
-                   bellWindow !== (bellWindow.tabGroup?.selectedWindow ?? bellWindow) {
+                   !Self.isWatched(bellWindow) {
                     bellTerminal.phanttomTabState.noteBell()
                 }
                 guard self.isInGroup(bellWindow) else { return }
                 self.scheduleRefresh()
             }
         })
+
+        // `isWatched` reads NSApp.isActive, so app activation changes what the
+        // status slot should show even though no window, title, or progress
+        // report moved. Without these the ack would sit stale until something
+        // unrelated happened to fire a refresh: switching back to Ghostty
+        // would leave a yellow dot standing on the tab you are now staring at.
+        for name: Notification.Name in [
+            NSApplication.didBecomeActiveNotification,
+            NSApplication.didResignActiveNotification,
+        ] {
+            notificationObservers.append(center.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                DispatchQueue.main.async { self?.scheduleRefresh() }
+            })
+        }
 
         refresh()
     }
@@ -431,7 +470,12 @@ final class SidebarTabManager: ObservableObject {
             // pwd, so the row groups correctly from its very first frame.
             if surface?.pwd != nil { state?.seedDirectory = nil }
             let pwd = surface?.pwd ?? w.representedURL?.path ?? state?.seedDirectory
+            // Two different questions. `isSelected` is tab order and drives
+            // the row highlight; `isWatched` is whether the user's eyes are
+            // actually on this tab and is the only thing allowed to
+            // acknowledge a status indicator.
             let isSelected = w === selected
+            let isWatched = Self.isWatched(w)
 
             // Working = any surface in the window reports progress; agents
             // can run in a non-focused split.
@@ -446,7 +490,7 @@ final class SidebarTabManager: ObservableObject {
             state?.update(
                 titles: surfaces.isEmpty ? [w.title] : surfaces.map(\.title),
                 isWorking: isWorking,
-                isSelected: isSelected
+                isWatched: isWatched
             )
 
             // Definitive resolves update the window's sticky metadata;
