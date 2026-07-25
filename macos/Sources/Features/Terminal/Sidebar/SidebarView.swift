@@ -63,7 +63,10 @@ struct SidebarView: View {
             )
             .padding(.horizontal, 8)
             .padding(.top, 8)
-            .padding(.bottom, 4)
+            // Pairs with the scroll content's own .top 4 below for the gap
+            // down to the first project header; the header needs to read as
+            // pinned chrome rather than as part of the first group.
+            .padding(.bottom, 10)
 
             ScrollView {
                 // Plain VStack, not LazyVStack: removal transitions are
