@@ -215,9 +215,18 @@ background split keeps its identity — and stored sticky on the window
   produced — and a tab *blocked waiting for input* rendered blue "done". Only a
   rising edge of `isWorking` may take the slot back from `.attention`; a report
   that is merely still live may not.
-- watching a tab clears done/attention — but acknowledges to `.working`, not
-  `.idle`, when a progress report is still live, or the consumed rising edge
-  would strand a running tab on the gray dot
+- **A bell rung against a live progress report is deferred one refresh, not
+  taken.** At bell time the hook's own BEL (racing the clear printed beside it)
+  and a stray BEL from the running program (test runner, build tool, readline)
+  are indistinguishable. The next refresh separates them: report gone → that was
+  the hook, take `.attention`; report still live → incidental, the sparkle
+  stands. Taking it unconditionally stranded any stray BEL as a permanent yellow
+  dot on a *running* tab, since the rising edge cannot re-fire for a report that
+  never went away and the falling edge yields to attention. One refresh is the
+  width of the race being settled — the hook writes clear and BEL together, so
+  they parse microseconds apart while a refresh costs a runloop turn.
+- watching a tab clears done/attention; it never clears `.working`, which is a
+  fact about the process rather than an unread notice
 - otherwise-idle tabs show their branch's GitHub PR state via
   `PhanttomGitPullRequestOpen` / `PhanttomGitPullRequestMerged` icons
   (`PRStatusCache`, gh-CLI-backed, 60s revalidate; silently absent without

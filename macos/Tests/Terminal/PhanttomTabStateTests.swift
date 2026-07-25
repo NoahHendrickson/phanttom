@@ -338,18 +338,6 @@ struct PhanttomTabStateTests {
         state.noteBell()
         #expect(state.status == .attention)
 
-        // A bell mid-work is the agent asking for input, which outranks
-        // the report that it is still running.
-        state.update(titles: ["claude"], isWorking: true, isWatched: false)
-        #expect(state.status == .working)
-        state.noteBell()
-        #expect(state.status == .attention)
-
-        // And a still-live progress report must not re-assert .working over
-        // it on the next refresh pass.
-        state.update(titles: ["claude"], isWorking: true, isWatched: false)
-        #expect(state.status == .attention)
-
         // A bell after work finished replaces done: needing input outranks
         // having finished.
         let finished = PhanttomTabState()
@@ -358,6 +346,57 @@ struct PhanttomTabStateTests {
         #expect(finished.status == .done)
         finished.noteBell()
         #expect(finished.status == .attention)
+
+        // A bell rung against a live report is deferred, then honored by the
+        // clear it raced — the hook emits both together, so the report is
+        // gone by the next refresh.
+        let blocked = PhanttomTabState()
+        blocked.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(blocked.status == .working)
+        blocked.noteBell()
+        blocked.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(blocked.status == .attention)
+
+        // And nothing later re-asserts over it while it stands unread.
+        blocked.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(blocked.status == .attention)
+    }
+
+    /// A BEL from the program itself — a test runner, a build tool, a
+    /// readline beep inside a Bash tool — is not the agent asking for input.
+    /// Only the bell that rides a progress-clear is the Notification hook,
+    /// so a bell against a report that stays live must leave the sparkle
+    /// alone and must not outlive the refresh that judged it.
+    @Test func strayBellDuringWorkKeepsWorking() {
+        let state = PhanttomTabState()
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
+
+        state.noteBell()
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
+
+        // Taking the slot unconditionally stranded the tab on yellow here:
+        // the rising edge cannot re-fire for a report that never went away,
+        // and the falling edge yields to attention. The run must still
+        // resolve to done.
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(state.status == .done)
+    }
+
+    /// The deferred bell is an edge like any other: the first manager to
+    /// step the state consumes it, and the rest agree on the result.
+    @Test func deferredBellIsConsumedOnceAcrossManagers() {
+        let state = PhanttomTabState()
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        state.noteBell()
+
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(state.status == .attention)
+        state.update(titles: ["claude"], isWorking: false, isWatched: false)
+        #expect(state.status == .attention)
     }
 
     /// The real Claude Code notification-hook sequence: the hook clears the
@@ -384,16 +423,19 @@ struct PhanttomTabStateTests {
         #expect(bellFirst.status == .attention)
     }
 
-    /// Acknowledging a tab whose agent is still running must not strand it
-    /// on the idle dot — the rising edge that set `.working` has already
-    /// been consumed and will not fire again for a live report.
+    /// Watching a tab whose agent is still running must not strand it on the
+    /// idle dot: acknowledgement clears the indicator, never the fact that
+    /// the process is working.
     @Test func selectingWorkingTabWithAttentionKeepsWorking() {
         let state = PhanttomTabState()
-        state.update(titles: ["claude"], isWorking: true, isWatched: false)
         state.noteBell()
         #expect(state.status == .attention)
 
-        // User selects it while the progress report is still live.
+        // Work starts again while the bell is still unread.
+        state.update(titles: ["claude"], isWorking: true, isWatched: false)
+        #expect(state.status == .working)
+
+        // User watches it while the progress report is still live.
         state.update(titles: ["claude"], isWorking: true, isWatched: true)
         #expect(state.status == .working)
         state.update(titles: ["claude"], isWorking: true, isWatched: true)

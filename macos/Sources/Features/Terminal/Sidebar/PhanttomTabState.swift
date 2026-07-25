@@ -78,6 +78,12 @@ final class PhanttomTabState {
     /// state: the first call consumes the edge, the rest see none and agree.
     private var wasWorking = false
 
+    /// A bell that arrived while a progress report was still live, waiting on
+    /// the next refresh to say what it meant (see `noteBell`). Consumed
+    /// there, and consumed by the first stepper like every other edge, so
+    /// the several managers stepping this state agree.
+    private var pendingBell = false
+
     /// The working directory this tab was created into (sidebar group "+",
     /// Sessions header + / folder picker). Only a pwd fallback: the sidebar
     /// uses it until the shell integration reports a real pwd, so a
@@ -176,13 +182,37 @@ final class PhanttomTabState {
     /// Attention outranks every other state. A bell is the agent explicitly
     /// asking for the user — Claude Code's Notification hook rings it for
     /// permission prompts and idle input waits — which is strictly more
-    /// urgent than "still running" or "finished". Unconditional for that
-    /// reason: the hook clears the progress report and rings in the same
-    /// breath, so any guard on the current status runs against a race the
-    /// sidebar does not control. Cleared when the user watches the tab, like
-    /// every other indicator.
+    /// urgent than "still running" or "finished". Cleared when the user
+    /// watches the tab, like every other indicator.
+    ///
+    /// A bell that lands while progress is still live is DEFERRED rather
+    /// than taken, because at this instant the two cases that produce one
+    /// are indistinguishable:
+    ///
+    ///   - the hook's own bell, racing the progress-clear printed next to
+    ///     it — the report is about to go away and the agent is blocked;
+    ///   - any other BEL the running program emits — a test runner, a build
+    ///     tool, a readline beep — where the report stays live and there is
+    ///     nothing to report.
+    ///
+    /// The next refresh separates them: a report that cleared means this was
+    /// the hook, and attention is taken; a report still live means the bell
+    /// was incidental, and the sparkle stands. Taking the slot
+    /// unconditionally instead stranded any stray BEL as a permanent yellow
+    /// dot on a *running* tab — the rising edge cannot re-fire for a report
+    /// that never went away, and the falling edge yields to attention, so
+    /// neither `.working` nor `.done` could be reached again.
+    ///
+    /// The deferral is one refresh wide, which is the width of the race it
+    /// settles: the hook prints the clear and the BEL into the same write,
+    /// so they are parsed a few microseconds apart while a refresh costs a
+    /// runloop turn.
     func noteBell() {
-        status = .attention
+        guard wasWorking else {
+            status = .attention
+            return
+        }
+        pendingBell = true
     }
 
     /// Re-arm first-prompt auto-naming (rename cleared / Reset Name).
@@ -195,12 +225,27 @@ final class PhanttomTabState {
     }
 
     private func updateStatus(isWorking: Bool, isWatched: Bool) {
+        // This pass is the one that says what a deferred bell meant: it rode
+        // the hook's progress-clear if the report is gone by now, and was
+        // incidental if the report is still live. Either way it is answered
+        // here and does not carry into a later refresh.
+        let bellRodeTheClear = pendingBell
+        pendingBell = false
+
         if isWorking, !wasWorking {
-            // Rising edge only. Re-asserting `.working` on every refresh
-            // while a report merely stays live would stomp the attention a
-            // bell had just set — the agent can ask for input with a
-            // subagent's progress still in flight. An edge means the agent
-            // really did start something new, which does take the slot back.
+            // Rising edge only: a report that is merely still live may not
+            // re-take the slot, and pairing with the falling edge below is
+            // what makes both idempotent across the several managers that
+            // step this state.
+            //
+            // Note this is the one transition that can drop an unread
+            // `.attention`, and it is coarser than it looks: `isWorking` is
+            // an OR across every surface in the window, so the edge says
+            // *some* split started work, not that the split that rang the
+            // bell resumed. With two agents in one tab, the second one
+            // starting will clear the first one's yellow dot. Closing that
+            // needs per-surface progress, which the window-level report
+            // cannot express.
             status = .working
         } else if !isWorking, wasWorking, status != .attention {
             // Progress just ended: nothing to report if the user was actually
@@ -208,17 +253,20 @@ final class PhanttomTabState {
             // tab order — work that finishes in the selected tab while you are
             // off in another app has not been seen, and owes you a blue dot
             // exactly like work that finishes in a background tab. A bell that
-            // landed alongside the clear keeps attention — needing input
-            // outranks merely having finished.
-            status = isWatched ? .idle : .done
+            // rode this very clear takes the slot instead — that is the hook
+            // reporting a blocked agent, and needing input outranks merely
+            // having finished.
+            status = bellRodeTheClear ? .attention : (isWatched ? .idle : .done)
         }
         wasWorking = isWorking
 
-        // Looking at a tab acknowledges its indicator. Acknowledging
-        // unconditionally to `.idle` would strand a still-running tab on the
-        // gray dot: the rising-edge rule above will not fire again for a
-        // report that is already live, so a working tab acknowledges back to
-        // `.working` instead.
+        // Looking at a tab acknowledges its indicator — the indicator only,
+        // never the fact that the process is working. Both `.done` and
+        // `.attention` are only ever reached with the report already gone,
+        // so a live one here would have taken the rising edge above and left
+        // `.working`; the `isWorking` arm is belt-and-braces against a future
+        // path that reaches this block with work in flight, which would
+        // otherwise strand a running tab on the gray dot.
         if isWatched, status == .done || status == .attention {
             status = isWorking ? .working : .idle
         }
