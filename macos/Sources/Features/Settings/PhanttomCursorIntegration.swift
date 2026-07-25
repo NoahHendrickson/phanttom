@@ -21,20 +21,6 @@ enum PhanttomCursorIntegration {
     static let stateFileName = "phanttom-integration.json"
     static let hooksFileName = "hooks.json"
     static let cliConfigFileName = "cli-config.json"
-    /// Marker written by an explicit Remove… in Settings and deleted by
-    /// Set Up / Update. While it exists, launch-time auto-install stays off.
-    ///
-    /// A file beside `hooks.json` rather than a UserDefaults key, for the
-    /// same reason as `PhanttomClaudeIntegration.optOutFileName`:
-    /// `UserDefaults.standard` is scoped to the bundle identifier, so the
-    /// Debug and release builds have separate domains while auto-installing
-    /// into the *same* `~/.cursor`. Deliberately NOT a field in
-    /// `phanttom-integration.json` — uninstall deletes that file, and
-    /// Remove… runs the uninstall right after recording the opt-out.
-    ///
-    /// No migration from a defaults key: the Cursor integration never
-    /// shipped in a release, so there is no prior decision to carry over.
-    static let optOutFileName = ".phanttom-no-autoinstall"
 
     // MARK: - Status
 
@@ -536,20 +522,7 @@ enum PhanttomCursorIntegration {
     }
 
     nonisolated static func parseScriptVersion(_ text: String?) -> Int? {
-        guard let text else { return nil }
-        for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("# phanttom-hook v") else { continue }
-            let suffix = trimmed.dropFirst("# phanttom-hook v".count)
-                .trimmingCharacters(in: .whitespaces)
-            var digits = ""
-            for ch in suffix {
-                guard ch.isNumber else { break }
-                digits.append(ch)
-            }
-            if let n = Int(digits) { return n }
-        }
-        return nil
+        PhanttomIntegrationSupport.parseScriptVersion(text)
     }
 
     // MARK: - File I/O
@@ -560,7 +533,6 @@ enum PhanttomCursorIntegration {
         var cliConfig: URL { baseDir.appendingPathComponent(cliConfigFileName) }
         var script: URL { baseDir.appendingPathComponent(hookScriptName) }
         var state: URL { baseDir.appendingPathComponent(stateFileName) }
-        var optOut: URL { baseDir.appendingPathComponent(optOutFileName) }
 
         static var `default`: Paths {
             Paths(baseDir: FileManager.default.homeDirectoryForCurrentUser
@@ -577,9 +549,10 @@ enum PhanttomCursorIntegration {
     // MARK: - Auto-install opt-out
 
     /// Whether an explicit Remove… has switched launch-time auto-install off.
-    /// Shared across builds — see `optOutFileName`.
+    /// Shared across builds — see
+    /// `PhanttomIntegrationSupport.optOutFileName`.
     nonisolated static func isAutoInstallDisabled(paths: Paths = .default) -> Bool {
-        FileManager.default.fileExists(atPath: paths.optOut.path)
+        PhanttomIntegrationSupport.isAutoInstallDisabled(in: paths.baseDir)
     }
 
     /// Record (or lift) the opt-out. Writing is best-effort: if `~/.cursor`
@@ -589,17 +562,11 @@ enum PhanttomCursorIntegration {
         _ disabled: Bool,
         paths: Paths = .default
     ) {
-        if disabled {
-            try? Data().write(to: paths.optOut)
-        } else {
-            try? FileManager.default.removeItem(at: paths.optOut)
-        }
+        PhanttomIntegrationSupport.setAutoInstallDisabled(disabled, in: paths.baseDir)
     }
 
     nonisolated static func cursorDirectoryExists(paths: Paths = .default) -> Bool {
-        var isDir: ObjCBool = false
-        return FileManager.default.fileExists(
-            atPath: paths.baseDir.path, isDirectory: &isDir) && isDir.boolValue
+        PhanttomIntegrationSupport.directoryExists(at: paths.baseDir)
     }
 
     nonisolated static func currentStatus(paths: Paths = .default) -> ActionResult {
@@ -816,91 +783,43 @@ enum PhanttomCursorIntegration {
         at url: URL,
         absentAsEmpty: Bool
     ) throws -> [String: Any] {
-        if !FileManager.default.fileExists(atPath: url.path) {
-            if absentAsEmpty { return [:] }
-            throw ActionError.writeFailed("missing \(url.lastPathComponent)")
+        do {
+            return try PhanttomIntegrationSupport.readJSONObject(
+                at: url, absentAsEmpty: absentAsEmpty)
+        } catch let err as PhanttomIntegrationSupport.IOError {
+            throw ActionError.writeFailed(detail(err))
         }
-        let data = try Data(contentsOf: url)
-        let obj = try JSONSerialization.jsonObject(with: data, options: [])
-        guard let dict = obj as? [String: Any] else {
-            throw ActionError.writeFailed("\(url.lastPathComponent) is not a JSON object")
-        }
-        return dict
     }
 
     nonisolated static func writeJSONObject(_ object: [String: Any], to url: URL) throws {
-        let data: Data
         do {
-            data = try JSONSerialization.data(
-                withJSONObject: object,
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            )
-        } catch {
-            throw ActionError.writeFailed(error.localizedDescription)
+            try PhanttomIntegrationSupport.writeJSONObject(object, to: url)
+        } catch let err as PhanttomIntegrationSupport.IOError {
+            throw ActionError.writeFailed(detail(err))
         }
-        guard let check = try? JSONSerialization.jsonObject(with: data),
-              check is [String: Any]
-        else {
-            throw ActionError.writeFailed("serialized JSON failed re-parse")
-        }
-        var payload = data
-        payload.append(contentsOf: "\n".utf8)
-        do {
-            try payload.write(to: url, options: .atomic)
-        } catch {
-            throw ActionError.writeFailed(error.localizedDescription)
+    }
+
+    nonisolated private static func detail(
+        _ err: PhanttomIntegrationSupport.IOError
+    ) -> String {
+        switch err {
+        case .writeFailed(let d): return d
+        case .notAnObject(let name): return "\(name) is not a JSON object"
+        case .missing(let name): return "missing \(name)"
         }
     }
 
     nonisolated static func backupFile(at url: URL, prefix: String) throws {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: url.path) else { return }
-
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let stamp = formatter.string(from: Date())
-        let dir = url.deletingLastPathComponent()
-        var backupURL = dir.appendingPathComponent("\(prefix)\(stamp)")
-        var n = 2
-        while fm.fileExists(atPath: backupURL.path) {
-            backupURL = dir.appendingPathComponent("\(prefix)\(stamp)-\(n)")
-            n += 1
-        }
-        try fm.copyItem(at: url, to: backupURL)
-        pruneBackups(in: dir, prefix: prefix, keeping: 5)
+        try PhanttomIntegrationSupport.backupFile(at: url, prefix: prefix)
     }
 
     nonisolated static func pruneBackups(in directory: URL, prefix: String, keeping max: Int) {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        let backups = items.filter {
-            $0.lastPathComponent.hasPrefix(prefix)
-        }.sorted { a, b in
-            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            return da > db
-        }
-        let oldest = backups.last
-        for url in backups.dropFirst(max) where url != oldest {
-            try? fm.removeItem(at: url)
-        }
+        PhanttomIntegrationSupport.pruneBackups(
+            in: directory, prefix: prefix, keeping: max)
     }
 
     nonisolated private static func writeScript(paths: Paths) throws {
-        let data = Data(hookScript.utf8)
-        try data.write(to: paths.script, options: .atomic)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: paths.script.path
-        )
+        try PhanttomIntegrationSupport.writeScript(hookScript, to: paths.script)
     }
 
     nonisolated private static func writeState(
@@ -927,21 +846,11 @@ enum PhanttomCursorIntegration {
     nonisolated private static func jsonEqual(
         _ a: [String: Any], _ b: [String: Any]
     ) -> Bool {
-        let opts: JSONSerialization.WritingOptions = [.sortedKeys]
-        guard let da = try? JSONSerialization.data(withJSONObject: a, options: opts),
-              let db = try? JSONSerialization.data(withJSONObject: b, options: opts)
-        else { return false }
-        return da == db
+        PhanttomIntegrationSupport.jsonEqual(a, b)
     }
 
     nonisolated private static func deepCopy(_ object: [String: Any]) -> [String: Any] {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return object
-        }
-        return obj
+        PhanttomIntegrationSupport.deepCopy(object)
     }
 
     /// Cursor hooks.json events are flat arrays of `{ "command": "..." }`.

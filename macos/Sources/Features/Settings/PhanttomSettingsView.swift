@@ -61,173 +61,167 @@ struct PhanttomSettingsView: View {
     }
 }
 
-/// Claude Code hooks/statusline installer (see `PhanttomClaudeIntegration`).
-private struct ClaudeCodeIntegrationSection: View {
-    @State private var caption = "…"
-    @State private var status: PhanttomClaudeIntegration.IntegrationStatus = .notInstalled
-    @State private var claudeMissing = false
-    @State private var lastError: String?
+/// Normalized snapshot of an agent integration's state, so one Section view
+/// can drive every installer without knowing their status / error
+/// vocabularies (Claude has a `legacyInline` state and a `settingsCorrupt`
+/// error; Cursor has two config files that can each be corrupt).
+private struct AgentIntegrationState {
+    /// Status caption under the header.
+    var caption: String
+    /// The agent's directory is absent — every control is inert, and the
+    /// caption already explains why, so this is not surfaced as a failure.
+    var agentMissing: Bool
+    /// Actionable failure, shown in red in place of the caption.
+    var failure: String?
+    /// Title for the install/update button, or nil when fully installed
+    /// (the button is hidden entirely).
+    var primaryTitle: String?
+    /// Whether there is anything to remove.
+    var canRemove: Bool
+
+    /// Pre-`onAppear` placeholder: matches the old per-section initial state
+    /// (unknown caption, "Set Up" offered, nothing to remove yet).
+    static let loading = AgentIntegrationState(
+        caption: "…", agentMissing: false, failure: nil,
+        primaryTitle: "Set Up", canRemove: false)
+}
+
+extension AgentIntegrationState {
+    init(_ result: PhanttomClaudeIntegration.ActionResult) {
+        let missing = result.error == .claudeNotFound
+        self.init(
+            caption: result.message,
+            agentMissing: missing,
+            // Surface actionable failures; "not found" is already the caption.
+            failure: (result.error != nil && !missing) ? result.message : nil,
+            primaryTitle: {
+                switch result.status {
+                case .installedCurrent: return nil
+                case .notInstalled: return "Set Up"
+                case .installedOutdated, .legacyInline: return "Update"
+                }
+            }(),
+            canRemove: result.status != .notInstalled
+        )
+    }
+
+    init(_ result: PhanttomCursorIntegration.ActionResult) {
+        let missing = result.error == .cursorNotFound
+        self.init(
+            caption: result.message,
+            agentMissing: missing,
+            failure: (result.error != nil && !missing) ? result.message : nil,
+            primaryTitle: {
+                switch result.status {
+                case .installedCurrent: return nil
+                case .notInstalled: return "Set Up"
+                case .installedOutdated: return "Update"
+                }
+            }(),
+            canRemove: result.status != .notInstalled
+        )
+    }
+}
+
+/// One agent's hooks/statusline installer row. Every integration presents the
+/// same three affordances — a status caption, Set Up / Update, and a confirmed
+/// Remove… — so the chrome lives here once and each agent supplies its copy
+/// plus three closures.
+private struct AgentIntegrationSection: View {
+    let title: String
+    let footer: String
+    let removeAlertTitle: String
+    let removeAlertMessage: String
+    /// Read current status without touching the filesystem beyond a stat.
+    let load: () -> AgentIntegrationState
+    /// Install or update. Also lifts a prior Remove's opt-out so launch-time
+    /// auto-sync resumes — for every build, since the marker lives beside the
+    /// agent's config.
+    let install: () -> AgentIntegrationState
+    /// Uninstall. Records the opt-out first so removal sticks across launches
+    /// and across builds.
+    let uninstall: () -> AgentIntegrationState
+
+    @State private var state = AgentIntegrationState.loading
     @State private var confirmRemove = false
 
     var body: some View {
         Section {
-            Text(lastError ?? caption)
+            Text(state.failure ?? state.caption)
                 .font(.caption)
-                .foregroundStyle(lastError == nil ? Color.secondary : Color.red)
+                .foregroundStyle(state.failure == nil ? Color.secondary : Color.red)
 
             HStack {
-                if showPrimaryButton {
-                    Button(primaryButtonTitle) {
-                        // Explicit Set Up also lifts a prior Remove's opt-out
-                        // so launch-time auto-sync resumes — for every build,
-                        // since the marker lives beside settings.json.
-                        PhanttomClaudeIntegration.setAutoInstallDisabled(false)
-                        apply(PhanttomClaudeIntegration.performInstall())
-                    }
-                    .disabled(claudeMissing)
+                if let primaryTitle = state.primaryTitle {
+                    Button(primaryTitle) { state = install() }
+                        .disabled(state.agentMissing)
                 }
-                Button("Remove…") {
-                    confirmRemove = true
-                }
-                .disabled(claudeMissing || status == .notInstalled)
+                Button("Remove…") { confirmRemove = true }
+                    .disabled(state.agentMissing || !state.canRemove)
             }
         } header: {
-            Text("Claude Code")
+            Text(title)
         } footer: {
-            Text(
-                "Phanttom hooks (pixel rain, tab auto-naming, agent pwd " +
+            Text(footer)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear { state = load() }
+        .alert(removeAlertTitle, isPresented: $confirmRemove) {
+            Button("Remove", role: .destructive) { state = uninstall() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(removeAlertMessage)
+        }
+    }
+}
+
+/// Claude Code hooks/statusline installer (see `PhanttomClaudeIntegration`).
+private struct ClaudeCodeIntegrationSection: View {
+    var body: some View {
+        AgentIntegrationSection(
+            title: "Claude Code",
+            footer: "Phanttom hooks (pixel rain, tab auto-naming, agent pwd " +
                 "tracking, model label) install automatically on launch when " +
                 "~/.claude exists, writing ~/.claude/settings.json with a " +
                 "timestamped backup. Remove turns this off until you set up " +
-                "again."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .onAppear { apply(PhanttomClaudeIntegration.currentStatus()) }
-        .alert("Remove Claude Code Integration?", isPresented: $confirmRemove) {
-            Button("Remove", role: .destructive) {
-                // Removal must stick: block launch-time auto-install until an
-                // explicit Set Up. Recorded beside settings.json so a Debug
-                // build and a release build honor the same decision.
+                "again.",
+            removeAlertTitle: "Remove Claude Code Integration?",
+            removeAlertMessage: "Restores your previous statusline (if any) and removes Phanttom's hooks and helper script. Automatic setup on launch stays off until you set up again.",
+            load: { .init(PhanttomClaudeIntegration.currentStatus()) },
+            install: {
+                PhanttomClaudeIntegration.setAutoInstallDisabled(false)
+                return .init(PhanttomClaudeIntegration.performInstall())
+            },
+            uninstall: {
                 PhanttomClaudeIntegration.setAutoInstallDisabled(true)
-                apply(PhanttomClaudeIntegration.performUninstall())
+                return .init(PhanttomClaudeIntegration.performUninstall())
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Restores your previous statusline (if any) and removes Phanttom's hooks and helper script. Automatic setup on launch stays off until you set up again.")
-        }
-    }
-
-    private var showPrimaryButton: Bool {
-        switch status {
-        case .installedCurrent: return false
-        case .notInstalled, .installedOutdated, .legacyInline: return true
-        }
-    }
-
-    private var primaryButtonTitle: String {
-        switch status {
-        case .notInstalled: return "Set Up"
-        case .legacyInline, .installedOutdated: return "Update"
-        case .installedCurrent: return "Set Up"
-        }
-    }
-
-    private func apply(_ result: PhanttomClaudeIntegration.ActionResult) {
-        status = result.status
-        claudeMissing = result.error == .claudeNotFound
-        caption = result.message
-        // Surface actionable failures; "not found" is already the caption.
-        if let err = result.error, err != .claudeNotFound {
-            lastError = result.message
-        } else {
-            lastError = nil
-        }
+        )
     }
 }
 
 /// Cursor Agent CLI hooks/statusline installer (see `PhanttomCursorIntegration`).
 private struct CursorAgentIntegrationSection: View {
-    @State private var caption = "…"
-    @State private var status: PhanttomCursorIntegration.IntegrationStatus = .notInstalled
-    @State private var cursorMissing = false
-    @State private var lastError: String?
-    @State private var confirmRemove = false
-
     var body: some View {
-        Section {
-            Text(lastError ?? caption)
-                .font(.caption)
-                .foregroundStyle(lastError == nil ? Color.secondary : Color.red)
-
-            HStack {
-                if showPrimaryButton {
-                    Button(primaryButtonTitle) {
-                        // Explicit Set Up also lifts a prior Remove's opt-out
-                        // so launch-time auto-sync resumes — for every build,
-                        // since the marker lives beside hooks.json.
-                        PhanttomCursorIntegration.setAutoInstallDisabled(false)
-                        apply(PhanttomCursorIntegration.performInstall())
-                    }
-                    .disabled(cursorMissing)
-                }
-                Button("Remove…") {
-                    confirmRemove = true
-                }
-                .disabled(cursorMissing || status == .notInstalled)
-            }
-        } header: {
-            Text("Cursor Agent")
-        } footer: {
-            Text(
-                "Phanttom hooks (pixel rain, the model label, agent pwd " +
+        AgentIntegrationSection(
+            title: "Cursor Agent",
+            footer: "Phanttom hooks (pixel rain, the model label, agent pwd " +
                 "tracking) install automatically on launch when ~/.cursor " +
                 "exists, writing ~/.cursor/hooks.json and " +
                 "~/.cursor/cli-config.json with timestamped backups. Remove " +
-                "turns this off until you set up again."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .onAppear { apply(PhanttomCursorIntegration.currentStatus()) }
-        .alert("Remove Cursor Agent Integration?", isPresented: $confirmRemove) {
-            Button("Remove", role: .destructive) {
-                // Removal must stick: block launch-time auto-install until an
-                // explicit Set Up. Recorded beside hooks.json so a Debug
-                // build and a release build honor the same decision.
+                "turns this off until you set up again.",
+            removeAlertTitle: "Remove Cursor Agent Integration?",
+            removeAlertMessage: "Restores your previous statusline (if any) and removes Phanttom's hooks and helper script. Automatic setup on launch stays off until you set up again.",
+            load: { .init(PhanttomCursorIntegration.currentStatus()) },
+            install: {
+                PhanttomCursorIntegration.setAutoInstallDisabled(false)
+                return .init(PhanttomCursorIntegration.performInstall())
+            },
+            uninstall: {
                 PhanttomCursorIntegration.setAutoInstallDisabled(true)
-                apply(PhanttomCursorIntegration.performUninstall())
+                return .init(PhanttomCursorIntegration.performUninstall())
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Restores your previous statusline (if any) and removes Phanttom's hooks and helper script. Automatic setup on launch stays off until you set up again.")
-        }
-    }
-
-    private var showPrimaryButton: Bool {
-        switch status {
-        case .installedCurrent: return false
-        case .notInstalled, .installedOutdated: return true
-        }
-    }
-
-    private var primaryButtonTitle: String {
-        switch status {
-        case .notInstalled: return "Set Up"
-        case .installedOutdated: return "Update"
-        case .installedCurrent: return "Set Up"
-        }
-    }
-
-    private func apply(_ result: PhanttomCursorIntegration.ActionResult) {
-        status = result.status
-        cursorMissing = result.error == .cursorNotFound
-        caption = result.message
-        if let err = result.error, err != .cursorNotFound {
-            lastError = result.message
-        } else {
-            lastError = nil
-        }
+        )
     }
 }

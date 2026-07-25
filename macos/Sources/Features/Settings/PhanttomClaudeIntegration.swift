@@ -25,18 +25,6 @@ enum PhanttomClaudeIntegration {
     /// string `originalStatusLineKey` above stays authoritative for the hook's
     /// runtime statusline chaining and for back-compat.
     static let originalStatusLineObjectKey = "phanttomOriginalStatusLineObject"
-    /// Marker written by an explicit Remove… in Settings and deleted by
-    /// Set Up / Update. While it exists, launch-time auto-install stays off.
-    ///
-    /// It is a file beside `settings.json`, not a UserDefaults key, because
-    /// `UserDefaults.standard` is scoped to the bundle identifier: the Debug
-    /// build (`com.mitchellh.ghostty.debug`) and the release build
-    /// (`com.mitchellh.ghostty`) have separate domains but auto-install into
-    /// the *same* `~/.claude`. A defaults-backed opt-out set in one build was
-    /// invisible to the other, which would silently reinstall the hooks. The
-    /// decision belongs with the resource it governs. Deliberately NOT the
-    /// existing state file — uninstall deletes that, and Remove must persist.
-    static let optOutFileName = ".phanttom-no-autoinstall"
     /// Pre-marker UserDefaults opt-out. Consumed once by
     /// `migrateOptOutFromDefaults`; never written anymore.
     static let autoInstallDisabledKey = "PhanttomClaudeAutoInstallDisabled"
@@ -558,20 +546,7 @@ enum PhanttomClaudeIntegration {
     }
 
     nonisolated static func parseScriptVersion(_ text: String?) -> Int? {
-        guard let text else { return nil }
-        for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("# phanttom-hook v") else { continue }
-            let suffix = trimmed.dropFirst("# phanttom-hook v".count)
-                .trimmingCharacters(in: .whitespaces)
-            var digits = ""
-            for ch in suffix {
-                guard ch.isNumber else { break }
-                digits.append(ch)
-            }
-            if let n = Int(digits) { return n }
-        }
-        return nil
+        PhanttomIntegrationSupport.parseScriptVersion(text)
     }
 
     // MARK: - File I/O
@@ -581,7 +556,6 @@ enum PhanttomClaudeIntegration {
         var settings: URL { baseDir.appendingPathComponent(settingsFileName) }
         var script: URL { baseDir.appendingPathComponent(hookScriptName) }
         var state: URL { baseDir.appendingPathComponent(stateFileName) }
-        var optOut: URL { baseDir.appendingPathComponent(optOutFileName) }
 
         static var `default`: Paths {
             Paths(baseDir: FileManager.default.homeDirectoryForCurrentUser
@@ -599,9 +573,10 @@ enum PhanttomClaudeIntegration {
     // MARK: - Auto-install opt-out
 
     /// Whether an explicit Remove… has switched launch-time auto-install off.
-    /// Shared across builds — see `optOutFileName`.
+    /// Shared across builds — see
+    /// `PhanttomIntegrationSupport.optOutFileName`.
     nonisolated static func isAutoInstallDisabled(paths: Paths = .default) -> Bool {
-        FileManager.default.fileExists(atPath: paths.optOut.path)
+        PhanttomIntegrationSupport.isAutoInstallDisabled(in: paths.baseDir)
     }
 
     /// Record (or lift) the opt-out. Writing is best-effort: if `~/.claude`
@@ -611,11 +586,7 @@ enum PhanttomClaudeIntegration {
         _ disabled: Bool,
         paths: Paths = .default
     ) {
-        if disabled {
-            try? Data().write(to: paths.optOut)
-        } else {
-            try? FileManager.default.removeItem(at: paths.optOut)
-        }
+        PhanttomIntegrationSupport.setAutoInstallDisabled(disabled, in: paths.baseDir)
     }
 
     /// One-shot move of the pre-marker UserDefaults opt-out into the shared
@@ -632,9 +603,7 @@ enum PhanttomClaudeIntegration {
     }
 
     nonisolated static func claudeDirectoryExists(paths: Paths = .default) -> Bool {
-        var isDir: ObjCBool = false
-        return FileManager.default.fileExists(
-            atPath: paths.baseDir.path, isDirectory: &isDir) && isDir.boolValue
+        PhanttomIntegrationSupport.directoryExists(at: paths.baseDir)
     }
 
     nonisolated static func currentStatus(paths: Paths = .default) -> ActionResult {
@@ -856,93 +825,52 @@ enum PhanttomClaudeIntegration {
         try? FileManager.default.removeItem(at: legacy)
     }
 
+    /// Timestamped backup prefix for `settings.json`. Also the prune filter —
+    /// only our own snapshots are ever considered for deletion.
+    static let backupPrefix = "settings.json.bak-phanttom-"
+
+    /// Every call site collapses any read failure into `.settingsCorrupt`
+    /// (an unreadable settings.json is unrecoverable the same way whether it
+    /// is absent, unparseable, or a JSON array), so the shared layer's finer
+    /// `IOError` cases are flattened here rather than widening `ActionError`.
     nonisolated static func readSettings(at url: URL) throws -> [String: Any] {
-        let data = try Data(contentsOf: url)
-        let obj = try JSONSerialization.jsonObject(with: data, options: [])
-        guard let dict = obj as? [String: Any] else {
+        do {
+            return try PhanttomIntegrationSupport.readJSONObject(
+                at: url, absentAsEmpty: false)
+        } catch {
             throw ActionError.settingsCorrupt
         }
-        return dict
     }
 
     nonisolated static func writeSettings(_ settings: [String: Any], to url: URL) throws {
-        let data: Data
         do {
-            data = try JSONSerialization.data(
-                withJSONObject: settings,
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            )
-        } catch {
-            throw ActionError.writeFailed(error.localizedDescription)
-        }
-        guard let check = try? JSONSerialization.jsonObject(with: data),
-              check is [String: Any]
-        else {
-            throw ActionError.writeFailed("serialized settings failed re-parse")
-        }
-        var payload = data
-        payload.append(contentsOf: "\n".utf8)
-        do {
-            try payload.write(to: url, options: .atomic)
-        } catch {
-            throw ActionError.writeFailed(error.localizedDescription)
+            try PhanttomIntegrationSupport.writeJSONObject(settings, to: url)
+        } catch let err as PhanttomIntegrationSupport.IOError {
+            throw ActionError.writeFailed(Self.detail(err))
         }
     }
 
     nonisolated static func backupSettings(at settingsURL: URL) throws {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: settingsURL.path) else { return }
-
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let stamp = formatter.string(from: Date())
-        let dir = settingsURL.deletingLastPathComponent()
-        // Same-second install→uninstall (or rapid Updates) must not collide.
-        var backupURL = dir.appendingPathComponent(
-            "settings.json.bak-phanttom-\(stamp)")
-        var n = 2
-        while fm.fileExists(atPath: backupURL.path) {
-            backupURL = dir.appendingPathComponent(
-                "settings.json.bak-phanttom-\(stamp)-\(n)")
-            n += 1
-        }
-        try fm.copyItem(at: settingsURL, to: backupURL)
-        pruneBackups(in: dir, keeping: 5)
+        try PhanttomIntegrationSupport.backupFile(at: settingsURL, prefix: backupPrefix)
     }
 
     nonisolated static func pruneBackups(in directory: URL, keeping max: Int) {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
+        PhanttomIntegrationSupport.pruneBackups(
+            in: directory, prefix: backupPrefix, keeping: max)
+    }
 
-        let backups = items.filter {
-            $0.lastPathComponent.hasPrefix("settings.json.bak-phanttom-")
-        }.sorted { a, b in
-            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            return da > db
-        }
-        // Keep the `max` newest plus the single oldest backup — that oldest
-        // snapshot is the pristine pre-Phanttom copy and must never be pruned.
-        let oldest = backups.last
-        for url in backups.dropFirst(max) where url != oldest {
-            try? fm.removeItem(at: url)
+    nonisolated private static func detail(
+        _ err: PhanttomIntegrationSupport.IOError
+    ) -> String {
+        switch err {
+        case .writeFailed(let d): return d
+        case .notAnObject(let name): return "\(name) is not a JSON object"
+        case .missing(let name): return "missing \(name)"
         }
     }
 
     nonisolated private static func writeScript(paths: Paths) throws {
-        let data = Data(hookScript.utf8)
-        try data.write(to: paths.script, options: .atomic)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: paths.script.path
-        )
+        try PhanttomIntegrationSupport.writeScript(hookScript, to: paths.script)
     }
 
     nonisolated private static func writeState(
@@ -971,21 +899,11 @@ enum PhanttomClaudeIntegration {
     nonisolated private static func jsonEqual(
         _ a: [String: Any], _ b: [String: Any]
     ) -> Bool {
-        let opts: JSONSerialization.WritingOptions = [.sortedKeys]
-        guard let da = try? JSONSerialization.data(withJSONObject: a, options: opts),
-              let db = try? JSONSerialization.data(withJSONObject: b, options: opts)
-        else { return false }
-        return da == db
+        PhanttomIntegrationSupport.jsonEqual(a, b)
     }
 
     nonisolated private static func deepCopy(_ settings: [String: Any]) -> [String: Any] {
-        guard JSONSerialization.isValidJSONObject(settings),
-              let data = try? JSONSerialization.data(withJSONObject: settings),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return settings
-        }
-        return obj
+        PhanttomIntegrationSupport.deepCopy(settings)
     }
 
     nonisolated private static func asEntryArray(_ value: Any?) -> [[String: Any]]? {
