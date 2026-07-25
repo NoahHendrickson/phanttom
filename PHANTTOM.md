@@ -70,6 +70,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Settings window host | `Features/Settings/SettingsWindowController.swift` |
 | Claude Code hook installer (launch auto-install/re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
 | Cursor Agent CLI hook installer (launch auto-install/re-sync, merge/strip) | `Features/Settings/PhanttomCursorIntegration.swift` (tests: `macos/Tests/Settings/PhanttomCursorIntegrationTests.swift`) |
+| Shared installer plumbing (JSON I/O, backups, script payload, opt-out marker) | `Features/Settings/PhanttomIntegrationSupport.swift` |
 | Claude/Codex/Cursor icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset`, `PhanttomCursor.imageset` (+ `*Mark` variants) |
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
@@ -370,6 +371,33 @@ fallback — bare `/dev/tty` is known-broken for hook processes.
 observe it; auto-name falls back to the `"Cursor"` kind label / surface title
 until that path is confirmed in a real interactive tab. Codex remains
 title-branding only (no hooks installer).
+
+## Adding a third agent
+
+`PhanttomIntegrationSupport` holds everything that is genuinely agent-agnostic:
+JSON read/write (atomic, with a re-parse guard), timestamped backups and their
+pruning, writing the versioned `phanttom-hook.sh` payload, parsing
+`# phanttom-hook v<N>` back out, and the `.phanttom-no-autoinstall` opt-out
+marker. A new agent should need a merge core, a hook script, and an
+`autoSync…` call — **not** another copy of the file layer.
+
+What deliberately stays per-agent, because it differs for real reasons:
+
+- **Merge core.** Claude has one `settings.json` with nested matcher entries;
+  Cursor has flat hooks in `hooks.json` plus a `statusLine` in
+  `cli-config.json`. There is no shape both fit.
+- **`IntegrationStatus` / `ActionError`.** Claude carries a `legacyInline`
+  state and a single `settingsCorrupt`; Cursor has two config files that can
+  each be corrupt independently. A union type would be wrong for both, so
+  each maps `PhanttomIntegrationSupport.IOError` onto its own vocabulary.
+- **The hook script itself**, including emit guards (`CLAUDE_PID` vs
+  `CURSOR_AGENT` + ancestor tty walk).
+
+Settings UI is shared: `AgentIntegrationSection` in `PhanttomSettingsView.swift`
+renders the caption / Set Up / Update / Remove… chrome once, and each agent
+supplies its copy plus three closures. `AgentIntegrationState` is the
+normalizing adapter — add an `init` for the new agent's `ActionResult` and the
+section works unchanged.
 
 The U+2063 INVISIBLE SEPARATOR makes the marker collision-proof: a bare "❯"
 is the default prompt char of starship/pure/p10k and must NOT trigger
