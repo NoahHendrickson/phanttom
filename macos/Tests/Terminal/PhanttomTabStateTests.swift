@@ -297,6 +297,11 @@ struct PhanttomTabStateTests {
         #expect(PhanttomTabState.modelDisplayName("claude-opus-4-8-preview-2") == "Opus 4.8")
         // No recognizable family word: show the id rather than hiding.
         #expect(PhanttomTabState.modelDisplayName("claude") == "claude")
+        // Non-Anthropic ids write the version already dotted — Cursor reports
+        // these verbatim, and splitting on "-" alone used to drop them.
+        #expect(PhanttomTabState.modelDisplayName("grok-4.5") == "Grok 4.5")
+        #expect(PhanttomTabState.modelDisplayName("gpt-5.1") == "Gpt 5.1")
+        #expect(PhanttomTabState.modelDisplayName("composer-1") == "Composer 1")
     }
 
     // MARK: - Status transitions

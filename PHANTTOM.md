@@ -339,11 +339,20 @@ split config:
 
 ```sh
 sh "$HOME/.cursor/phanttom-hook.sh" session-start
+sh "$HOME/.cursor/phanttom-hook.sh" prompt-submit
 sh "$HOME/.cursor/phanttom-hook.sh" pre-tool-use
 sh "$HOME/.cursor/phanttom-hook.sh" model-update
 sh "$HOME/.cursor/phanttom-hook.sh" stop
-sh "$HOME/.cursor/phanttom-hook.sh" statusline
+/bin/sh "/Users/<you>/.cursor/phanttom-hook.sh" statusline   # cli-config.json
 ```
+
+**The statusline entry must use an absolute path.** `hooks.json` commands run
+through a shell, so `$HOME` expands there; the `statusLine` command does not —
+Cursor splits it with `string-argv` and runs `spawn(file, args, {shell:false})`,
+so `sh "$HOME/.cursor/phanttom-hook.sh"` dies with `exit 127 — No such file or
+directory` and the statusline silently never runs (visible only in Cursor's
+own debug log under `$TMPDIR/cursor-agent-logs-<uid>/`). `statusLineCommand`
+bakes in `homeDirectoryForCurrentUser`.
 
 | File | Role |
 | --- | --- |
@@ -361,16 +370,40 @@ fallback — bare `/dev/tty` is known-broken for hook processes.
 
 | Event / subcommand | Emits | Phanttom effect |
 | --- | --- | --- |
-| `sessionStart` | model-only marker `❯⁣.cursor⁣⁣<model>`; OSC 7 from `workspace_roots[0]` / `CURSOR_PROJECT_DIR`; optional `{env:{PHANTTOM_TTY}}` | kind sticky, model badge, agent pwd |
-| `preToolUse` | OSC 9;4 state 3; model marker; OSC 7 | pixel rain + model/pwd refresh |
-| `afterAgentThought` / `postToolUse` | model marker on change | live model badge |
-| `stop` | OSC 9;4 clear (**always** — no Claude-style `background_tasks` re-arm) | → Done if unselected |
-| `statusLine` (`cli-config.json`) | model marker on change; chains prior statusline | model from session start / `/model` |
+| `sessionStart` | marker; OSC 7 from `workspace_roots[0]` / `CURSOR_PROJECT_DIR`; optional `{env:{PHANTTOM_TTY}}` | kind sticky, model badge, agent pwd |
+| `beforeSubmitPrompt` | OSC 9;4 state 3; records the prompt, then marker; OSC 7 | pixel rain + auto-name |
+| `preToolUse` | OSC 9;4 state 3; marker; OSC 7 | pixel rain + model/pwd refresh |
+| `afterAgentThought` / `postToolUse` | marker | live model badge |
+| `stop` | OSC 9;4 clear (**always** — no Claude-style `background_tasks` re-arm); marker | → Done if unselected |
+| `statusLine` (`cli-config.json`) | marker; chains prior statusline | model from session start / `/model` |
 
-`beforeSubmitPrompt` is not installed yet — print-mode CLI spikes did not
-observe it; auto-name falls back to the `"Cursor"` kind label / surface title
-until that path is confirmed in a real interactive tab. Codex remains
+**Never gate the marker on "the model changed" — cursor-agent writes the
+terminal title itself.** `src/utils/terminal-title.ts` emits OSC 0: `"Cursor
+Agent"` on mount, then the *server-generated chat name* once the first message
+is named, and (with `display.showStatusIndicators` on) an animated
+`"… - ⏳ Working"` on a 200 ms interval. A generated chat name is a plain
+title, so it takes the tab back to `terminal` and wipes kind + model +
+auto-name. Every subcommand therefore re-emits the full marker
+`❯⁣.cursor⁣<prompt>⁣<model>`, which makes the last title write of each turn
+ours (`stop` is the backstop for a reply that ran no tools). The prompt comes
+from `beforeSubmitPrompt` — the only event carrying it — and is cached in
+`$TMPDIR/phanttom-cursor-prompt-<session id>` so later markers keep the
+auto-name. The resolved tty is cached the same way: the statusline command is
+spawned with the CLI's own `process.env` (no `PHANTTOM_TTY`) and re-runs up to
+~3×/s while streaming, so an uncached ancestor walk would mean dozens of `ps`
+spawns a second.
+
+`beforeSubmitPrompt` **does** fire on interactive sessions — the earlier note
+here said otherwise because the spike ran in print mode. Codex remains
 title-branding only (no hooks installer).
+
+**Not ours: "Reconnecting (attempt N)" after a reply.** cursor-agent's retry
+loop reports `errorName: LostConnection` when the stream closes right after
+`interactionUpdate:turnEnded`, retries the turn three times with a
+`resumeAction`, then shows "Something went wrong. Please try again." Its own
+debug log shows every Phanttom hook returning `status: "success"` around it,
+and it happens in sessions with and without our hooks installed. Nothing in
+the hook path can reach that transport.
 
 ## Adding a third agent
 
