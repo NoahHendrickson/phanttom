@@ -295,8 +295,18 @@ struct PhanttomTabStateTests {
         #expect(PhanttomTabState.modelDisplayName("claude-3-5-sonnet-20241022") == "Sonnet 3.5")
         // Qualifiers after the version are not version tokens.
         #expect(PhanttomTabState.modelDisplayName("claude-opus-4-8-preview-2") == "Opus 4.8")
-        // No recognizable family word: show the id rather than hiding.
+        // A bracketed context-window suffix survives, parenthesized.
+        #expect(PhanttomTabState.modelDisplayName("claude-opus-5[1m]") == "Opus 5 (1M)")
+        #expect(PhanttomTabState.modelDisplayName("claude-haiku-4-5-20251001[1m]") == "Haiku 4.5 (1M)")
+        // No recognizable family word: show the id rather than hiding — and
+        // that exit keeps the qualifier too.
         #expect(PhanttomTabState.modelDisplayName("claude") == "claude")
+        #expect(PhanttomTabState.modelDisplayName("claude[1m]") == "claude (1M)")
+        // The peel is trailing: an earlier "[" is not the start of the
+        // qualifier (from the first "[", everything after it would be
+        // swallowed into one). An empty qualifier adds nothing.
+        #expect(PhanttomTabState.modelDisplayName("claude-[x]-opus-5[1m]") == "Opus 5 (1M)")
+        #expect(PhanttomTabState.modelDisplayName("claude-opus-5[]") == "Opus 5")
     }
 
     // MARK: - Status transitions
