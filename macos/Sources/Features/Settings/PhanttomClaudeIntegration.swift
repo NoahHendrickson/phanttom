@@ -13,8 +13,13 @@ enum PhanttomClaudeIntegration {
     /// `desiredStatusLine`. Drives the Settings "Update available" state.
     /// v5: marker wire format includes a `.claude` kind token so Cursor/Codex
     /// can share the same OSC parser without colliding with legacy prompts.
+    /// v6: the `notification` branch emitted a literal ASCII "007" into the
+    /// tty instead of a BEL byte — one backslash short, so `printf` saw
+    /// `\\007` (escaped backslash + digits) rather than `\\` + `\007`. The
+    /// stray text landed in whatever was reading the tty. Now split into two
+    /// printfs so no BEL escape ever sits next to the ST backslash.
     /// Existing installs see Settings "Update available" / silent launch repair.
-    static let payloadVersion = 5
+    static let payloadVersion = 6
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
@@ -320,8 +325,12 @@ enum PhanttomClaudeIntegration {
             emit_osc74 3
             ;;
           notification)
+            # Clear + BEL (→ Attention). Two printfs on purpose: a trailing
+            # `\\007` directly after the ST backslash reads as an escaped
+            # backslash plus literal "007" and types those digits into the tty.
             t=$(resolve_tty)
-            printf "\\033]9;4;0;0\\033\\\\\\007" > "$t" 2>/dev/null || true
+            printf "\\033]9;4;0;0\\033\\\\" > "$t" 2>/dev/null || true
+            printf "\\007" > "$t" 2>/dev/null || true
             ;;
           statusline)
             j=$(cat)

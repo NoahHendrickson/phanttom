@@ -61,6 +61,7 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Sidebar UI (rows, status, rename, pixel rain) | `Features/Terminal/Sidebar/SidebarView.swift` |
 | Tab model + event plumbing | `Features/Terminal/Sidebar/SidebarTabManager.swift` |
 | Per-tab state machine (kind, status, auto-name) | `Features/Terminal/Sidebar/PhanttomTabState.swift` (tests: `macos/Tests/Terminal/PhanttomTabStateTests.swift`) |
+| Typewriter reveal of a newly assigned auto-name | `Features/Terminal/Sidebar/SidebarTypewriterTitle.swift` |
 | Async git-branch cache (off-main .git/HEAD reads; worktree detection) | `Features/Terminal/Sidebar/GitBranchCache.swift` |
 | `[sidebar \| terminal]` split, collapse, width persistence | `Features/Terminal/Sidebar/SidebarSplitView.swift` |
 | Titlebar sync hook (end of `syncAppearance`) | `Features/Terminal/Sidebar/PhanttomWindowGlass.swift` |
@@ -425,6 +426,17 @@ Manual test commands (any tab):
 `printf '\033]7;file://localhost/tmp\033\\'` (agent cwd).
 Tabs can be scripted via AppleScript: `tell application id
 "com.mitchellh.ghostty" to new tab in window 1`.
+
+**Gotcha — never put `\007` straight after an ST backslash in one printf
+format.** `printf '…\033\\\007'` does not emit ST followed by BEL: `printf`
+consumes `\\` as an escaped backslash and then prints the *digits* `007` as
+literal text, which lands in whatever is reading the tty (the shell prompt,
+an agent's input box). The `notification` branch shipped this bug twice.
+Emit the BEL from its own `printf '\007'`, and remember the escaping runs
+through four layers (Swift literal → shell double quotes → `printf` →
+tty). Verify with `od -c`, never by eye —
+`sh ~/.claude/phanttom-hook.sh notification` with `resolve_tty` pointed at a
+file is the quickest byte-level check.
 
 ## Settings architecture
 

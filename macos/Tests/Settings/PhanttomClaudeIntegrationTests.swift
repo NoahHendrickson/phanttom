@@ -301,6 +301,23 @@ struct PhanttomClaudeIntegrationTests {
         }
     }
 
+    /// Regression: `notification` once ended its OSC 9;4 printf with
+    /// `\033\\` + `\007` in a single format string. `printf` reads the run as
+    /// an escaped backslash followed by the digits `007`, so three literal
+    /// characters got typed into whatever was reading the tty. A BEL that
+    /// follows an ST backslash must live in its own printf.
+    @Test func notificationEmitsBELNotLiteral007() {
+        let script = PhanttomClaudeIntegration.hookScript
+        // The bug shape, anywhere in the script: `\\` immediately before `\007`.
+        #expect(!script.contains(#"\\\007"#))
+        guard let body = Self.caseBody(of: "notification)", in: script) else {
+            Issue.record("missing notification) case in hookScript")
+            return
+        }
+        #expect(body.contains(#"printf "\033]9;4;0;0\033\\""#))
+        #expect(body.contains(#"printf "\007""#))
+    }
+
     /// The body of one `case` arm in `hookScript`: everything from `label`
     /// up to its terminating `;;`. Slicing on the real delimiter rather than
     /// a fixed character count keeps these assertions correct when the arm's
