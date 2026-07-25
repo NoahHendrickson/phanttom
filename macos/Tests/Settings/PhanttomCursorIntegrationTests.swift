@@ -261,7 +261,55 @@ struct PhanttomCursorIntegrationTests {
         })
     }
 
+    // MARK: - Auto-install opt-out (shared across builds)
+
+    @Test func optOutMarkerIsSharedAcrossBuilds() throws {
+        // `UserDefaults.standard` is scoped to the bundle id, so the Debug and
+        // release builds cannot see each other's opt-out — but they
+        // auto-install into the same ~/.cursor. Two Paths over one base dir
+        // stand in for the two builds here.
+        let root = try makeTempCursorDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let debugBuild = PhanttomCursorIntegration.Paths(baseDir: root)
+        let releaseBuild = PhanttomCursorIntegration.Paths(baseDir: root)
+
+        #expect(!PhanttomCursorIntegration.isAutoInstallDisabled(paths: debugBuild))
+
+        // Remove… in one build must stop the other from reinstalling.
+        PhanttomCursorIntegration.setAutoInstallDisabled(true, paths: debugBuild)
+        #expect(PhanttomCursorIntegration.isAutoInstallDisabled(paths: releaseBuild))
+
+        // …and Set Up in either build lifts it for both.
+        PhanttomCursorIntegration.setAutoInstallDisabled(false, paths: releaseBuild)
+        #expect(!PhanttomCursorIntegration.isAutoInstallDisabled(paths: debugBuild))
+    }
+
+    @Test func optOutSurvivesUninstall() throws {
+        // Remove… writes the marker and then runs the uninstall. If uninstall
+        // swept the marker with the rest of our artifacts (it deletes the
+        // state file next to it), the next launch would reinstall everything
+        // the user just removed.
+        let root = try makeTempCursorDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = PhanttomCursorIntegration.Paths(baseDir: root)
+
+        #expect(PhanttomCursorIntegration.performInstall(paths: paths).error == nil)
+        PhanttomCursorIntegration.setAutoInstallDisabled(true, paths: paths)
+
+        #expect(PhanttomCursorIntegration.performUninstall(paths: paths).error == nil)
+        #expect(!FileManager.default.fileExists(atPath: paths.script.path))
+        #expect(!FileManager.default.fileExists(atPath: paths.state.path))
+        #expect(PhanttomCursorIntegration.isAutoInstallDisabled(paths: paths))
+    }
+
     // MARK: - Helpers
+
+    private func makeTempCursorDir() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phanttom-cursor-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
 
     private func assertDesiredHooksPresent(in doc: [String: Any]) {
         let hooks = doc["hooks"] as? [String: Any] ?? [:]

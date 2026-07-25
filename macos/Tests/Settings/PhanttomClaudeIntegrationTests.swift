@@ -594,6 +594,76 @@ struct PhanttomClaudeIntegrationTests {
 
     // MARK: - Helpers
 
+    // MARK: - Auto-install opt-out (shared across builds)
+
+    @Test func optOutMarkerIsSharedAcrossBuilds() throws {
+        // The whole point of the marker: `UserDefaults.standard` is scoped to
+        // the bundle id, so the Debug and release builds cannot see each
+        // other's opt-out — but they auto-install into the same ~/.claude.
+        // Two Paths over one base dir stand in for the two builds here.
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let debugBuild = PhanttomClaudeIntegration.Paths(
+            baseDir: URL(fileURLWithPath: dir))
+        let releaseBuild = PhanttomClaudeIntegration.Paths(
+            baseDir: URL(fileURLWithPath: dir))
+
+        #expect(!PhanttomClaudeIntegration.isAutoInstallDisabled(paths: debugBuild))
+        #expect(!PhanttomClaudeIntegration.isAutoInstallDisabled(paths: releaseBuild))
+
+        // Remove… in one build must stop the other from reinstalling.
+        PhanttomClaudeIntegration.setAutoInstallDisabled(true, paths: debugBuild)
+        #expect(PhanttomClaudeIntegration.isAutoInstallDisabled(paths: releaseBuild))
+
+        // …and Set Up in either build lifts it for both.
+        PhanttomClaudeIntegration.setAutoInstallDisabled(false, paths: releaseBuild)
+        #expect(!PhanttomClaudeIntegration.isAutoInstallDisabled(paths: debugBuild))
+    }
+
+    @Test func optOutSurvivesUninstall() throws {
+        // Remove… writes the marker and then runs the uninstall. If uninstall
+        // swept the marker with the rest of our artifacts, the next launch
+        // would reinstall everything the user just removed.
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(baseDir: URL(fileURLWithPath: dir))
+
+        try PhanttomClaudeIntegration.writeSettings([:], to: paths.settings)
+        _ = PhanttomClaudeIntegration.performInstall(paths: paths)
+        PhanttomClaudeIntegration.setAutoInstallDisabled(true, paths: paths)
+
+        #expect(PhanttomClaudeIntegration.performUninstall(paths: paths).error == nil)
+        #expect(!FileManager.default.fileExists(atPath: paths.script.path))
+        #expect(PhanttomClaudeIntegration.isAutoInstallDisabled(paths: paths))
+    }
+
+    @Test func optOutMigrationDefersUntilClaudeDirExists() {
+        // Nothing to write the marker into yet — the caller must keep the old
+        // UserDefaults key rather than clearing it and losing the opt-out.
+        let absent = PhanttomClaudeIntegration.Paths(
+            baseDir: FileManager.default.temporaryDirectory
+                .appendingPathComponent("phanttom-absent-\(UUID().uuidString)"))
+        #expect(!PhanttomClaudeIntegration.migrateOptOutFromDefaults(
+            wasDisabled: true, paths: absent))
+    }
+
+    @Test func optOutMigrationWritesMarkerOnce() throws {
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(baseDir: URL(fileURLWithPath: dir))
+
+        #expect(PhanttomClaudeIntegration.migrateOptOutFromDefaults(
+            wasDisabled: true, paths: paths))
+        #expect(PhanttomClaudeIntegration.isAutoInstallDisabled(paths: paths))
+
+        // A user who never opted out gets no marker, but the key is still
+        // consumed so the migration doesn't run forever.
+        PhanttomClaudeIntegration.setAutoInstallDisabled(false, paths: paths)
+        #expect(PhanttomClaudeIntegration.migrateOptOutFromDefaults(
+            wasDisabled: false, paths: paths))
+        #expect(!PhanttomClaudeIntegration.isAutoInstallDisabled(paths: paths))
+    }
+
     private func makeTempClaudeDir() throws -> String {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("phanttom-claude-\(UUID().uuidString)")

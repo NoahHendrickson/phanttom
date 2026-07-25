@@ -25,9 +25,20 @@ enum PhanttomClaudeIntegration {
     /// string `originalStatusLineKey` above stays authoritative for the hook's
     /// runtime statusline chaining and for back-compat.
     static let originalStatusLineObjectKey = "phanttomOriginalStatusLineObject"
-    /// Set (true) by an explicit Remove… in Settings; cleared by Set Up /
-    /// Update. While set, launch-time auto-install stays off — an explicit
-    /// removal must stick across launches.
+    /// Marker written by an explicit Remove… in Settings and deleted by
+    /// Set Up / Update. While it exists, launch-time auto-install stays off.
+    ///
+    /// It is a file beside `settings.json`, not a UserDefaults key, because
+    /// `UserDefaults.standard` is scoped to the bundle identifier: the Debug
+    /// build (`com.mitchellh.ghostty.debug`) and the release build
+    /// (`com.mitchellh.ghostty`) have separate domains but auto-install into
+    /// the *same* `~/.claude`. A defaults-backed opt-out set in one build was
+    /// invisible to the other, which would silently reinstall the hooks. The
+    /// decision belongs with the resource it governs. Deliberately NOT the
+    /// existing state file — uninstall deletes that, and Remove must persist.
+    static let optOutFileName = ".phanttom-no-autoinstall"
+    /// Pre-marker UserDefaults opt-out. Consumed once by
+    /// `migrateOptOutFromDefaults`; never written anymore.
     static let autoInstallDisabledKey = "PhanttomClaudeAutoInstallDisabled"
     /// Pre-auto-install "one prompt, ever" key. Consumed by
     /// `migrateConsent`; never written anymore.
@@ -46,8 +57,8 @@ enum PhanttomClaudeIntegration {
     }
 
     /// Outcome of the one-shot migration from the pre-auto-install consent
-    /// keys (`setupPromptedKey`, PR #15 `legacyConsentKey`) to
-    /// `autoInstallDisabledKey`.
+    /// keys (`setupPromptedKey`, PR #15 `legacyConsentKey`) to the shared
+    /// opt-out marker.
     enum ConsentMigration: Equatable {
         /// Consume the old keys; auto-install proceeds.
         case autoInstall
@@ -570,6 +581,7 @@ enum PhanttomClaudeIntegration {
         var settings: URL { baseDir.appendingPathComponent(settingsFileName) }
         var script: URL { baseDir.appendingPathComponent(hookScriptName) }
         var state: URL { baseDir.appendingPathComponent(stateFileName) }
+        var optOut: URL { baseDir.appendingPathComponent(optOutFileName) }
 
         static var `default`: Paths {
             Paths(baseDir: FileManager.default.homeDirectoryForCurrentUser
@@ -582,6 +594,41 @@ enum PhanttomClaudeIntegration {
         let error: ActionError?
         /// Human-readable status for the Settings caption.
         let message: String
+    }
+
+    // MARK: - Auto-install opt-out
+
+    /// Whether an explicit Remove… has switched launch-time auto-install off.
+    /// Shared across builds — see `optOutFileName`.
+    nonisolated static func isAutoInstallDisabled(paths: Paths = .default) -> Bool {
+        FileManager.default.fileExists(atPath: paths.optOut.path)
+    }
+
+    /// Record (or lift) the opt-out. Writing is best-effort: if `~/.claude`
+    /// is missing there is nothing to auto-install into anyway, and the next
+    /// Remove… once it exists will record the decision.
+    nonisolated static func setAutoInstallDisabled(
+        _ disabled: Bool,
+        paths: Paths = .default
+    ) {
+        if disabled {
+            try? Data().write(to: paths.optOut)
+        } else {
+            try? FileManager.default.removeItem(at: paths.optOut)
+        }
+    }
+
+    /// One-shot move of the pre-marker UserDefaults opt-out into the shared
+    /// marker file. Returns `true` once the key has been dealt with so the
+    /// caller can clear it. Defers (returns `false`) while `~/.claude` is
+    /// absent, so an opt-out is never dropped on the floor.
+    nonisolated static func migrateOptOutFromDefaults(
+        wasDisabled: Bool,
+        paths: Paths = .default
+    ) -> Bool {
+        guard claudeDirectoryExists(paths: paths) else { return false }
+        if wasDisabled { setAutoInstallDisabled(true, paths: paths) }
+        return true
     }
 
     nonisolated static func claudeDirectoryExists(paths: Paths = .default) -> Bool {
