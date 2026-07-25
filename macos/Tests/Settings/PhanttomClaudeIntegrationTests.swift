@@ -697,25 +697,6 @@ struct PhanttomClaudeIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: paths.sessionState.path))
     }
 
-    @Test func backupsAreNotWorldReadable() throws {
-        let dir = try makeTempClaudeDir()
-        defer { try? FileManager.default.removeItem(atPath: dir) }
-        let paths = PhanttomClaudeIntegration.Paths(baseDir: URL(fileURLWithPath: dir))
-
-        try PhanttomClaudeIntegration.writeSettings([:], to: paths.settings)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o644], ofItemAtPath: paths.settings.path)
-        try PhanttomClaudeIntegration.backupSettings(at: paths.settings)
-
-        let names = try FileManager.default.contentsOfDirectory(atPath: dir)
-        let backup = try #require(
-            names.first { $0.hasPrefix(PhanttomClaudeIntegration.backupPrefix) })
-        let attrs = try FileManager.default.attributesOfItem(
-            atPath: (dir as NSString).appendingPathComponent(backup))
-        let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
-        #expect(perms & 0o777 == 0o600)
-    }
-
     @Test func rewritingSettingsKeepsItsMode() throws {
         // An atomic write replaces the file. settings.json can carry
         // credentials, so a 0600 config must not come back 0644 just because
@@ -754,7 +735,7 @@ struct PhanttomClaudeIntegrationTests {
         // The exact expansion that used to build the cache path.
         #expect(!script.contains("${TMPDIR"))
         #expect(script.contains(
-            "SESSION_DIR=\"${HOME}/.claude/\(PhanttomClaudeIntegration.sessionStateDirName)\""))
+            "SESSION_DIR=\"${HOME}/.claude/\(PhanttomIntegrationSupport.sessionStateDirName)\""))
         #expect(script.contains("chmod 700"))
     }
 

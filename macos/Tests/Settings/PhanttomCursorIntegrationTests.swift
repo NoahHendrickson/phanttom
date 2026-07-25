@@ -321,7 +321,7 @@ struct PhanttomCursorIntegrationTests {
         // The exact expansion that used to build the cache path.
         #expect(!script.contains("${TMPDIR"))
         #expect(script.contains(
-            "SESSION_DIR=\"${HOME}/.cursor/\(PhanttomCursorIntegration.sessionStateDirName)\""))
+            "SESSION_DIR=\"${HOME}/.cursor/\(PhanttomIntegrationSupport.sessionStateDirName)\""))
         #expect(script.contains("chmod 700"))
     }
 

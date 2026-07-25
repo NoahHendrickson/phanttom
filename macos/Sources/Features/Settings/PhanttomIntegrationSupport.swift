@@ -195,6 +195,65 @@ enum PhanttomIntegrationSupport {
 
     // MARK: - Hook script payload
 
+    /// Per-session scratch directory each agent's hook script keeps under its
+    /// own config directory (`~/.claude/.phanttom-sessions`,
+    /// `~/.cursor/.phanttom-sessions`): the last model emitted, and whether a
+    /// tab has already spent its one naming prompt.
+    ///
+    /// Deliberately not `$TMPDIR`/`/tmp`: with `TMPDIR` unset that path is
+    /// world-writable and its name guessable, so a planted symlink could
+    /// redirect the writes. Created 0700 by `hookPrelude` below.
+    static let sessionStateDirName = ".phanttom-sessions"
+
+    /// The opening of every agent's `phanttom-hook.sh`: the emit guard and
+    /// the private per-session scratch directory. Shared because it is
+    /// genuinely the same decision for every agent — "is this session running
+    /// in Phanttom, and where may I keep state" — unlike the emit logic
+    /// below it, which differs per agent for real reasons (`CLAUDE_PID` vs
+    /// `CURSOR_AGENT` + an ancestor tty walk) and stays in each script.
+    ///
+    /// Interpolated at column 0 of a script's multiline literal: Swift does
+    /// not re-indent interpolated text, and shell does not care, but keeping
+    /// it flush matches the rest of the emitted file.
+    ///
+    /// Editing this text changes both payloads — bump **both**
+    /// `payloadVersion`s.
+    nonisolated static func hookPrelude(agentDirName: String) -> String {
+        """
+        SESSION_DIR="${HOME}/\(agentDirName)/\(sessionStateDirName)"
+
+        # These hooks live in the agent's config directory, so they run for
+        # EVERY session of that agent on this machine — including ones started
+        # from iTerm, VS Code, tmux or an ssh-in. Only Phanttom/Ghostty
+        # understands the sequences we emit, and the marker title carries
+        # prompt text, so stay silent everywhere else rather than rewriting a
+        # foreign terminal's window title.
+        phanttom_terminal() {
+          [ "${TERM_PROGRAM:-}" = "ghostty" ] || [ -n "${GHOSTTY_RESOURCES_DIR:-}" ]
+        }
+
+        # Private per-session scratch. Under $HOME at 0700, never $TMPDIR or
+        # /tmp: with TMPDIR unset that path is world-writable and its name
+        # guessable, so a planted symlink could redirect these writes. Prints
+        # nothing when the directory can't be created; callers treat that as
+        # "no cache" and simply re-emit.
+        session_dir() {
+          if [ ! -d "$SESSION_DIR" ]; then
+            mkdir -p "$SESSION_DIR" 2>/dev/null || return 0
+            chmod 700 "$SESSION_DIR" 2>/dev/null || true
+          fi
+          printf "%s" "$SESSION_DIR"
+        }
+
+        # Sessions end without telling us, so sweep week-old scratch files.
+        prune_sessions() {
+          sdir=$(session_dir)
+          [ -n "$sdir" ] || return 0
+          find "$sdir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null || true
+        }
+        """
+    }
+
     /// Version stamped into the installed script by every integration's
     /// `hookScript` (`# phanttom-hook v<N>`). Drives the Settings "Update
     /// available" state.

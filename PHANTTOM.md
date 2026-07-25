@@ -71,7 +71,9 @@ All Phanttom code is Swift, under `macos/Sources/`. Zig (`src/`) is untouched.
 | Settings window host | `Features/Settings/SettingsWindowController.swift` |
 | Claude Code hook installer (launch auto-install/re-sync, merge/strip) | `Features/Settings/PhanttomClaudeIntegration.swift` (tests: `macos/Tests/Settings/PhanttomClaudeIntegrationTests.swift`) |
 | Cursor Agent CLI hook installer (launch auto-install/re-sync, merge/strip) | `Features/Settings/PhanttomCursorIntegration.swift` (tests: `macos/Tests/Settings/PhanttomCursorIntegrationTests.swift`) |
-| Shared installer plumbing (JSON I/O, backups, script payload, opt-out marker) | `Features/Settings/PhanttomIntegrationSupport.swift` |
+| Claude Code hook payload (the installed `phanttom-hook.sh`) | `Features/Settings/PhanttomClaudeHookScript.swift` |
+| Cursor Agent hook payload | `Features/Settings/PhanttomCursorHookScript.swift` |
+| Shared installer plumbing (JSON I/O, backups, script payload, opt-out + consent markers, the hook scripts' shared shell prelude) | `Features/Settings/PhanttomIntegrationSupport.swift` (tests: `macos/Tests/Settings/PhanttomIntegrationSupportTests.swift`) |
 | Claude/Codex/Cursor icons | `macos/Assets.xcassets/PhanttomClaude.imageset`, `PhanttomCodex.imageset`, `PhanttomCursor.imageset` (+ `*Mark` variants) |
 Touches to upstream files are deliberately tiny and greppable — search
 `Phanttom`/`phanttom` to find every hook point:
@@ -396,7 +398,7 @@ JSON parsing prefers `jq` when present, else `/usr/bin/perl` + `JSON::PP`
 | `stop`                                                                            | OSC 9;4 clear **or** re-arm state 3                                                                                                                              | reads stdin `background_tasks` (Claude Code ≥2.1.145): if any in-flight background work remains, re-emits rain; otherwise clears → Done if unselected. Missing/unparseable → clear (pre-2.1.145) |
 | `subagent-start`                                                                  | OSC 9;4 state 3 (indeterminate)                                                                                                                                  | re-arms rain when a subagent spawns (covers races where Stop cleared before tasks were registered). `SubagentStop` is intentionally not hooked — clearing there can flash rain off before the parent wakes |
 | `notification`                                                                    | OSC 9;4 clear + BEL                                                                                                                                              | → Attention if unselected                                                           |
-| `statusline`                                                                      | model-only marker `❯⁣.claude⁣⁣<model-id>` on change (cache file under `$TMPDIR`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
+| `statusline`                                                                      | model-only marker `❯⁣.claude⁣⁣<model-id>` on change (cache file under `~/.claude/.phanttom-sessions/`); then chains to the user's original statusline (or a minimal `<model> · <dir>` default) | sidebar model label from session start / `/model` switches                          |
 
 Bumping `payloadVersion` (currently 7: the emit guard, one-prompt-per-session,
 and the private session directory) shows every existing Claude-integrated user
@@ -468,11 +470,18 @@ title-branding only (no hooks installer).
 ## Adding a third agent
 
 `PhanttomIntegrationSupport` holds everything that is genuinely agent-agnostic:
-JSON read/write (atomic, with a re-parse guard), timestamped backups and their
-pruning, writing the versioned `phanttom-hook.sh` payload, parsing
-`# phanttom-hook v<N>` back out, and the `.phanttom-no-autoinstall` opt-out
-marker. A new agent should need a merge core, a hook script, and an
-`autoSync…` call — **not** another copy of the file layer.
+JSON read/write (atomic, with a re-parse guard and the file's prior mode
+re-applied), timestamped backups (0600) and their pruning and removal, writing
+the versioned `phanttom-hook.sh` payload, parsing `# phanttom-hook v<N>` back
+out, the `.phanttom-no-autoinstall` opt-out and `.phanttom-autoinstall-asked`
+consent markers, and `hookPrelude` — the opening of every hook script (the
+`phanttom_terminal` emit guard and the 0700 `.phanttom-sessions` directory),
+which is one decision for every agent and must not fork between payloads.
+Editing it changes both scripts: bump **both** `payloadVersion`s. Each script
+itself lives in its own file (`Phanttom*HookScript.swift`) — they are shell
+programs, not Swift, and burying them in the merge engines made those hard to
+read. A new agent should need a merge core, a hook script, and an `autoSync…`
+call — **not** another copy of the file layer.
 
 What deliberately stays per-agent, because it differs for real reasons:
 
@@ -483,8 +492,17 @@ What deliberately stays per-agent, because it differs for real reasons:
   state and a single `settingsCorrupt`; Cursor has two config files that can
   each be corrupt independently. A union type would be wrong for both, so
   each maps `PhanttomIntegrationSupport.IOError` onto its own vocabulary.
-- **The hook script itself**, including emit guards (`CLAUDE_PID` vs
-  `CURSOR_AGENT` + ancestor tty walk).
+- **The hook script below the shared prelude**: tty resolution (`CLAUDE_PID`
+  vs an ancestor walk from `$PPID`), the `CURSOR_AGENT` check, the marker wire
+  format, and the JSON each agent expects back. The `phanttom_terminal` guard
+  and the session directory are *not* per-agent — they come from
+  `PhanttomIntegrationSupport.hookPrelude`.
+
+The launch-time consent ladder is shared too:
+`agentIntegrationConsentAllows` in `AppDelegate+Phanttom.swift` takes the
+agent's copy plus three closures (the closures exist because the two
+integrations are separate types by design, and their marker APIs take a
+defaulted `paths:`).
 
 Settings UI is shared: `AgentIntegrationSection` in `PhanttomSettingsView.swift`
 renders the caption / Set Up / Update / Remove… chrome once, and each agent

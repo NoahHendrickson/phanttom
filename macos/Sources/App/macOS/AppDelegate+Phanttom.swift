@@ -47,8 +47,9 @@ extension AppDelegate {
         SettingsWindowController.shared.show(ghostty: ghostty)
     }
 
-    /// One-time consent for an agent hook install. Returns true when the user
-    /// wants the hooks.
+    /// The one-time consent ladder, shared by every agent: ask once, record
+    /// the answer, and turn a decline into the durable opt-out. Returns
+    /// whether the caller may go on to install / repair.
     ///
     /// Asked once per agent directory (`~/.claude`, `~/.cursor`), never again
     /// — the answer is recorded beside the config it governs so it is shared
@@ -56,8 +57,42 @@ extension AppDelegate {
     /// place. After the answer, launch-time repair/update stays silent: the
     /// user is being asked whether Phanttom may modify another tool's
     /// configuration, not to approve each write.
+    ///
+    /// The closures exist because the two integrations are deliberately
+    /// separate types with their own status and error vocabularies (see
+    /// PHANTTOM.md); only this ladder is common, so only this ladder is
+    /// shared. They are closures rather than function references because the
+    /// underlying APIs take a defaulted `paths:` argument.
     @MainActor
-    private func askAgentIntegrationConsent(
+    private func agentIntegrationConsentAllows(
+        agent: String,
+        configPath: String,
+        details: String,
+        isInstalled: Bool,
+        hasAsked: () -> Bool,
+        setAsked: (Bool) -> Void,
+        setAutoInstallDisabled: (Bool) -> Void
+    ) -> Bool {
+        guard !hasAsked() else { return true }
+        guard !isInstalled else {
+            // Hooks are already here (an earlier build installed them, or they
+            // were set up by hand). The question is moot — record it as
+            // answered so it is never asked, and keep repairing.
+            setAsked(true)
+            return true
+        }
+
+        let granted = askConsent(
+            agent: agent, configPath: configPath, details: details)
+        // Record the answer before acting on it: an install that then fails
+        // must not re-ask on the next launch.
+        setAsked(true)
+        if !granted { setAutoInstallDisabled(true) }
+        return granted
+    }
+
+    @MainActor
+    private func askConsent(
         agent: String,
         configPath: String,
         details: String
@@ -142,31 +177,21 @@ extension AppDelegate {
         // launch (once ~/.claude appears or settings.json parses again).
         guard status.error == nil else { return }
 
-        if !PhanttomClaudeIntegration.hasAskedAutoInstall() {
-            if status.status == .notInstalled {
-                let granted = askAgentIntegrationConsent(
-                    agent: "Claude Code",
-                    configPath: "~/.claude/settings.json",
-                    details: "Phanttom can show live agent status in the "
-                        + "sidebar — working / done / needs-you — plus the "
-                        + "agent's working directory and the model label. It "
-                        + "also names each tab after the first prompt of a "
-                        + "session, which puts that text in the window title."
-                )
-                // Record the answer before acting on it: an install that then
-                // fails must not re-ask on the next launch.
-                PhanttomClaudeIntegration.setAskedAutoInstall(true)
-                guard granted else {
-                    PhanttomClaudeIntegration.setAutoInstallDisabled(true)
-                    return
-                }
-            } else {
-                // Hooks are already here (an earlier build installed them, or
-                // they were set up by hand). The question is moot — record it
-                // as answered so it is never asked, and keep repairing.
-                PhanttomClaudeIntegration.setAskedAutoInstall(true)
+        guard agentIntegrationConsentAllows(
+            agent: "Claude Code",
+            configPath: "~/.claude/settings.json",
+            details: "Phanttom can show live agent status in the sidebar — "
+                + "working / done / needs-you — plus the agent's working "
+                + "directory and the model label. It also names each tab "
+                + "after the first prompt of a session, which puts that text "
+                + "in the window title.",
+            isInstalled: status.status != .notInstalled,
+            hasAsked: { PhanttomClaudeIntegration.hasAskedAutoInstall() },
+            setAsked: { PhanttomClaudeIntegration.setAskedAutoInstall($0) },
+            setAutoInstallDisabled: {
+                PhanttomClaudeIntegration.setAutoInstallDisabled($0)
             }
-        }
+        ) else { return }
 
         switch status.status {
         case .notInstalled, .installedOutdated, .legacyInline:
@@ -198,25 +223,19 @@ extension AppDelegate {
         let status = PhanttomCursorIntegration.currentStatus()
         guard status.error == nil else { return }
 
-        if !PhanttomCursorIntegration.hasAskedAutoInstall() {
-            if status.status == .notInstalled {
-                let granted = askAgentIntegrationConsent(
-                    agent: "Cursor Agent",
-                    configPath: "~/.cursor/hooks.json and "
-                        + "~/.cursor/cli-config.json",
-                    details: "Phanttom can show live agent status in the "
-                        + "sidebar — working / done — plus the agent's "
-                        + "working directory and the model label."
-                )
-                PhanttomCursorIntegration.setAskedAutoInstall(true)
-                guard granted else {
-                    PhanttomCursorIntegration.setAutoInstallDisabled(true)
-                    return
-                }
-            } else {
-                PhanttomCursorIntegration.setAskedAutoInstall(true)
+        guard agentIntegrationConsentAllows(
+            agent: "Cursor Agent",
+            configPath: "~/.cursor/hooks.json and ~/.cursor/cli-config.json",
+            details: "Phanttom can show live agent status in the sidebar — "
+                + "working / done — plus the agent's working directory and "
+                + "the model label.",
+            isInstalled: status.status != .notInstalled,
+            hasAsked: { PhanttomCursorIntegration.hasAskedAutoInstall() },
+            setAsked: { PhanttomCursorIntegration.setAskedAutoInstall($0) },
+            setAutoInstallDisabled: {
+                PhanttomCursorIntegration.setAutoInstallDisabled($0)
             }
-        }
+        ) else { return }
 
         switch status.status {
         case .notInstalled, .installedOutdated:
