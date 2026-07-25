@@ -70,19 +70,44 @@ final class PhanttomTabState {
         case attention
     }
 
+    /// Identity of one split inside the window: `Ghostty.SurfaceView.ID`, a
+    /// UUID minted with the surface and stable for its whole life (it even
+    /// round-trips through session restore). Stability is the requirement —
+    /// `surfaceTree` is replaced wholesale whenever a split is added or
+    /// removed, so anything keyed on the tree snapshot itself would churn.
+    typealias SurfaceID = UUID
+
+    /// One split's status input for a refresh pass. The sidebar passes the
+    /// window's whole live list every pass, which is also what keeps the
+    /// per-surface bookkeeping below pruned: a split that closes simply
+    /// stops appearing, and nothing keyed on it outlives it.
+    struct SurfaceProgress: Equatable {
+        let id: SurfaceID
+        /// Whether this split currently has a live OSC 9;4 progress report.
+        let isWorking: Bool
+    }
+
     private(set) var status: Status = .idle
 
-    /// The previous refresh's `isWorking`, so status transitions are judged
-    /// on edges rather than levels (see `updateStatus`). Idempotent across
-    /// the several `SidebarTabManager`s that each step this same window
-    /// state: the first call consumes the edge, the rest see none and agree.
-    private var wasWorking = false
+    /// The splits that had a live progress report at the previous refresh,
+    /// so status transitions are judged on per-surface edges rather than
+    /// levels (see `updateStatus`). Idempotent across the several
+    /// `SidebarTabManager`s that each step this same window state: the first
+    /// call consumes the edges, the rest compute empty ones and agree.
+    private var workingSurfaces: Set<SurfaceID> = []
 
-    /// A bell that arrived while a progress report was still live, waiting on
-    /// the next refresh to say what it meant (see `noteBell`). Consumed
-    /// there, and consumed by the first stepper like every other edge, so
-    /// the several managers stepping this state agree.
-    private var pendingBell = false
+    /// Bells that arrived while their OWN split's progress report was still
+    /// live, waiting on the next refresh to say what they meant (see
+    /// `noteBell`). Answered — and emptied — by the next `updateStatus`, so
+    /// this cannot accumulate, and emptied by the first stepper like every
+    /// other edge so the several managers stepping this state agree.
+    private var pendingBells: Set<SurfaceID> = []
+
+    /// The splits whose bell is unread — who the standing `.attention`
+    /// belongs to. Non-empty exactly while `status == .attention`. Only
+    /// these splits may take the slot back by resuming work: a *different*
+    /// agent in the same tab starting is not the blocked one unblocking.
+    private var attentionSurfaces: Set<SurfaceID> = []
 
     /// The working directory this tab was created into (sidebar group "+",
     /// Sessions header + / folder picker). Only a pwd fallback: the sidebar
@@ -167,17 +192,23 @@ final class PhanttomTabState {
     /// identity from it alone wipes an idle agent in a background split the
     /// moment a plain shell split takes focus.
     ///
+    /// `surfaces` is the window's whole live split list with each split's
+    /// own progress flag — not a window-level OR of them. Which split is
+    /// working is what lets a bell be judged against the agent that rang it
+    /// rather than against whatever else the tab happens to be running; see
+    /// `updateStatus` and `noteBell`.
+    ///
     /// `isWatched` is the user's eyes being on this tab — frontmost in its
     /// group, key window, app active (`SidebarTabManager.isWatched`) — not
     /// merely tab selection. Only the strict form may acknowledge an
     /// indicator; see the note there.
-    func update(titles: [String], isWorking: Bool, isWatched: Bool) {
-        updateStatus(isWorking: isWorking, isWatched: isWatched)
-        updateIdentity(titles: titles, isWorking: isWorking)
+    func update(titles: [String], surfaces: [SurfaceProgress], isWatched: Bool) {
+        updateStatus(surfaces: surfaces, isWatched: isWatched)
+        updateIdentity(titles: titles, isWorking: surfaces.contains(where: \.isWorking))
     }
 
-    /// Bell rang while the user was not watching this tab (the caller checks
-    /// that, via `SidebarTabManager.isWatched`).
+    /// Bell rang in `surface` while the user was not watching this tab (the
+    /// caller checks that, via `SidebarTabManager.isWatched`).
     ///
     /// Attention outranks every other state. A bell is the agent explicitly
     /// asking for the user — Claude Code's Notification hook rings it for
@@ -185,9 +216,9 @@ final class PhanttomTabState {
     /// urgent than "still running" or "finished". Cleared when the user
     /// watches the tab, like every other indicator.
     ///
-    /// A bell that lands while progress is still live is DEFERRED rather
-    /// than taken, because at this instant the two cases that produce one
-    /// are indistinguishable:
+    /// A bell that lands while THE RINGING SPLIT'S OWN progress report is
+    /// still live is DEFERRED rather than taken, because at this instant the
+    /// two cases that produce one are indistinguishable:
     ///
     ///   - the hook's own bell, racing the progress-clear printed next to
     ///     it — the report is about to go away and the agent is blocked;
@@ -195,24 +226,32 @@ final class PhanttomTabState {
     ///     tool, a readline beep — where the report stays live and there is
     ///     nothing to report.
     ///
-    /// The next refresh separates them: a report that cleared means this was
-    /// the hook, and attention is taken; a report still live means the bell
+    /// The next refresh separates them: that split's report cleared means
+    /// this was the hook, and attention is taken; still live means the bell
     /// was incidental, and the sparkle stands. Taking the slot
     /// unconditionally instead stranded any stray BEL as a permanent yellow
     /// dot on a *running* tab — the rising edge cannot re-fire for a report
     /// that never went away, and the falling edge yields to attention, so
     /// neither `.working` nor `.done` could be reached again.
     ///
+    /// The race is between two writes to ONE tty, so only that split's own
+    /// report can be racing this bell. Asking the window instead — the OR
+    /// across every split, which is all this state used to have — dropped a
+    /// bell outright whenever some *other* split happened to be busy: the
+    /// deferral found that split's report still live, called the bell
+    /// incidental, and a blocked agent got no dot at all.
+    ///
     /// The deferral is one refresh wide, which is the width of the race it
     /// settles: the hook prints the clear and the BEL into the same write,
     /// so they are parsed a few microseconds apart while a refresh costs a
     /// runloop turn.
-    func noteBell() {
-        guard wasWorking else {
+    func noteBell(surface: SurfaceID) {
+        guard workingSurfaces.contains(surface) else {
+            attentionSurfaces.insert(surface)
             status = .attention
             return
         }
-        pendingBell = true
+        pendingBells.insert(surface)
     }
 
     /// Re-arm first-prompt auto-naming (rename cleared / Reset Name).
@@ -224,51 +263,82 @@ final class PhanttomTabState {
         lastResetTitle = lastMarkerTitle
     }
 
-    private func updateStatus(isWorking: Bool, isWatched: Bool) {
-        // This pass is the one that says what a deferred bell meant: it rode
-        // the hook's progress-clear if the report is gone by now, and was
-        // incidental if the report is still live. Either way it is answered
-        // here and does not carry into a later refresh.
-        let bellRodeTheClear = pendingBell
-        pendingBell = false
+    private func updateStatus(surfaces: [SurfaceProgress], isWatched: Bool) {
+        let live = Set(surfaces.map(\.id))
+        let working = Set(surfaces.lazy.filter(\.isWorking).map(\.id))
+        let started = working.subtracting(workingSurfaces)
+        let stopped = workingSurfaces.subtracting(working)
+        workingSurfaces = working
 
-        if isWorking, !wasWorking {
-            // Rising edge only: a report that is merely still live may not
+        // This pass is the one that says what each deferred bell meant: it
+        // rode the hook's progress-clear if ITS OWN split's report is gone by
+        // now, and was incidental if that report is still live. Either way
+        // every deferral is answered here and none carries into a later
+        // refresh. Note this is deliberately not conditioned on the window
+        // going quiet — a blocked agent in one split is still blocked while a
+        // second agent keeps working beside it.
+        let ringers = pendingBells.intersection(stopped)
+        pendingBells.removeAll()
+
+        if !started.isEmpty {
+            // Rising edges only: a report that is merely still live may not
             // re-take the slot, and pairing with the falling edge below is
             // what makes both idempotent across the several managers that
             // step this state.
             //
-            // Note this is the one transition that can drop an unread
-            // `.attention`, and it is coarser than it looks: `isWorking` is
-            // an OR across every surface in the window, so the edge says
-            // *some* split started work, not that the split that rang the
-            // bell resumed. With two agents in one tab, the second one
-            // starting will clear the first one's yellow dot. Closing that
-            // needs per-surface progress, which the window-level report
-            // cannot express.
-            status = .working
-        } else if !isWorking, wasWorking, status != .attention {
-            // Progress just ended: nothing to report if the user was actually
-            // watching it happen, otherwise done. Judged on `isWatched`, not
-            // tab order — work that finishes in the selected tab while you are
-            // off in another app has not been seen, and owes you a blue dot
-            // exactly like work that finishes in a background tab. A bell that
-            // rode this very clear takes the slot instead — that is the hook
-            // reporting a blocked agent, and needing input outranks merely
-            // having finished.
-            status = bellRodeTheClear ? .attention : (isWatched ? .idle : .done)
+            // This is the one transition that can drop an unread
+            // `.attention`, so it asks per split: the yellow dot goes away
+            // when the agent that rang goes back to work, and stands when
+            // some other split in the tab starts. Judged window-wide it said
+            // only that *some* split started, so with two agents in one tab
+            // the second one starting cleared the first one's dot while it
+            // was still waiting on the user.
+            attentionSurfaces.subtract(started)
+            if status != .attention || attentionSurfaces.isEmpty {
+                attentionSurfaces.removeAll()
+                status = .working
+            }
         }
-        wasWorking = isWorking
+
+        if !ringers.isEmpty {
+            // A bell that rode this very clear is the hook reporting a
+            // blocked agent, and needing input outranks both merely having
+            // finished and another split still running — so this is applied
+            // after the rising edge above, not instead of it.
+            attentionSurfaces.formUnion(ringers)
+            status = .attention
+        } else if working.isEmpty, !stopped.isEmpty, status != .attention {
+            // The window's LAST live report just ended: nothing to report if
+            // the user was actually watching it happen, otherwise done.
+            // Judged on `isWatched`, not tab order — work that finishes in
+            // the selected tab while you are off in another app has not been
+            // seen, and owes you a blue dot exactly like work that finishes
+            // in a background tab. One split of several going quiet is not
+            // "done": the tab is still working until every split is.
+            status = isWatched ? .idle : .done
+        }
+
+        // Splits that closed drop out of the per-surface bookkeeping here, so
+        // nothing keyed on a surface outlives the surface — and a blocked
+        // agent whose split the user closed has nothing left to attend to.
+        // Skipped for an empty live list, which means a window mid-teardown
+        // (or a non-terminal window falling back to its own title) rather
+        // than "every split closed", and must not silently eat a dot.
+        if !live.isEmpty {
+            attentionSurfaces.formIntersection(live)
+            if status == .attention, attentionSurfaces.isEmpty {
+                status = working.isEmpty ? .idle : .working
+            }
+        }
 
         // Looking at a tab acknowledges its indicator — the indicator only,
         // never the fact that the process is working. Both `.done` and
-        // `.attention` are only ever reached with the report already gone,
-        // so a live one here would have taken the rising edge above and left
-        // `.working`; the `isWorking` arm is belt-and-braces against a future
-        // path that reaches this block with work in flight, which would
-        // otherwise strand a running tab on the gray dot.
+        // `.attention` are only ever reached with the acknowledged split's
+        // report already gone, but another split may still be running, and
+        // the tab owes the user its sparkle back rather than the gray dot.
         if isWatched, status == .done || status == .attention {
-            status = isWorking ? .working : .idle
+            attentionSurfaces.removeAll()
+            status = working.isEmpty ? .idle : .working
         }
     }
 

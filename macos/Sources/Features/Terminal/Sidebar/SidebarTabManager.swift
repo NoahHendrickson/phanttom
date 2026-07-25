@@ -239,20 +239,37 @@ final class SidebarTabManager: ObservableObject {
         // window, judged against the bell window's OWN group (a bell in a tab
         // the user is looking at was already seen, even if that tab is in
         // another group).
+        //
+        // This listens to the per-surface RING (`.ghosttyBellDidRing`, posted
+        // with the surface that rang) rather than upstream's aggregated
+        // `terminalWindowBellDidChangeNotification`. Two reasons, both
+        // load-bearing for the sidebar:
+        //
+        //   - the aggregate says only that the window has a bell, so a bell
+        //     could not be attributed to the split that rang it — which is
+        //     what `PhanttomTabState` needs to tell a blocked agent apart
+        //     from a busy neighbor in the same tab;
+        //   - the aggregate is a `.removeDuplicates()` over `surface.bell`,
+        //     and that flag is only cleared by focus or a keystroke on the
+        //     surface itself. A background split that already rang stays
+        //     latched at true forever, the aggregate never changes again, and
+        //     its SECOND bell is swallowed — a blocked agent showing the gray
+        //     idle dot. A ring is an event, so no latch can eat it.
+        //
+        // Upstream's `bell` flag keeps its own uses (the 🔔 title
+        // decoration); we simply do not read it.
         notificationObservers.append(center.addObserver(
-            forName: .terminalWindowBellDidChangeNotification,
+            forName: .ghosttyBellDidRing,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            let controller = notification.object as? BaseTerminalController
-            let hasBell = notification.userInfo?[
-                Notification.Name.terminalWindowHasBellKey] as? Bool ?? false
+            let surface = notification.object as? Ghostty.SurfaceView
             DispatchQueue.main.async {
-                guard let self, let bellWindow = controller?.window else { return }
-                if hasBell,
-                   let bellTerminal = bellWindow as? TerminalWindow,
+                guard let self, let surface,
+                      let bellWindow = surface.window else { return }
+                if let bellTerminal = bellWindow as? TerminalWindow,
                    !Self.isWatched(bellWindow) {
-                    bellTerminal.phanttomTabState.noteBell()
+                    bellTerminal.phanttomTabState.noteBell(surface: surface.id)
                 }
                 guard self.isInGroup(bellWindow) else { return }
                 self.scheduleRefresh()
@@ -266,8 +283,8 @@ final class SidebarTabManager: ObservableObject {
         // yellow dot standing on the tab you are now staring at.
         //
         // Only activation is observed. Losing active status cannot change any
-        // status: going unwatched never marks `.done` (that needs a falling
-        // `isWorking` edge) or `.attention` (that needs `noteBell`), and
+        // status: going unwatched never marks `.done` (that needs a split's
+        // progress report to end) or `.attention` (that needs `noteBell`), and
         // acknowledgement requires `isWatched` to be true.
         notificationObservers.append(center.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
@@ -477,10 +494,17 @@ final class SidebarTabManager: ObservableObject {
             let isSelected = w === selected
             let isWatched = Self.isWatched(w)
 
-            // Working = any surface in the window reports progress; agents
-            // can run in a non-focused split.
+            // Progress is reported per split, not as one window-level OR:
+            // agents can run in a non-focused split, and a tab can be
+            // running two of them. `PhanttomTabState` needs to know WHICH
+            // split started or stopped to judge a bell against the agent
+            // that rang it. The whole live list goes over, so the state's
+            // per-surface bookkeeping prunes itself as splits close.
             let surfaces = controller.map { Array($0.surfaceTree) } ?? []
-            let isWorking = surfaces.contains { $0.progressReport != nil }
+            let progress = surfaces.map {
+                PhanttomTabState.SurfaceProgress(
+                    id: $0.id, isWorking: $0.progressReport != nil)
+            }
 
             // Step the window's tab state, then read it into the snapshot.
             // The state lives on the window, so whichever manager refreshes
@@ -489,7 +513,7 @@ final class SidebarTabManager: ObservableObject {
             // mirrors the focused one).
             state?.update(
                 titles: surfaces.isEmpty ? [w.title] : surfaces.map(\.title),
-                isWorking: isWorking,
+                surfaces: progress,
                 isWatched: isWatched
             )
 
