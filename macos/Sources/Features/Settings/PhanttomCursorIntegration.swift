@@ -15,7 +15,7 @@ import GhosttyKit
 enum PhanttomCursorIntegration {
     /// Bump on any change to `hookScript` text or `desiredHooks` /
     /// `desiredStatusLine`. Drives the Settings "Update available" state.
-    static let payloadVersion = 1
+    static let payloadVersion = 2
 
     static let hookScriptName = "phanttom-hook.sh"
     static let stateFileName = "phanttom-integration.json"
@@ -41,21 +41,35 @@ enum PhanttomCursorIntegration {
 
     /// Cursor Agent CLI hook events (camelCase). Flat `{ "command": ... }`
     /// entries — not Claude Code's nested matcher/`hooks` array shape.
-    ///
-    /// `beforeSubmitPrompt` is intentionally omitted until confirmed to fire
-    /// on interactive CLI sessions (print-mode spikes did not see it).
     static let desiredHooks: [(event: String, command: String)] = [
         ("sessionStart", dispatch("session-start")),
+        ("beforeSubmitPrompt", dispatch("prompt-submit")),
         ("preToolUse", dispatch("pre-tool-use")),
         ("afterAgentThought", dispatch("model-update")),
         ("postToolUse", dispatch("model-update")),
         ("stop", dispatch("stop")),
     ]
 
-    static let desiredStatusLine: [String: String] = [
-        "type": "command",
-        "command": dispatch("statusline"),
-    ]
+    /// The `statusLine` entry for `cli-config.json`.
+    ///
+    /// Absolute path, unlike `desiredHooks`: Cursor runs the statusline
+    /// command through `child_process.spawn(file, args, { shell: false })`
+    /// after splitting it with `string-argv`, so **no shell ever expands
+    /// `$HOME`** and `sh "$HOME/.cursor/phanttom-hook.sh" statusline` dies
+    /// with `exit 127 — No such file or directory`. hooks.json commands take
+    /// a different path (they are wrapped in a shell), which is why only
+    /// this one needs the home directory baked in.
+    static var desiredStatusLine: [String: String] {
+        [
+            "type": "command",
+            "command": statusLineCommand,
+        ]
+    }
+
+    nonisolated static var statusLineCommand: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "/bin/sh \"\(home)/.cursor/\(hookScriptName)\" statusline"
+    }
 
     nonisolated private static func dispatch(_ subcommand: String) -> String {
         "sh \"$HOME/.cursor/\(hookScriptName)\" \(subcommand)"
@@ -82,11 +96,30 @@ enum PhanttomCursorIntegration {
           exit 0
         fi
 
+        # Per-session scratch files. SID is set by the dispatch below before
+        # anything that emits.
+        cache_path() {
+          printf "%s/phanttom-cursor-%s-%s" "${TMPDIR:-/tmp}" "$1" "${SID:-unknown}"
+        }
+
         resolve_tty() {
           # Prefer path stashed by session-start (env injection).
           if [ -n "${PHANTTOM_TTY:-}" ] && [ -e "${PHANTTOM_TTY}" ]; then
             printf "%s" "${PHANTTOM_TTY}"
             return 0
+          fi
+          # …then the per-session cache. The statusline command is spawned
+          # with the CLI's own `process.env`, so it never sees the
+          # sessionStart env injection, and Cursor re-runs it several times a
+          # second while streaming — an uncached ancestor walk there would
+          # mean dozens of `ps` spawns per second.
+          c=$(cache_path tty)
+          if [ -f "$c" ]; then
+            v=$(cat "$c" 2>/dev/null || true)
+            if [ -n "$v" ] && [ -e "$v" ]; then
+              printf "%s" "$v"
+              return 0
+            fi
           fi
           # Hook processes themselves often have no controlling tty (`??`).
           # Walk ancestors for a real pty — never fall back to bare /dev/tty
@@ -98,7 +131,12 @@ enum PhanttomCursorIntegration {
             t=$(ps -o tty= -p "$p" 2>/dev/null | tr -d " ")
             case "$t" in
               ""|"?"|"??") ;;
-              *) printf "/dev/%s" "$t"; return 0 ;;
+              *)
+                v="/dev/$t"
+                printf "%s" "$v" > "$c" 2>/dev/null || true
+                printf "%s" "$v"
+                return 0
+                ;;
             esac
             p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " ")
             i=$((i + 1))
@@ -216,27 +254,40 @@ enum PhanttomCursorIntegration {
           printf "%s" "$m" | LC_ALL=C tr -d "[:cntrl:]"
         }
 
-        # Model-only marker: ❯⁣.cursor⁣⁣<model>
-        emit_model_marker() {
+        # Remember the session's first prompt so every later marker can carry
+        # the auto-name, exactly like Claude Code's UserPromptSubmit marker.
+        # Only `beforeSubmitPrompt` ever sees `prompt`.
+        record_prompt() {
+          j="$1"
+          c=$(cache_path prompt)
+          [ -f "$c" ] && return 0
+          # Strip control bytes (ESC/BEL/etc.) so a crafted prompt can't
+          # inject escape sequences into the OSC 2 title written below.
+          # Newlines first become spaces; LC_ALL=C keeps UTF-8 intact.
+          p=$(printf "%s" "$j" | json_get prompt | tr "\\n" " " |
+              LC_ALL=C tr -d "[:cntrl:]" | cut -c1-56)
+          [ -n "$p" ] || return 0
+          printf "%s" "$p" > "$c" 2>/dev/null || true
+        }
+
+        # Kind-aware marker: ❯⁣.cursor⁣<prompt>⁣<model>
+        # (empty prompt field until beforeSubmitPrompt has recorded one).
+        #
+        # Emitted on EVERY hook rather than only when the model changes:
+        # cursor-agent sets the terminal title itself (OSC 0 — "Cursor Agent"
+        # on mount, then the generated chat name once the first message is
+        # named, and an animated "… - ⏳ Working" while `showStatusIndicators`
+        # is on). A generated chat name is a plain title, so it would
+        # otherwise clobber the marker for good and drop the tab back to a
+        # terminal row. Re-emitting means the last write of every turn is
+        # ours.
+        emit_marker() {
           m="$1"
-          [ -n "$m" ] || return 0
-          sid="$2"
-          c="${TMPDIR:-/tmp}/phanttom-cursor-model-${sid:-unknown}-$$"
-          # Prefer stable cache key when session id is known.
-          if [ -n "$sid" ]; then
-            c="${TMPDIR:-/tmp}/phanttom-cursor-model-${sid}"
-          fi
-          if [ "$(cat "$c" 2>/dev/null || true)" = "$m" ]; then
-            return 0
-          fi
-          # Resolve the tty BEFORE recording the model as emitted. Caching
-          # first would mark this model delivered even when there was no tty
-          # to write to, and every later hook would then skip the marker —
-          # the badge would never appear for the rest of the session.
+          p=$(cat "$(cache_path prompt)" 2>/dev/null || true)
+          [ -n "$m" ] || [ -n "$p" ] || return 0
           t=$(resolve_tty)
           [ -n "$t" ] || return 0
-          printf "%s" "$m" > "$c" 2>/dev/null || true
-          printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3.cursor\\xe2\\x81\\xa3\\xe2\\x81\\xa3%s\\007" "$m" > "$t" 2>/dev/null || true
+          printf "\\033]2;\\xe2\\x9d\\xaf\\xe2\\x81\\xa3.cursor\\xe2\\x81\\xa3%s\\xe2\\x81\\xa3%s\\007" "$p" "$m" > "$t" 2>/dev/null || true
         }
 
         read_original_statusline() {
@@ -274,10 +325,10 @@ enum PhanttomCursorIntegration {
           session-start)
             j=$(cat)
             m=$(pick_model "$j")
-            sid=$(printf "%s" "$j" | json_get session_id)
+            SID=$(printf "%s" "$j" | json_get session_id)
             d=$(resolve_cwd "$j")
             tty=$(resolve_tty)
-            emit_model_marker "$m" "$sid"
+            emit_marker "$m"
             emit_osc7_path "$d"
             # Stash tty for later hooks via sessionStart env injection.
             if [ -n "$tty" ]; then
@@ -293,34 +344,48 @@ enum PhanttomCursorIntegration {
               respond_empty
             fi
             ;;
+          prompt-submit)
+            # The only event carrying the user's prompt. Rain starts here
+            # rather than at the first tool use, so a reply that runs no
+            # tools still shows as working.
+            j=$(cat)
+            SID=$(printf "%s" "$j" | json_get session_id)
+            emit_osc74 3
+            record_prompt "$j"
+            emit_marker "$(pick_model "$j")"
+            d=$(resolve_cwd "$j")
+            emit_osc7_path "$d"
+            respond_empty
+            ;;
           pre-tool-use)
             j=$(cat)
+            SID=$(printf "%s" "$j" | json_get session_id)
             emit_osc74 3
-            m=$(pick_model "$j")
-            sid=$(printf "%s" "$j" | json_get session_id)
-            emit_model_marker "$m" "$sid"
+            emit_marker "$(pick_model "$j")"
             d=$(resolve_cwd "$j")
             emit_osc7_path "$d"
             respond_empty
             ;;
           model-update)
             j=$(cat)
-            m=$(pick_model "$j")
-            sid=$(printf "%s" "$j" | json_get session_id)
-            emit_model_marker "$m" "$sid"
+            SID=$(printf "%s" "$j" | json_get session_id)
+            emit_marker "$(pick_model "$j")"
             respond_empty
             ;;
           stop)
             # Always clear — Cursor stop has no Claude-style background_tasks.
-            cat >/dev/null
+            j=$(cat)
+            SID=$(printf "%s" "$j" | json_get session_id)
             emit_osc74 0
+            # Last write of the turn: reclaim the title from whatever
+            # cursor-agent named the chat.
+            emit_marker "$(pick_model "$j")"
             respond_empty
             ;;
           statusline)
             j=$(cat)
-            m=$(pick_model "$j")
-            sid=$(printf "%s" "$j" | json_get session_id)
-            emit_model_marker "$m" "$sid"
+            SID=$(printf "%s" "$j" | json_get session_id)
+            emit_marker "$(pick_model "$j")"
             orig=$(read_original_statusline)
             if [ -n "$orig" ]; then
               printf "%s" "$j" | sh -c "$orig"

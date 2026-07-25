@@ -281,12 +281,22 @@ final class PhanttomTabState {
     }
 
     /// "claude-fable-5" → "Fable 5", "claude-opus-4-8" → "Opus 4.8",
-    /// "claude-haiku-4-5-20251001" → "Haiku 4.5": family word capitalized,
-    /// short numeric tokens immediately before/after the family joined with
-    /// dots, 8-digit date stamps and later qualifiers ("preview-2") dropped.
-    /// Works for old ids with the family last ("claude-3-5-sonnet-…") too.
-    /// An id with no recognizable family shows as-is rather than hiding.
+    /// "claude-haiku-4-5-20251001" → "Haiku 4.5", "grok-4.5" → "Grok 4.5":
+    /// family word capitalized, short version tokens immediately
+    /// before/after the family joined with dots, 8-digit date stamps and
+    /// later qualifiers ("preview-2") dropped. Works for old ids with the
+    /// family last ("claude-3-5-sonnet-…") too. An id with no recognizable
+    /// family shows as-is rather than hiding.
     static func modelDisplayName(_ id: String) -> String {
+        // A version token is either a bare number ("4", Anthropic style) or
+        // an already-dotted one ("4.5", how every other vendor writes it —
+        // Cursor reports "grok-4.5", "gpt-5.1"). Splitting on "-" alone left
+        // the dotted form failing the all-digits test, so those ids showed
+        // as a bare family name with the version silently dropped.
+        func isVersion(_ t: Substring) -> Bool {
+            guard t.count < 8, t.contains(where: \.isNumber) else { return false }
+            return t.allSatisfy { $0.isNumber || $0 == "." }
+        }
         let tokens = id.split(separator: "-")
         guard let familyIdx = tokens.firstIndex(where: {
             $0.allSatisfy(\.isLetter) && $0.lowercased() != "claude"
@@ -296,7 +306,7 @@ final class PhanttomTabState {
         var i = familyIdx
         while i > tokens.startIndex {
             let t = tokens[tokens.index(before: i)]
-            guard t.allSatisfy(\.isNumber), t.count < 8 else { break }
+            guard isVersion(t) else { break }
             before.insert(t, at: 0)
             i = tokens.index(before: i)
         }
@@ -304,7 +314,7 @@ final class PhanttomTabState {
         i = tokens.index(after: familyIdx)
         while i < tokens.endIndex {
             let t = tokens[i]
-            guard t.allSatisfy(\.isNumber), t.count < 8 else { break }
+            guard isVersion(t) else { break }
             after.append(t)
             i = tokens.index(after: i)
         }

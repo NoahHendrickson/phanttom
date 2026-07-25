@@ -302,6 +302,46 @@ struct PhanttomCursorIntegrationTests {
         #expect(PhanttomCursorIntegration.isAutoInstallDisabled(paths: paths))
     }
 
+    // MARK: - Hook payload
+
+    /// Cursor spawns the statusline command without a shell, so an
+    /// unexpanded `$HOME` there exits 127 and the statusline silently never
+    /// runs. hooks.json commands do go through a shell and stay portable.
+    @Test func statusLineCommandIsAbsoluteUnlikeHookCommands() {
+        let cmd = PhanttomCursorIntegration.statusLineCommand
+        #expect(!cmd.contains("$HOME"))
+        #expect(cmd.hasPrefix("/bin/sh \"/"))
+        #expect(cmd.hasSuffix("statusline"))
+        #expect(PhanttomCursorIntegration.isOurs(command: cmd))
+        #expect(PhanttomCursorIntegration.desiredStatusLine["command"] == cmd)
+
+        for desired in PhanttomCursorIntegration.desiredHooks {
+            #expect(desired.command.contains("$HOME"))
+        }
+    }
+
+    /// Every installed dispatch must have a case in the script, and every one
+    /// of them re-emits the marker: cursor-agent writes its own OSC 0 title
+    /// (the generated chat name), which would otherwise take the tab back to
+    /// a plain terminal row for the rest of the session.
+    @Test func everyDispatchHandlesAndReEmitsTheMarker() {
+        let script = PhanttomCursorIntegration.hookScript
+        var subcommands = PhanttomCursorIntegration.desiredHooks.map {
+            String($0.command.split(separator: " ").last ?? "")
+        }
+        subcommands.append("statusline")
+
+        for sub in subcommands {
+            guard let start = script.range(of: "\n  \(sub))\n") else {
+                Issue.record("no case for subcommand \(sub)")
+                continue
+            }
+            let rest = script[start.upperBound...]
+            let body = rest.range(of: "\n    ;;").map { String(rest[..<$0.lowerBound]) }
+            #expect(body?.contains("emit_marker") == true, "\(sub) does not re-emit the marker")
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeTempCursorDir() throws -> URL {
