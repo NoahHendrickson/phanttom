@@ -626,11 +626,12 @@ struct SidebarTabRow: View {
                 if isEditing {
                     titleEditor
                 } else {
-                    Text(tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle)
-                        .font(SidebarFont.font(size: titleSize))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    SidebarTypewriterTitle(
+                        text: tab.displayTitle.isEmpty ? "Terminal" : tab.displayTitle,
+                        // Only a first-prompt auto-name types itself in; a
+                        // custom name beats it, so pass nil once one exists.
+                        animatedValue: tab.customTitle == nil ? tab.autoTitle : nil,
+                        size: titleSize)
                 }
                 // Branch when there is one (worktree branches show like any
                 // other — the branch name is the identity that matters, and
