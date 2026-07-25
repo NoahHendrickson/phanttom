@@ -654,6 +654,100 @@ struct PhanttomClaudeIntegrationTests {
         #expect(PhanttomClaudeIntegration.isAutoInstallDisabled(paths: paths))
     }
 
+    @Test func consentMarkerRoundTripsAndSurvivesUninstall() throws {
+        // The consent answer must outlive Remove… for the same reason the
+        // opt-out does: it lives in ~/.claude, which every build shares, and
+        // a swept marker would re-ask a question already answered.
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(baseDir: URL(fileURLWithPath: dir))
+
+        #expect(!PhanttomClaudeIntegration.hasAskedAutoInstall(paths: paths))
+        PhanttomClaudeIntegration.setAskedAutoInstall(true, paths: paths)
+        #expect(PhanttomClaudeIntegration.hasAskedAutoInstall(paths: paths))
+
+        try PhanttomClaudeIntegration.writeSettings([:], to: paths.settings)
+        _ = PhanttomClaudeIntegration.performInstall(paths: paths)
+        #expect(PhanttomClaudeIntegration.performUninstall(paths: paths).error == nil)
+        #expect(PhanttomClaudeIntegration.hasAskedAutoInstall(paths: paths))
+
+        PhanttomClaudeIntegration.setAskedAutoInstall(false, paths: paths)
+        #expect(!PhanttomClaudeIntegration.hasAskedAutoInstall(paths: paths))
+    }
+
+    @Test func uninstallRemovesBackupsAndSessionState() throws {
+        // Backups are snapshots of a file that can hold credentials, and the
+        // session directory names the sessions that ran. Once the config is
+        // back to its pre-Phanttom shape, both are ours to clean up.
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(baseDir: URL(fileURLWithPath: dir))
+
+        try PhanttomClaudeIntegration.writeSettings(
+            ["env": ["ANTHROPIC_API_KEY": "sk-secret"] as [String: Any]],
+            to: paths.settings)
+        _ = PhanttomClaudeIntegration.performInstall(paths: paths)
+        #expect(try backupCount(in: dir) == 1)
+        // The hook script creates this at runtime; stand in for it.
+        try FileManager.default.createDirectory(
+            at: paths.sessionState, withIntermediateDirectories: true)
+
+        #expect(PhanttomClaudeIntegration.performUninstall(paths: paths).error == nil)
+        #expect(try backupCount(in: dir) == 0)
+        #expect(!FileManager.default.fileExists(atPath: paths.sessionState.path))
+    }
+
+    @Test func rewritingSettingsKeepsItsMode() throws {
+        // An atomic write replaces the file. settings.json can carry
+        // credentials, so a 0600 config must not come back 0644 just because
+        // launch-time repair rewrote it.
+        let dir = try makeTempClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let paths = PhanttomClaudeIntegration.Paths(baseDir: URL(fileURLWithPath: dir))
+
+        try PhanttomClaudeIntegration.writeSettings(["model": "sonnet"], to: paths.settings)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: paths.settings.path)
+
+        _ = PhanttomClaudeIntegration.performInstall(paths: paths)
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: paths.settings.path)
+        let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        #expect(perms & 0o777 == 0o600)
+    }
+
+    // MARK: - Hook script emission guards
+
+    @Test func hookScriptOnlyEmitsInsideGhostty() {
+        // The hooks run for every Claude Code session on the machine, so the
+        // script must decide for itself whether this one is ours.
+        let script = PhanttomClaudeIntegration.hookScript
+        #expect(script.contains("phanttom_terminal()"))
+        #expect(script.contains("TERM_PROGRAM:-"))
+        #expect(script.contains("if ! phanttom_terminal; then"))
+        // …but a gated-out statusline still has to produce the user's own
+        // statusline: we replaced that command with our dispatch.
+        #expect(script.contains("statusline) run_statusline_chain"))
+    }
+
+    @Test func hookScriptKeepsSessionStateOutOfTmp() {
+        let script = PhanttomClaudeIntegration.hookScript
+        // The exact expansion that used to build the cache path.
+        #expect(!script.contains("${TMPDIR"))
+        #expect(script.contains(
+            "SESSION_DIR=\"${HOME}/.claude/\(PhanttomIntegrationSupport.sessionStateDirName)\""))
+        #expect(script.contains("chmod 700"))
+    }
+
+    @Test func hookScriptNamesTheTabOnlyOnce() {
+        // Later prompts still send the marker (kind + model keep the row an
+        // agent row) but with an empty prompt field, so prompt text stops
+        // flowing into the window title after the tab has a name.
+        let script = PhanttomClaudeIntegration.hookScript
+        #expect(script.contains("if [ -z \"$named\" ] || [ -f \"$named\" ]; then"))
+        #expect(script.contains(": > \"$named\""))
+    }
+
     @Test func optOutMigrationDefersUntilClaudeDirExists() {
         // Nothing to write the marker into yet — the caller must keep the old
         // UserDefaults key rather than clearing it and losing the opt-out.

@@ -302,6 +302,64 @@ struct PhanttomCursorIntegrationTests {
         #expect(PhanttomCursorIntegration.isAutoInstallDisabled(paths: paths))
     }
 
+    // MARK: - Privacy hardening
+
+    @Test func hookScriptOnlyEmitsInsideGhosttyAgentSessions() {
+        // ~/.cursor/hooks.json is read by every Cursor Agent session on the
+        // machine, so CURSOR_AGENT alone is not enough to decide these
+        // sequences belong on this tty.
+        let script = PhanttomCursorIntegration.hookScript
+        #expect(script.contains("phanttom_terminal()"))
+        #expect(script.contains(
+            "if [ \"${CURSOR_AGENT:-}\" != \"1\" ] || ! phanttom_terminal; then"))
+        // A gated-out statusline still chains: we replaced that command.
+        #expect(script.contains("statusline) run_statusline_chain"))
+    }
+
+    @Test func hookScriptKeepsSessionStateOutOfTmp() {
+        let script = PhanttomCursorIntegration.hookScript
+        // The exact expansion that used to build the cache path.
+        #expect(!script.contains("${TMPDIR"))
+        #expect(script.contains(
+            "SESSION_DIR=\"${HOME}/.cursor/\(PhanttomIntegrationSupport.sessionStateDirName)\""))
+        #expect(script.contains("chmod 700"))
+    }
+
+    @Test func consentMarkerSurvivesUninstall() throws {
+        let dir = try makeTempCursorDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = PhanttomCursorIntegration.Paths(baseDir: dir)
+
+        #expect(!PhanttomCursorIntegration.hasAskedAutoInstall(paths: paths))
+        PhanttomCursorIntegration.setAskedAutoInstall(true, paths: paths)
+        _ = PhanttomCursorIntegration.performInstall(paths: paths)
+        #expect(PhanttomCursorIntegration.performUninstall(paths: paths).error == nil)
+        #expect(PhanttomCursorIntegration.hasAskedAutoInstall(paths: paths))
+    }
+
+    @Test func uninstallRemovesBackupsAndSessionState() throws {
+        let dir = try makeTempCursorDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = PhanttomCursorIntegration.Paths(baseDir: dir)
+
+        try PhanttomCursorIntegration.writeJSONObject(
+            ["hooks": [String: Any]()], to: paths.hooks)
+        try PhanttomCursorIntegration.writeJSONObject([:], to: paths.cliConfig)
+        _ = PhanttomCursorIntegration.performInstall(paths: paths)
+        try FileManager.default.createDirectory(
+            at: paths.sessionState, withIntermediateDirectories: true)
+
+        #expect(PhanttomCursorIntegration.performUninstall(paths: paths).error == nil)
+        let leftovers = try FileManager.default
+            .contentsOfDirectory(atPath: dir.path)
+            .filter {
+                $0.hasPrefix(PhanttomCursorIntegration.hooksBackupPrefix)
+                    || $0.hasPrefix(PhanttomCursorIntegration.cliConfigBackupPrefix)
+            }
+        #expect(leftovers.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: paths.sessionState.path))
+    }
+
     // MARK: - Helpers
 
     private func makeTempCursorDir() throws -> URL {

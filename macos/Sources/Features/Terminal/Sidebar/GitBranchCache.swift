@@ -26,6 +26,12 @@ final class GitBranchCache {
         /// True when the pwd lives in a linked git worktree (`.git` is a
         /// file whose `gitdir:` points under `<repo>/.git/worktrees/`).
         var isWorktree: Bool = false
+        /// True when the repository declares a remote hosted on github.com.
+        /// Gates the `gh`-backed PR lookup: without this, opening a tab in
+        /// any git directory — a repo you just cloned to look at, a vendored
+        /// checkout, a non-GitHub repo — spawns `gh` there and makes an
+        /// authenticated request that can only ever come back empty.
+        var hasGitHubRemote: Bool = false
     }
 
     /// pwd → last resolved metadata. A stored empty value means "resolved:
@@ -90,10 +96,15 @@ final class GitBranchCache {
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDir) {
                 let headPath: String
+                // Where this checkout's remotes are declared. For a linked
+                // worktree that is the parent repo's config (worktrees share
+                // the common dir), which is also where its remotes live.
+                let configPath: String
                 var projectRoot = dir
                 var isWorktree = false
                 if isDir.boolValue {
                     headPath = (gitPath as NSString).appendingPathComponent("HEAD")
+                    configPath = (gitPath as NSString).appendingPathComponent("config")
                 } else if let contents = try? String(contentsOfFile: gitPath, encoding: .utf8),
                           let gitdirLine = contents
                             .split(separator: "\n")
@@ -127,25 +138,73 @@ final class GitBranchCache {
                             fileURLWithPath: String(normalizedGitdir[..<range.lowerBound])
                         ).standardizedFileURL.path
                     }
+                    configPath = isWorktree
+                        ? ((projectRoot as NSString)
+                            .appendingPathComponent(".git") as NSString)
+                            .appendingPathComponent("config")
+                        : (normalizedGitdir as NSString)
+                            .appendingPathComponent("config")
                 } else {
                     return Resolved()
                 }
+                let hasGitHubRemote = configHasGitHubRemote(atPath: configPath)
                 // Unreadable HEAD: no usable checkout — keep the project
                 // identity for grouping, but don't claim worktree (a future
                 // glyph shouldn't badge a broken dir).
                 guard let head = try? String(contentsOfFile: headPath, encoding: .utf8)
-                else { return Resolved(branch: nil, projectRoot: projectRoot) }
+                else {
+                    return Resolved(
+                        branch: nil,
+                        projectRoot: projectRoot,
+                        hasGitHubRemote: hasGitHubRemote)
+                }
                 let prefix = "ref: refs/heads/"
                 let branch: String? = head.hasPrefix(prefix)
                     ? head.dropFirst(prefix.count)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     : nil // detached HEAD
                 return Resolved(
-                    branch: branch, projectRoot: projectRoot, isWorktree: isWorktree)
+                    branch: branch,
+                    projectRoot: projectRoot,
+                    isWorktree: isWorktree,
+                    hasGitHubRemote: hasGitHubRemote)
             }
             dir = (dir as NSString).deletingLastPathComponent
         }
         return Resolved()
+    }
+
+    /// True when the git config at `path` declares at least one remote on
+    /// github.com. Text-only: the file is read, never executed, and no git
+    /// subprocess runs in the repository to answer this.
+    nonisolated static func configHasGitHubRemote(atPath path: String) -> Bool {
+        guard let contents = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return false }
+        var inRemoteSection = false
+        for rawLine in contents.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                inRemoteSection = line.lowercased().hasPrefix("[remote")
+                continue
+            }
+            guard inRemoteSection, let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+            guard key == "url" || key == "pushurl" else { continue }
+            if isGitHubRemote(String(line[line.index(after: eq)...])) { return true }
+        }
+        return false
+    }
+
+    /// Whether a remote URL points at github.com — matched on the host, so
+    /// `evil-github.com` and `github.com.example.net` do not qualify.
+    nonisolated static func isGitHubRemote(_ url: String) -> Bool {
+        let s = url.trimmingCharacters(in: .whitespaces).lowercased()
+        for marker in [
+            "://github.com/", "://github.com:", "@github.com/", "@github.com:",
+        ] where s.contains(marker) {
+            return true
+        }
+        return s.hasPrefix("github.com:") || s.hasPrefix("github.com/")
     }
 
     /// True when `gitdir` is a linked worktree git dir:

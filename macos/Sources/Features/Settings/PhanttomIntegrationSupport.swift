@@ -68,6 +68,40 @@ enum PhanttomIntegrationSupport {
         }
     }
 
+    // MARK: - Consent marker
+
+    /// Written once the user has been asked whether to install this agent's
+    /// hooks (or has been grandfathered in because the hooks were already
+    /// installed). While it is absent, launch-time sync must ask before
+    /// touching the agent's config.
+    ///
+    /// A file beside the config it governs for the same reason as
+    /// `optOutFileName`: the answer is about `~/.claude` / `~/.cursor`, which
+    /// every build shares, while `UserDefaults` is per bundle identifier. It
+    /// is deliberately separate from the opt-out marker — "asked and said no"
+    /// and "asked and said yes" must be distinguishable from "never asked",
+    /// and Set Up (which clears the opt-out) must not un-ask the question.
+    static let consentFileName = ".phanttom-autoinstall-asked"
+
+    /// Whether the user has already answered the install question for the
+    /// agent rooted at `directory`.
+    nonisolated static func hasAskedAutoInstall(in directory: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(consentFileName).path)
+    }
+
+    /// Record that the question has been answered. Best-effort, like the
+    /// opt-out: a missing agent directory means there was nothing to install
+    /// into, and the question is asked again once it exists.
+    nonisolated static func setAskedAutoInstall(_ asked: Bool, in directory: URL) {
+        let marker = directory.appendingPathComponent(consentFileName)
+        if asked {
+            try? Data().write(to: marker)
+        } else {
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
     // MARK: - Directories
 
     nonisolated static func directoryExists(at url: URL) -> Bool {
@@ -99,10 +133,18 @@ enum PhanttomIntegrationSupport {
     /// Serialize and write atomically. The re-parse check is deliberate: a
     /// dictionary carrying a non-JSON value serializes lazily and would
     /// otherwise land as a truncated config file.
+    ///
+    /// An atomic write replaces the file rather than rewriting it in place,
+    /// so the existing mode is captured first and re-applied afterwards: these
+    /// are agent config files that can carry credentials (`env` blocks,
+    /// `apiKeyHelper`), and a user who chmodded `settings.json` to 0600 must
+    /// not silently get a 0644 copy back because Phanttom rewrote it.
     nonisolated static func writeJSONObject(
         _ object: [String: Any],
         to url: URL
     ) throws {
+        let priorMode = (try? FileManager.default.attributesOfItem(atPath: url.path))
+            .flatMap { $0[.posixPermissions] as? NSNumber }
         let data: Data
         do {
             data = try JSONSerialization.data(
@@ -123,6 +165,10 @@ enum PhanttomIntegrationSupport {
             try payload.write(to: url, options: .atomic)
         } catch {
             throw IOError.writeFailed(error.localizedDescription)
+        }
+        if let priorMode {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: priorMode], ofItemAtPath: url.path)
         }
     }
 
@@ -148,6 +194,65 @@ enum PhanttomIntegrationSupport {
     }
 
     // MARK: - Hook script payload
+
+    /// Per-session scratch directory each agent's hook script keeps under its
+    /// own config directory (`~/.claude/.phanttom-sessions`,
+    /// `~/.cursor/.phanttom-sessions`): the last model emitted, and whether a
+    /// tab has already spent its one naming prompt.
+    ///
+    /// Deliberately not `$TMPDIR`/`/tmp`: with `TMPDIR` unset that path is
+    /// world-writable and its name guessable, so a planted symlink could
+    /// redirect the writes. Created 0700 by `hookPrelude` below.
+    static let sessionStateDirName = ".phanttom-sessions"
+
+    /// The opening of every agent's `phanttom-hook.sh`: the emit guard and
+    /// the private per-session scratch directory. Shared because it is
+    /// genuinely the same decision for every agent — "is this session running
+    /// in Phanttom, and where may I keep state" — unlike the emit logic
+    /// below it, which differs per agent for real reasons (`CLAUDE_PID` vs
+    /// `CURSOR_AGENT` + an ancestor tty walk) and stays in each script.
+    ///
+    /// Interpolated at column 0 of a script's multiline literal: Swift does
+    /// not re-indent interpolated text, and shell does not care, but keeping
+    /// it flush matches the rest of the emitted file.
+    ///
+    /// Editing this text changes both payloads — bump **both**
+    /// `payloadVersion`s.
+    nonisolated static func hookPrelude(agentDirName: String) -> String {
+        """
+        SESSION_DIR="${HOME}/\(agentDirName)/\(sessionStateDirName)"
+
+        # These hooks live in the agent's config directory, so they run for
+        # EVERY session of that agent on this machine — including ones started
+        # from iTerm, VS Code, tmux or an ssh-in. Only Phanttom/Ghostty
+        # understands the sequences we emit, and the marker title carries
+        # prompt text, so stay silent everywhere else rather than rewriting a
+        # foreign terminal's window title.
+        phanttom_terminal() {
+          [ "${TERM_PROGRAM:-}" = "ghostty" ] || [ -n "${GHOSTTY_RESOURCES_DIR:-}" ]
+        }
+
+        # Private per-session scratch. Under $HOME at 0700, never $TMPDIR or
+        # /tmp: with TMPDIR unset that path is world-writable and its name
+        # guessable, so a planted symlink could redirect these writes. Prints
+        # nothing when the directory can't be created; callers treat that as
+        # "no cache" and simply re-emit.
+        session_dir() {
+          if [ ! -d "$SESSION_DIR" ]; then
+            mkdir -p "$SESSION_DIR" 2>/dev/null || return 0
+            chmod 700 "$SESSION_DIR" 2>/dev/null || true
+          fi
+          printf "%s" "$SESSION_DIR"
+        }
+
+        # Sessions end without telling us, so sweep week-old scratch files.
+        prune_sessions() {
+          sdir=$(session_dir)
+          [ -n "$sdir" ] || return 0
+          find "$sdir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null || true
+        }
+        """
+    }
 
     /// Version stamped into the installed script by every integration's
     /// `hookScript` (`# phanttom-hook v<N>`). Drives the Settings "Update
@@ -201,7 +306,41 @@ enum PhanttomIntegrationSupport {
             n += 1
         }
         try fm.copyItem(at: url, to: backupURL)
+        // `copyItem` inherits the source mode, which for a world-readable
+        // settings.json means a world-readable snapshot of a file that can
+        // contain credentials. Nothing but this process and the user ever
+        // reads a backup, so tighten it unconditionally.
+        try? fm.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
         pruneBackups(in: dir, prefix: prefix, keeping: 5)
+    }
+
+    /// Delete every backup we made with `prefix`. Called after a *successful*
+    /// uninstall, once the agent's config is back to its pre-Phanttom shape:
+    /// keeping the snapshots past that point means a credential the user has
+    /// since deleted from `settings.json` lives on indefinitely, in plaintext,
+    /// in a file they never knew we created.
+    nonisolated static func removeBackups(in directory: URL, prefix: String) {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else { return }
+        for url in items where url.lastPathComponent.hasPrefix(prefix) {
+            guard isRegularFile(url) else { continue }
+            try? fm.removeItem(at: url)
+        }
+    }
+
+    /// Every deletion in this file is name-matched inside the user's agent
+    /// directory, and `removeItem` deletes a directory *and its contents*. A
+    /// directory can't get that name by our own hand, but the cost of being
+    /// wrong is someone's data, so nothing but a regular file is ever removed.
+    nonisolated private static func isRegularFile(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            && !isDir.boolValue
     }
 
     nonisolated static func pruneBackups(
@@ -229,6 +368,7 @@ enum PhanttomIntegrationSupport {
         // snapshot is the pristine pre-Phanttom copy and must never be pruned.
         let oldest = backups.last
         for url in backups.dropFirst(max) where url != oldest {
+            guard isRegularFile(url) else { continue }
             try? fm.removeItem(at: url)
         }
     }

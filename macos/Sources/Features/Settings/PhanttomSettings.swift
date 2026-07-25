@@ -84,6 +84,21 @@ final class PhanttomSettings: ObservableObject {
         didSet { persist() }
     }
 
+    /// Show each idle tab's branch as a GitHub PR dot (open / merged).
+    ///
+    /// On by default — it is one of the reasons to run this fork — but it is
+    /// the only thing in Phanttom that talks to the network, so it must be
+    /// switchable and it must say so: resolving it shells out to the `gh` CLI
+    /// with the user's GitHub credentials, from the tab's own working
+    /// directory, and revalidates every 60s per (directory, branch). The
+    /// query is narrowed to rows that actually render the icon (`.idle`) and
+    /// to repositories with a github.com remote, so it is not made from
+    /// arbitrary directories, and the Settings footer states plainly what it
+    /// does.
+    @Published var showPullRequestStatus: Bool {
+        didSet { persist() }
+    }
+
     // MARK: - Session restore (via config fragment)
 
     /// When on, writes `window-save-state = always` into `phanttom.conf` so
@@ -101,6 +116,7 @@ final class PhanttomSettings: ObservableObject {
         static let overrideFontSize = "PhanttomOverrideFontSize"
         static let fontSize = "PhanttomFontSize"
         static let sidebarGroupByProject = "PhanttomSidebarGroupByProject"
+        static let showPullRequestStatus = "PhanttomShowPullRequestStatus"
         static let restoreWindowsOnQuit = "PhanttomRestoreWindowsOnQuit"
         /// Explicit lifecycle of the managed `config-file = ?phanttom.conf`
         /// include, persisted as an `IncludeState` raw value. Replaces the
@@ -136,6 +152,8 @@ final class PhanttomSettings: ObservableObject {
         overrideFontSize = defaults.bool(forKey: Keys.overrideFontSize)
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 13
         sidebarGroupByProject = defaults.object(forKey: Keys.sidebarGroupByProject) as? Bool ?? true
+        showPullRequestStatus =
+            defaults.object(forKey: Keys.showPullRequestStatus) as? Bool ?? true
         restoreWindowsOnQuit = defaults.bool(forKey: Keys.restoreWindowsOnQuit)
         loaded = true
     }
@@ -157,6 +175,7 @@ final class PhanttomSettings: ObservableObject {
         defaults.set(overrideFontSize, forKey: Keys.overrideFontSize)
         defaults.set(fontSize, forKey: Keys.fontSize)
         defaults.set(sidebarGroupByProject, forKey: Keys.sidebarGroupByProject)
+        defaults.set(showPullRequestStatus, forKey: Keys.showPullRequestStatus)
         defaults.set(restoreWindowsOnQuit, forKey: Keys.restoreWindowsOnQuit)
     }
 
