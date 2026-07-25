@@ -165,9 +165,9 @@ private struct CursorAgentIntegrationSection: View {
                 if showPrimaryButton {
                     Button(primaryButtonTitle) {
                         // Explicit Set Up also lifts a prior Remove's opt-out
-                        // so launch-time auto-sync resumes.
-                        UserDefaults.standard.removeObject(
-                            forKey: PhanttomCursorIntegration.autoInstallDisabledKey)
+                        // so launch-time auto-sync resumes — for every build,
+                        // since the marker lives beside hooks.json.
+                        PhanttomCursorIntegration.setAutoInstallDisabled(false)
                         apply(PhanttomCursorIntegration.performInstall())
                     }
                     .disabled(cursorMissing)
@@ -194,9 +194,9 @@ private struct CursorAgentIntegrationSection: View {
         .alert("Remove Cursor Agent Integration?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) {
                 // Removal must stick: block launch-time auto-install until an
-                // explicit Set Up.
-                UserDefaults.standard.set(
-                    true, forKey: PhanttomCursorIntegration.autoInstallDisabledKey)
+                // explicit Set Up. Recorded beside hooks.json so a Debug
+                // build and a release build honor the same decision.
+                PhanttomCursorIntegration.setAutoInstallDisabled(true)
                 apply(PhanttomCursorIntegration.performUninstall())
             }
             Button("Cancel", role: .cancel) {}

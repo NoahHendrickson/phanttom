@@ -320,12 +320,17 @@ triggers silent launch repair — expected churn, not a regression.
 (and repair / update) automatically on every launch whenever `~/.cursor`
 exists — no prompt, no consent dialog (`autoSyncCursorIntegration` in
 `AppDelegate+Phanttom.swift`). The only off switch is **Phanttom Settings →
-Cursor Agent → Remove…**, which sets the `PhanttomCursorAutoInstallDisabled`
-default so removal sticks across launches; `Set Up` clears it and auto-sync
-resumes. A missing `~/.cursor` or unparseable `hooks.json` / `cli-config.json`
-is silently retried next launch. There is no consent-key migration here (the
-Claude side has one): this integration never shipped a prompt, so there is no
-prior decision to honor. Implementation:
+Cursor Agent → Remove…**, which writes an empty
+`~/.cursor/.phanttom-no-autoinstall` marker so removal sticks across launches;
+`Set Up` deletes it and auto-sync resumes. Same file-not-UserDefaults
+reasoning as the Claude opt-out above — one decision per `~/.cursor`, shared
+by every build — and likewise **not** a field in `phanttom-integration.json`,
+which uninstall deletes (`optOutSurvivesUninstall` guards that). A missing
+`~/.cursor` or unparseable `hooks.json` / `cli-config.json` is silently
+retried next launch. There is no key migration here (the Claude side has
+two): this integration never shipped a prompt, and its short-lived
+`PhanttomCursorAutoInstallDisabled` default never reached a release.
+Implementation:
 `macos/Sources/Features/Settings/PhanttomCursorIntegration.swift`.
 
 **Architecture.** Same versioned helper pattern as Claude, adapted to Cursor's

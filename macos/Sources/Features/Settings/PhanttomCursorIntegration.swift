@@ -21,12 +21,20 @@ enum PhanttomCursorIntegration {
     static let stateFileName = "phanttom-integration.json"
     static let hooksFileName = "hooks.json"
     static let cliConfigFileName = "cli-config.json"
-    /// Set (true) by an explicit Remove… in Settings; cleared by Set Up /
-    /// Update. While set, launch-time auto-install stays off — an explicit
-    /// removal must stick across launches. Mirrors the Claude integration;
-    /// there is no legacy consent key to migrate because this integration
-    /// never shipped a prompt.
-    static let autoInstallDisabledKey = "PhanttomCursorAutoInstallDisabled"
+    /// Marker written by an explicit Remove… in Settings and deleted by
+    /// Set Up / Update. While it exists, launch-time auto-install stays off.
+    ///
+    /// A file beside `hooks.json` rather than a UserDefaults key, for the
+    /// same reason as `PhanttomClaudeIntegration.optOutFileName`:
+    /// `UserDefaults.standard` is scoped to the bundle identifier, so the
+    /// Debug and release builds have separate domains while auto-installing
+    /// into the *same* `~/.cursor`. Deliberately NOT a field in
+    /// `phanttom-integration.json` — uninstall deletes that file, and
+    /// Remove… runs the uninstall right after recording the opt-out.
+    ///
+    /// No migration from a defaults key: the Cursor integration never
+    /// shipped in a release, so there is no prior decision to carry over.
+    static let optOutFileName = ".phanttom-no-autoinstall"
 
     // MARK: - Status
 
@@ -552,6 +560,7 @@ enum PhanttomCursorIntegration {
         var cliConfig: URL { baseDir.appendingPathComponent(cliConfigFileName) }
         var script: URL { baseDir.appendingPathComponent(hookScriptName) }
         var state: URL { baseDir.appendingPathComponent(stateFileName) }
+        var optOut: URL { baseDir.appendingPathComponent(optOutFileName) }
 
         static var `default`: Paths {
             Paths(baseDir: FileManager.default.homeDirectoryForCurrentUser
@@ -563,6 +572,28 @@ enum PhanttomCursorIntegration {
         let status: IntegrationStatus
         let error: ActionError?
         let message: String
+    }
+
+    // MARK: - Auto-install opt-out
+
+    /// Whether an explicit Remove… has switched launch-time auto-install off.
+    /// Shared across builds — see `optOutFileName`.
+    nonisolated static func isAutoInstallDisabled(paths: Paths = .default) -> Bool {
+        FileManager.default.fileExists(atPath: paths.optOut.path)
+    }
+
+    /// Record (or lift) the opt-out. Writing is best-effort: if `~/.cursor`
+    /// is missing there is nothing to auto-install into anyway, and the next
+    /// Remove… once it exists will record the decision.
+    nonisolated static func setAutoInstallDisabled(
+        _ disabled: Bool,
+        paths: Paths = .default
+    ) {
+        if disabled {
+            try? Data().write(to: paths.optOut)
+        } else {
+            try? FileManager.default.removeItem(at: paths.optOut)
+        }
     }
 
     nonisolated static func cursorDirectoryExists(paths: Paths = .default) -> Bool {

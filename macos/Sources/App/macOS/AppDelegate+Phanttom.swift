@@ -120,11 +120,12 @@ extension AppDelegate {
     /// Zero-touch Cursor Agent integration, mirroring
     /// `autoSyncClaudeIntegration`: on every launch, silently install (or
     /// repair / update) Phanttom's hooks whenever `~/.cursor` exists. The only
-    /// off switch is an explicit Remove… in Settings, which sets
-    /// `autoInstallDisabledKey`; Set Up re-enables it.
+    /// off switch is an explicit Remove… in Settings, which writes the shared
+    /// opt-out marker beside hooks.json; Set Up removes it.
     ///
-    /// No consent-key migration here (unlike Claude): this integration has
-    /// never shipped a prompt, so there is no prior decision to honor.
+    /// No key migration here (unlike Claude): this integration has never
+    /// shipped a prompt, nor a released defaults-backed opt-out, so there is
+    /// no prior decision to honor.
     @MainActor
     func autoSyncCursorIntegration() {
         // Ghostty.app is the XCTest host — never install there.
@@ -132,9 +133,7 @@ extension AppDelegate {
             return
         }
 
-        guard !UserDefaults.standard.bool(
-            forKey: PhanttomCursorIntegration.autoInstallDisabledKey)
-        else { return }
+        guard !PhanttomCursorIntegration.isAutoInstallDisabled() else { return }
 
         // cursorNotFound / hooksCorrupt / cliConfigCorrupt: nothing safe to do
         // — retry next launch (once ~/.cursor appears or the JSON parses).
